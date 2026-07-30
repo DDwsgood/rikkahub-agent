@@ -70,3 +70,8 @@ termuxBootstrapX8664Sha256=<64 lowercase hex characters>
 `{package}` and `{arch}` are replaced at runtime. Supported architecture values are
 `aarch64` and `x86_64`. Leaving these properties unset disables bootstrap installation
 with an explicit error instead of installing an incompatible official archive.
+
+CI builds may instead place variant-specific archives at
+`app/src/<variant>/assets/termux/bootstrap-{arch}.zip`. The installer prefers a bundled
+archive and falls back to the configured URL only when the asset is absent. SHA-256 remains
+mandatory for bundled archives so the build cannot accidentally package the wrong variant.

@@ -1,0 +1,127 @@
+name: Build APK with embedded Termux
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap_run_id:
+        description: Successful Build Termux bootstraps workflow run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build-apk:
+    name: Debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out application source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download validated aarch64 bootstrap
+        uses: actions/download-artifact@v4
+        with:
+          name: termux-bootstrap-debug-aarch64
+          path: bootstrap-artifacts/aarch64
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download validated x86_64 bootstrap
+        uses: actions/download-artifact@v4
+        with:
+          name: termux-bootstrap-debug-x86_64
+          path: bootstrap-artifacts/x86_64
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare embedded bootstrap assets
+        id: bootstraps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          asset_dir=app/src/debug/assets/termux
+          mkdir -p "$asset_dir"
+          aarch64_zip=$(find bootstrap-artifacts -type f -name bootstrap-aarch64.zip -print -quit)
+          x86_64_zip=$(find bootstrap-artifacts -type f -name bootstrap-x86_64.zip -print -quit)
+          test -n "$aarch64_zip" && test -s "$aarch64_zip"
+          test -n "$x86_64_zip" && test -s "$x86_64_zip"
+          cp "$aarch64_zip" "$asset_dir/bootstrap-aarch64.zip"
+          cp "$x86_64_zip" "$asset_dir/bootstrap-x86_64.zip"
+          aarch64_sha=$(sha256sum "$aarch64_zip" | awk '{print $1}')
+          x86_64_sha=$(sha256sum "$x86_64_zip" | awk '{print $1}')
+          echo "aarch64_sha=$aarch64_sha" >> "$GITHUB_OUTPUT"
+          echo "x86_64_sha=$x86_64_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Install Android SDK 37
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          sdkmanager="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" "platforms;android-37" "build-tools;37.0.0"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ./gradlew :app:assembleDebug \
+            -PtermuxBootstrapAarch64Sha256=${{ steps.bootstraps.outputs.aarch64_sha }} \
+            -PtermuxBootstrapX8664Sha256=${{ steps.bootstraps.outputs.x86_64_sha }}
+
+      - name: Verify and describe APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          apk=$(find app/build/outputs/apk/debug -type f -name '*universal*.apk' -print -quit)
+          test -n "$apk" && test -s "$apk"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          apksigner=$(find "$sdk_root/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)
+          test -n "$apksigner" && test -x "$apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk"
+          mkdir -p apk-artifact
+          cp "$apk" apk-artifact/rikkahub-agent-debug-with-termux.apk
+          (
+            cd apk-artifact
+            sha256sum rikkahub-agent-debug-with-termux.apk | tee SHA256SUMS
+          )
+          {
+            echo "source_commit=$GITHUB_SHA"
+            echo "bootstrap_run_id=${{ inputs.bootstrap_run_id }}"
+            echo "application_id=excp.rikkahub.debug"
+            echo "aarch64_sha256=${{ steps.bootstraps.outputs.aarch64_sha }}"
+            echo "x86_64_sha256=${{ steps.bootstraps.outputs.x86_64_sha }}"
+            echo "completed_at=$(date --utc --iso-8601=seconds)"
+          } > apk-artifact/build-info.txt
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-agent-debug-with-termux
+          path: apk-artifact/
+          if-no-files-found: error
+          retention-days: 14

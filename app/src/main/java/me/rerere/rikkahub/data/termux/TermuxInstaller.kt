@@ -67,17 +67,30 @@ class TermuxInstaller(
                 )
             }
 
-            // 3. 下载 bootstrap zip
-            val downloadUrl = buildBootstrapUrl(arch)
+            // 3. Copy a bootstrap bundled by the build pipeline, or download one when
+            // the APK does not contain an asset.
             val expectedSha256 = expectedSha256(arch)
             val zipFile = File(context.cacheDir, "bootstrap-$arch.zip")
-            Log.i(TAG, "Downloading bootstrap from $downloadUrl")
-            downloadWithRetry(downloadUrl, zipFile, maxRetries = 3)
+            val assetPath = "termux/bootstrap-$arch.zip"
+            val bundledBootstrap = runCatching { context.assets.open(assetPath) }.getOrNull()
+            val bootstrapSource = if (bundledBootstrap != null) {
+                Log.i(TAG, "Installing bundled bootstrap asset $assetPath")
+                zipFile.parentFile?.mkdirs()
+                bundledBootstrap.use { input ->
+                    zipFile.outputStream().use(input::copyTo)
+                }
+                "asset://$assetPath"
+            } else {
+                val downloadUrl = buildBootstrapUrl(arch)
+                Log.i(TAG, "Downloading bootstrap from $downloadUrl")
+                downloadWithRetry(downloadUrl, zipFile, maxRetries = 3)
+                downloadUrl
+            }
 
             // 4. SHA-256 校验
             if (!verifySha256(zipFile, expectedSha256)) {
                 zipFile.delete()
-                throw IOException("SHA-256 verification failed for $downloadUrl")
+                throw IOException("SHA-256 verification failed for $bootstrapSource")
             }
             Log.i(TAG, "SHA-256 verification passed")
 

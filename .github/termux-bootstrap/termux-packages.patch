@@ -1,0 +1,293 @@
+diff --git a/packages/apt/build.sh b/packages/apt/build.sh
+index 692b7de92f..bf7df50fa9 100644
+--- a/packages/apt/build.sh
++++ b/packages/apt/build.sh
+@@ -5,8 +5,8 @@ TERMUX_PKG_MAINTAINER="@termux"
+ TERMUX_PKG_VERSION="2.8.1"
+ TERMUX_PKG_REVISION=1
+ # old tarball are removed in https://deb.debian.org/debian/pool/main/a/apt/apt_${TERMUX_PKG_VERSION}.tar.xz
+-TERMUX_PKG_SRCURL=https://salsa.debian.org/apt-team/apt/-/archive/${TERMUX_PKG_VERSION}/apt-${TERMUX_PKG_VERSION}.tar.bz2
+-TERMUX_PKG_SHA256=87ca18392c10822a133b738118505f7d04e0b31ba1122bf5d32911311cb2dc7e
++TERMUX_PKG_SRCURL=https://github.com/debian/apt/archive/refs/tags/${TERMUX_PKG_VERSION}.tar.gz
++TERMUX_PKG_SHA256=a9d0632c2c09fc862d92a7c7b9cb55ef27e85b9e807b1b8185442352b935cabb
+ # apt-key requires utilities from coreutils, findutils, gpgv, grep, sed.
+ TERMUX_PKG_DEPENDS="coreutils, dpkg, findutils, gpgv, grep, libandroid-glob, libbz2, libc++, libiconv, libgcrypt, libgnutls, liblz4, liblzma, sed, termux-keyring, termux-licenses, xxhash, zlib, zstd"
+ TERMUX_PKG_BUILD_DEPENDS="docbook-xsl,libdb"
+diff --git a/packages/bash/build.sh b/packages/bash/build.sh
+index 5737650c5e..0fdfdddf8d 100644
+--- a/packages/bash/build.sh
++++ b/packages/bash/build.sh
+@@ -36,6 +36,8 @@ TERMUX_PKG_CONFFILES="etc/bash.bashrc etc/profile"
+ TERMUX_PKG_RM_AFTER_INSTALL="share/man/man1/bashbug.1 bin/bashbug"
+ 
+ termux_step_pre_configure() {
++	# Fix: bool is a keyword in C23 (gcc 15 default), but bash defines its own
++	sed -i "s/^typedef unsigned char bool;/#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L\ntypedef unsigned char bool;\n#endif/" "$TERMUX_PKG_SRCDIR/bashansi.h"
+ 	(( _PATCH_VERSION == 0 )) && return
+ 	local PATCH_NUM PATCHFILE
+ 	local -A PATCH_CHECKSUMS=()
+diff --git a/packages/docbook-xml/build.sh b/packages/docbook-xml/build.sh
+index f16e526fb5..4e72732c74 100644
+--- a/packages/docbook-xml/build.sh
++++ b/packages/docbook-xml/build.sh
+@@ -11,19 +11,19 @@ TERMUX_PKG_BUILD_IN_SRC=true
+ TERMUX_PKG_SKIP_SRC_EXTRACT=true
+ 
+ termux_step_get_source() {
+-	termux_download "https://docbook.org/xml/4.1.2/docbkx412.zip" \
++	termux_download "https://www.oasis-open.org/docbook/xml/4.1.2/docbkx412.zip" \
+ 		$TERMUX_PKG_CACHEDIR/docbkx412.zip \
+ 		30f0644064e0ea71751438251940b1431f46acada814a062870f486c772e7772
+-	termux_download "https://docbook.org/xml/4.2/docbook-xml-4.2.zip" \
++	termux_download "https://www.oasis-open.org/docbook/xml/4.2/docbook-xml-4.2.zip" \
+ 		$TERMUX_PKG_CACHEDIR/docbook-xml-4.2.zip \
+ 		acc4601e4f97a196076b7e64b368d9248b07c7abf26b34a02cca40eeebe60fa2
+-	termux_download "https://docbook.org/xml/4.3/docbook-xml-4.3.zip" \
++	termux_download "https://www.oasis-open.org/docbook/xml/4.3/docbook-xml-4.3.zip" \
+ 		$TERMUX_PKG_CACHEDIR/docbook-xml-4.3.zip \
+ 		23068a94ea6fd484b004c5a73ec36a66aa47ea8f0d6b62cc1695931f5c143464
+-	termux_download "https://docbook.org/xml/4.4/docbook-xml-4.4.zip" \
++	termux_download "https://www.oasis-open.org/docbook/xml/4.4/docbook-xml-4.4.zip" \
+ 		$TERMUX_PKG_CACHEDIR/docbook-xml-4.4.zip \
+ 		02f159eb88c4254d95e831c51c144b1863b216d909b5ff45743a1ce6f5273090
+-	termux_download "https://docbook.org/xml/4.5/docbook-xml-4.5.zip" \
++	termux_download "https://www.oasis-open.org/docbook/xml/4.5/docbook-xml-4.5.zip" \
+ 		$TERMUX_PKG_CACHEDIR/docbook-xml-4.5.zip \
+ 		4e4e037a2b83c98c6c94818390d4bdd3f6e10f6ec62dd79188594e26190dc7b4
+ 	mkdir -p $TERMUX_PKG_SRCDIR
+diff --git a/packages/dos2unix/build.sh b/packages/dos2unix/build.sh
+index fa2cc9c7e3..dbe76b2729 100644
+--- a/packages/dos2unix/build.sh
++++ b/packages/dos2unix/build.sh
+@@ -4,7 +4,7 @@ TERMUX_PKG_LICENSE="BSD 2-Clause"
+ TERMUX_PKG_LICENSE_FILE="COPYING.txt"
+ TERMUX_PKG_MAINTAINER="@termux"
+ TERMUX_PKG_VERSION=7.5.2
+-TERMUX_PKG_SRCURL=https://waterlan.home.xs4all.nl/dos2unix/dos2unix-${TERMUX_PKG_VERSION}.tar.gz
++TERMUX_PKG_SRCURL=https://sourceforge.net/projects/dos2unix/files/dos2unix/${TERMUX_PKG_VERSION}/dos2unix-${TERMUX_PKG_VERSION}.tar.gz/download
+ TERMUX_PKG_SHA256=264742446608442eb48f96c20af6da303cb3a92b364e72cb7e24f88239c4bf3a
+ TERMUX_PKG_BUILD_IN_SRC=true
+ TERMUX_PKG_DEPENDS="libandroid-support"
+diff --git a/packages/dpkg/build.sh b/packages/dpkg/build.sh
+index e66a59bbb0..d46d36991c 100644
+--- a/packages/dpkg/build.sh
++++ b/packages/dpkg/build.sh
+@@ -5,7 +5,7 @@ TERMUX_PKG_MAINTAINER="@termux"
+ TERMUX_PKG_VERSION="1.22.6"
+ TERMUX_PKG_REVISION=4
+ # old tarball are removed in https://mirrors.kernel.org/debian/pool/main/d/dpkg/dpkg_${TERMUX_PKG_VERSION}.tar.xz
+-TERMUX_PKG_SRCURL=git+https://salsa.debian.org/dpkg-team/dpkg.git
++TERMUX_PKG_SRCURL=git+https://github.com/guillemj/dpkg.git
+ TERMUX_PKG_GIT_BRANCH="${TERMUX_PKG_VERSION}"
+ TERMUX_PKG_AUTO_UPDATE=false
+ TERMUX_PKG_DEPENDS="bzip2, coreutils, diffutils, gzip, less, libbz2, liblzma, libmd, tar, xz-utils, zlib, zstd"
+diff --git a/packages/gnupg/build.sh b/packages/gnupg/build.sh
+index 7a16bc7f5c..fd847901a7 100644
+--- a/packages/gnupg/build.sh
++++ b/packages/gnupg/build.sh
+@@ -5,7 +5,7 @@ TERMUX_PKG_MAINTAINER="@termux"
+ TERMUX_PKG_VERSION=2.5.5
+ TERMUX_PKG_SRCURL=https://www.gnupg.org/ftp/gcrypt/gnupg/gnupg-${TERMUX_PKG_VERSION}.tar.bz2
+ TERMUX_PKG_SHA256=7afa71d72ff9aaff75a6810b87b486bc492fd752e4f77b07c41759ce4ef36b31
+-TERMUX_PKG_DEPENDS="libassuan, libbz2, libgcrypt, libgnutls, libgpg-error, libksba, libnpth, libsqlite, readline, pinentry, resolv-conf, zlib"
++TERMUX_PKG_DEPENDS="libassuan, libbz2, libexpat, libgcrypt, libgnutls, libgpg-error, libksba, libnpth, libsqlite, readline, pinentry, resolv-conf, zlib"
+ TERMUX_PKG_CONFLICTS="gnupg2 (<< 2.2.9-1), dirmngr (<< 2.2.17-1)"
+ TERMUX_PKG_REPLACES="gnupg2 (<< 2.2.9-1), dirmngr (<< 2.2.17-1)"
+ TERMUX_PKG_SUGGESTS="scdaemon"
+diff --git a/packages/libtirpc/build.sh b/packages/libtirpc/build.sh
+index 94ce304b8c..1cc27736d6 100644
+--- a/packages/libtirpc/build.sh
++++ b/packages/libtirpc/build.sh
+@@ -13,10 +13,9 @@ termux_step_post_get_source() {
+ }
+ 
+ termux_step_pre_configure() {
+-	# Avoid build errors such as: version script assignment of 'TIRPC_0.3.0' to symbol '_svcauth_gss' failed: symbol not defined
++	# Fix: skip autoreconf tools (release tarball has pre-generated files)
++	# Just create missing required files and touch generated files to prevent regeneration
++	touch "$TERMUX_PKG_SRCDIR/INSTALL" "$TERMUX_PKG_SRCDIR/COPYING" 2>/dev/null || true
++	find "$TERMUX_PKG_SRCDIR" \( -name "Makefile.in" -o -name "aclocal.m4" -o -name "configure" \) -exec touch {} + 2>/dev/null || true
+ 	LDFLAGS+=" -Wl,-undefined-version"
+-
+-	aclocal
+-	automake
+-	autoconf
+ }
+diff --git a/packages/libunbound/build.sh b/packages/libunbound/build.sh
+index 7bc250853c..f7dd22904a 100644
+--- a/packages/libunbound/build.sh
++++ b/packages/libunbound/build.sh
+@@ -7,12 +7,9 @@ TERMUX_PKG_SRCURL=https://nlnetlabs.nl/downloads/unbound/unbound-${TERMUX_PKG_VE
+ TERMUX_PKG_SHA256=6a6b117c799d8de3868643397e0fd71591f6d42f4473f598bdb22609ff362590
+ TERMUX_PKG_AUTO_UPDATE=true
+ TERMUX_PKG_DEPENDS="libevent, libnghttp2, openssl, resolv-conf"
+-TERMUX_PKG_BUILD_DEPENDS="python, swig"
+ TERMUX_PKG_BREAKS="unbound (<< 1.17.1-1)"
+ TERMUX_PKG_REPLACES="unbound (<< 1.17.1-1)"
+ TERMUX_PKG_BUILD_IN_SRC=true
+-TERMUX_PKG_PYTHON_COMMON_DEPS="wheel"
+-TERMUX_PKG_PYTHON_BUILD_DEPS="swig"
+ 
+ # `pythonmodule` makes core lib/libunbound.so depend on python. Do not enable it.
+ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
+@@ -27,7 +24,6 @@ ac_cv_func_getpwnam=no
+ --with-libexpat=$TERMUX_PREFIX
+ --without-libhiredis
+ --without-libmnl
+---with-pyunbound
+ --without-pythonmodule
+ --with-libnghttp2=$TERMUX_PREFIX
+ --with-ssl=$TERMUX_PREFIX
+diff --git a/packages/lsof/build.sh b/packages/lsof/build.sh
+index 48aceceea9..142231e2fe 100644
+--- a/packages/lsof/build.sh
++++ b/packages/lsof/build.sh
+@@ -15,5 +15,9 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
+ "
+ 
+ termux_step_pre_configure() {
++	# Fix: copy required boilerplate files from automake data dir before autoreconf
++	for f in INSTALL COPYING NEWS README AUTHORS ChangeLog; do
++		[ ! -f "$TERMUX_PKG_SRCDIR/$f" ] && cp "/usr/share/automake-1.18/$f" "$TERMUX_PKG_SRCDIR/$f" 2>/dev/null || true
++	done
+ 	autoreconf -fiv
+ }
+diff --git a/packages/nano/build.sh b/packages/nano/build.sh
+index 45fadebe0b..fc702acbe4 100644
+--- a/packages/nano/build.sh
++++ b/packages/nano/build.sh
+@@ -4,7 +4,7 @@ TERMUX_PKG_LICENSE="GPL-3.0"
+ TERMUX_PKG_MAINTAINER="@termux"
+ TERMUX_PKG_VERSION="8.5"
+ TERMUX_PKG_REVISION=2
+-TERMUX_PKG_SRCURL=https://nano-editor.org/dist/latest/nano-$TERMUX_PKG_VERSION.tar.xz
++TERMUX_PKG_SRCURL=https://mirrors.kernel.org/gnu/nano/nano-$TERMUX_PKG_VERSION.tar.xz
+ TERMUX_PKG_SHA256=000b011d339c141af9646d43288f54325ff5c6e8d39d6e482b787bbc6654c26a
+ TERMUX_PKG_AUTO_UPDATE=true
+ TERMUX_PKG_DEPENDS="libandroid-support, ncurses"
+diff --git a/packages/ncurses/build.sh b/packages/ncurses/build.sh
+index 92dbee511b..5fa5128611 100644
+--- a/packages/ncurses/build.sh
++++ b/packages/ncurses/build.sh
+@@ -15,21 +15,18 @@ _SNAPSHOT_COMMIT=a480458efb0662531287f0c75116c0e91fe235cb
+ TERMUX_PKG_VERSION=(6.5.20240831
+                     9.31
+                     "$(. "$TERMUX_SCRIPTDIR/x11-packages/kitty/build.sh"; echo "$TERMUX_PKG_VERSION")"
+-                    "$(. "$TERMUX_SCRIPTDIR/x11-packages/alacritty/build.sh"; echo "$TERMUX_PKG_VERSION")"
+-                    "$(. "$TERMUX_SCRIPTDIR/x11-packages/foot/build.sh"; echo "$TERMUX_PKG_VERSION")")
++                    "$(. "$TERMUX_SCRIPTDIR/x11-packages/alacritty/build.sh"; echo "$TERMUX_PKG_VERSION")")
+ TERMUX_PKG_REVISION=2
+ # shellcheck disable=SC2031
+ TERMUX_PKG_SRCURL=("https://github.com/ThomasDickey/ncurses-snapshots/archive/${_SNAPSHOT_COMMIT}.tar.gz"
+                    "https://dist.schmorp.de/rxvt-unicode/Attic/rxvt-unicode-${TERMUX_PKG_VERSION[1]}.tar.bz2"
+                    "$(. "$TERMUX_SCRIPTDIR/x11-packages/kitty/build.sh"; echo "$TERMUX_PKG_SRCURL")"
+-                   "$(. "$TERMUX_SCRIPTDIR/x11-packages/alacritty/build.sh"; echo "$TERMUX_PKG_SRCURL")"
+-                   "$(. "$TERMUX_SCRIPTDIR/x11-packages/foot/build.sh"; echo "$TERMUX_PKG_SRCURL")")
++                   "$(. "$TERMUX_SCRIPTDIR/x11-packages/alacritty/build.sh"; echo "$TERMUX_PKG_SRCURL")")
+ # shellcheck disable=SC2031
+ TERMUX_PKG_SHA256=(ec6122c3b8ab930d1477a1dbfd90299e9f715555a98b6e6805d5ae1b0d72becd
+                    aaa13fcbc149fe0f3f391f933279580f74a96fd312d6ed06b8ff03c2d46672e8
+                    "$(. "$TERMUX_SCRIPTDIR/x11-packages/kitty/build.sh"; echo "$TERMUX_PKG_SHA256")"
+-                   "$(. "$TERMUX_SCRIPTDIR/x11-packages/alacritty/build.sh"; echo "$TERMUX_PKG_SHA256")"
+-                   "$(. "$TERMUX_SCRIPTDIR/x11-packages/foot/build.sh"; echo "$TERMUX_PKG_SHA256")")
++                   "$(. "$TERMUX_SCRIPTDIR/x11-packages/alacritty/build.sh"; echo "$TERMUX_PKG_SHA256")")
+ TERMUX_PKG_AUTO_UPDATE=false
+ 
+ # ncurses-utils: tset/reset/clear are moved to package 'ncurses'.
+@@ -114,7 +111,6 @@ termux_step_post_make_install() {
+ 	cp "$TERMUX_PKG_TMPDIR"/full-terminfo/a/{alacritty{,+common,-direct},ansi} "$TI/a/"
+ 	cp "$TERMUX_PKG_TMPDIR"/full-terminfo/d/{dtterm,dumb} "$TI/d/"
+ 	cp "$TERMUX_PKG_TMPDIR"/full-terminfo/e/eterm-color "$TI/e/"
+-	cp "$TERMUX_PKG_TMPDIR"/full-terminfo/f/foot{,+base,-direct} "$TI/f/"
+ 	cp "$TERMUX_PKG_TMPDIR"/full-terminfo/g/gnome{,-256color} "$TI/g/"
+ 	cp "$TERMUX_PKG_TMPDIR"/full-terminfo/n/nsterm "$TI/n/"
+ 	cp "$TERMUX_PKG_TMPDIR"/full-terminfo/k/kitty{,+common,-direct} "$TI/k/"
+@@ -130,8 +126,4 @@ termux_step_post_make_install() {
+ 	tic -x -o "$TI" "$TERMUX_PKG_SRCDIR/kitty-${TERMUX_PKG_VERSION[2]}/terminfo/kitty.terminfo"
+ 	tic -x -e alacritty,alacritty+common,alacritty-direct -o "$TI" "$TERMUX_PKG_SRCDIR/alacritty-${TERMUX_PKG_VERSION[3]}/extra/alacritty.info"
+ 
+-	# Upstream instructions for building foot's terminfo
+-	# See: https://codeberg.org/dnkl/foot/src/branch/master/INSTALL.md#terminfo
+-	sed 's/@default_terminfo@/foot/g' "$TERMUX_PKG_SRCDIR/foot/foot.info" | \
+-	tic -x -e foot,foot-direct -o "$TI" -
+ }
+diff --git a/packages/tar/build.sh b/packages/tar/build.sh
+index b3a939b936..c99b42ef97 100644
+--- a/packages/tar/build.sh
++++ b/packages/tar/build.sh
+@@ -16,8 +16,10 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="gl_cv_struct_dirent_d_ino=yes"
+ TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" ac_cv_func_mkfifoat=yes"
+ 
+ termux_step_pre_configure() {
++	# Prevent automake regeneration - generated files already in release tarball
++	find "$TERMUX_PKG_SRCDIR" \( -name "Makefile.in" -o -name "aclocal.m4" -o -name "configure" \) -exec touch {} + 2>/dev/null || true
+ 	CPPFLAGS+=" -D__USE_FORTIFY_LEVEL=0"
+-	LDFLAGS+=" -landroid-glob"
++	LDFLAGS+=" -landroid-glob -liconv"
+ 	# https://android.googlesource.com/platform/bionic/+/master/docs/32-bit-abi.md#is-32_bit-on-lp32-y2038
+ 	if [ $TERMUX_ARCH_BITS = 32 ]; then
+ 		TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" --disable-year2038"
+diff --git a/packages/termux-tools/build.sh b/packages/termux-tools/build.sh
+index 7f1c655712..99635e3cca 100644
+--- a/packages/termux-tools/build.sh
++++ b/packages/termux-tools/build.sh
+@@ -21,6 +21,12 @@ TERMUX_PKG_DEPENDS="bzip2, coreutils, curl, dash, diffutils, findutils, gawk, gr
+ TERMUX_PKG_RECOMMENDS="ed, dos2unix, inetutils, net-tools, patch, unzip"
+ 
+ termux_step_pre_configure() {
++	# termux-tools reads these legacy variables from the configure process
++	# environment. The build properties define them as shell variables, but
++	# do not export them, so configure otherwise silently falls back to the
++	# official com.termux paths.
++	export TERMUX_APP_PACKAGE TERMUX_BASE_DIR TERMUX_CACHE_DIR
++	export TERMUX_PREFIX TERMUX_ANDROID_HOME
+ 	autoreconf -vfi
+ }
+ 
+diff --git a/packages/util-linux/build.sh b/packages/util-linux/build.sh
+index 604b8a18d4..3f3053b4cb 100644
+--- a/packages/util-linux/build.sh
++++ b/packages/util-linux/build.sh
+@@ -59,6 +59,7 @@ ac_cv_type_struct_statx=no
+ "
+ 
+ termux_step_pre_configure() {
++	LDFLAGS+=" -landroid-glob"
+ 	case "$TERMUX_ARCH_BITS" in
+ 		#prlimit() is only available in 64-bit bionic.
+ 		64) TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" ac_cv_func_prlimit=yes";;
+diff --git a/scripts/build-bootstraps.sh b/scripts/build-bootstraps.sh
+index 3dabbb8319..9b61fd7909 100755
+--- a/scripts/build-bootstraps.sh
++++ b/scripts/build-bootstraps.sh
+@@ -623,7 +623,7 @@ main() {
+ 		PACKAGES_LIST+=("bash") # Used by `termux-bootstrap-second-stage.sh`.
+ 		PACKAGES_LIST+=("bzip2")
+ 		if [[ "$BOOTSTRAP_ANDROID10_COMPATIBLE" == "false" ]]; then
+-			PACKAGES_LIST+=("command-not-found")
++			true # command-not-found skipped
+ 		else
+ 			PACKAGES_LIST+=("proot")
+ 		fi
+diff --git a/scripts/properties.sh b/scripts/properties.sh
+index c40fbba089..8c73b04359 100644
+--- a/scripts/properties.sh
++++ b/scripts/properties.sh
+@@ -464,7 +464,7 @@ TERMUX__REPOS_HOST_ORG_URL="https://github.com/$TERMUX__REPOS_HOST_ORG_NAME"
+ #
+ # Default value: `com.termux`
+ ##
+-TERMUX_APP__PACKAGE_NAME="com.termux"
++TERMUX_APP__PACKAGE_NAME="excp.rikkahub"
+ TERMUX_APP_PACKAGE="$TERMUX_APP__PACKAGE_NAME" # Deprecated alternative variable for `TERMUX_APP__PACKAGE_NAME`
+ 
+ __termux_build_props__add_variables_validator_actions "TERMUX_APP__PACKAGE_NAME" "app_package_name"
+@@ -743,7 +743,7 @@ __termux_build_props__add_variables_validator_actions "TERMUX__ROOTFS_ID" "unsig
+ #
+ # Default value: `files`
+ ##
+-TERMUX__ROOTFS_SUBDIR="files"
++TERMUX__ROOTFS_SUBDIR="files/termux"
+ __termux_build_props__add_variables_validator_actions "TERMUX__ROOTFS_SUBDIR" "allow_unset_value safe_relative_path"
+ 
+ ###########

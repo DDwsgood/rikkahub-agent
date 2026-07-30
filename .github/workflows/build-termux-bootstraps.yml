@@ -1,0 +1,143 @@
+name: Build Termux bootstraps
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: termux-bootstraps
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.variant.name }} / ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+        variant:
+          - name: release
+            package_name: excp.rikkahub
+          - name: debug
+            package_name: excp.rikkahub.debug
+
+    env:
+      TERMUX_PACKAGES_COMMIT: fb44d31f3445d7efd2cee6dada47aa19401c1329
+      TERMUX_BUILDER_IMAGE_NAME: ghcr.io/termux/package-builder@sha256:fa23eb4238ef8eda877cd991a06152ce76e9f274d1cae0d42f28fee3e5cd6016
+      CONTAINER_NAME: termux-package-builder
+
+    steps:
+      - name: Check out RikkaHub build support
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+          docker system prune --all --force
+          df -h
+
+      - name: Clone pinned Termux package sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/agnostic-apollo/termux-packages.git termux-packages
+          git -C termux-packages fetch --depth 1 origin "$TERMUX_PACKAGES_COMMIT"
+          git -C termux-packages checkout --detach "$TERMUX_PACKAGES_COMMIT"
+          git -C termux-packages apply --check "$GITHUB_WORKSPACE/.github/termux-bootstrap/termux-packages.patch"
+          git -C termux-packages apply "$GITHUB_WORKSPACE/.github/termux-bootstrap/termux-packages.patch"
+
+      - name: Select application package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sed -i -E \
+            's/^TERMUX_APP__PACKAGE_NAME="[^"]+"/TERMUX_APP__PACKAGE_NAME="${{ matrix.variant.package_name }}"/' \
+            termux-packages/scripts/properties.sh
+          grep -E '^TERMUX_APP__PACKAGE_NAME=|^TERMUX__ROOTFS_SUBDIR=' \
+            termux-packages/scripts/properties.sh
+
+      - name: Prepare pinned builder and Android NDK
+        shell: bash
+        working-directory: termux-packages
+        run: |
+          set -o pipefail
+          docker pull "$TERMUX_BUILDER_IMAGE_NAME" 2>&1 | tee "$GITHUB_WORKSPACE/setup-builder.log"
+          ./scripts/run-docker.sh ./scripts/setup-android-sdk.sh \
+            2>&1 | tee -a "$GITHUB_WORKSPACE/setup-builder.log"
+
+      - name: Build bootstrap
+        id: build
+        shell: bash
+        working-directory: termux-packages
+        run: |
+          set -o pipefail
+          ./scripts/run-docker.sh ./scripts/build-bootstraps.sh \
+            --architectures "${{ matrix.arch }}" \
+            --no-build-unneeded-subpackages \
+            2>&1 | tee "$GITHUB_WORKSPACE/build-${{ matrix.variant.name }}-${{ matrix.arch }}.log"
+
+      - name: Validate and describe artifact
+        shell: bash
+        run: |
+          set -euxo pipefail
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/${{ matrix.variant.name }}/${{ matrix.arch }}"
+          mkdir -p "$artifact_dir"
+          cp "termux-packages/bootstrap-${{ matrix.arch }}.zip" "$artifact_dir/"
+          bash .github/termux-bootstrap/validate-bootstrap.sh \
+            "${{ matrix.variant.name }}" "${{ matrix.arch }}" "$artifact_dir"
+          (
+            cd "$artifact_dir"
+            sha256sum "bootstrap-${{ matrix.arch }}.zip" | tee SHA256SUMS
+          )
+          {
+            echo "source_repository=https://github.com/agnostic-apollo/termux-packages.git"
+            echo "source_commit=$TERMUX_PACKAGES_COMMIT"
+            echo "builder_image=$TERMUX_BUILDER_IMAGE_NAME"
+            echo "variant=${{ matrix.variant.name }}"
+            echo "package_name=${{ matrix.variant.package_name }}"
+            echo "architecture=${{ matrix.arch }}"
+            echo "runner_arch=$(uname -m)"
+            echo "completed_at=$(date --utc --iso-8601=seconds)"
+          } > "$artifact_dir/source-state.txt"
+
+      - name: Upload validated bootstrap
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-bootstrap-${{ matrix.variant.name }}-${{ matrix.arch }}
+          path: artifacts/${{ matrix.variant.name }}/${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Capture container diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '== Docker containers =='
+            docker ps -a || true
+            echo '== Disk usage =='
+            df -h || true
+            echo '== Docker disk usage =='
+            docker system df || true
+            echo '== Recent kernel messages =='
+            sudo dmesg --ctime | tail -n 100 || true
+          } > diagnostics-${{ matrix.variant.name }}-${{ matrix.arch }}.log 2>&1
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-bootstrap-logs-${{ matrix.variant.name }}-${{ matrix.arch }}
+          path: |
+            setup-builder.log
+            build-${{ matrix.variant.name }}-${{ matrix.arch }}.log
+            diagnostics-${{ matrix.variant.name }}-${{ matrix.arch }}.log
+          if-no-files-found: warn
+          retention-days: 14

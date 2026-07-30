@@ -248,10 +248,13 @@ diff --git a/packages/util-linux/build.sh b/packages/util-linux/build.sh
 index 604b8a18d4..3f3053b4cb 100644
 --- a/packages/util-linux/build.sh
 +++ b/packages/util-linux/build.sh
-@@ -59,6 +59,7 @@ ac_cv_type_struct_statx=no
+@@ -59,6 +59,10 @@ ac_cv_type_struct_statx=no
  "
  
  termux_step_pre_configure() {
++	# Prevent the release tarball's generated autotools files from being regenerated
++	# with version-specific automake binaries that are absent from the pinned builder.
++	find "$TERMUX_PKG_SRCDIR" \( -name "Makefile.in" -o -name "aclocal.m4" -o -name "configure" \) -exec touch {} +
 +	LDFLAGS+=" -landroid-glob"
  	case "$TERMUX_ARCH_BITS" in
  		#prlimit() is only available in 64-bit bionic.

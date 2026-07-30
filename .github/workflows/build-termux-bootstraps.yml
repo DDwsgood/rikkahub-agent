@@ -71,10 +71,24 @@ jobs:
           docker pull "$TERMUX_BUILDER_IMAGE_NAME" 2>&1 | tee "$GITHUB_WORKSPACE/setup-builder.log"
           ./scripts/run-docker.sh ./scripts/setup-android-sdk.sh \
             2>&1 | tee -a "$GITHUB_WORKSPACE/setup-builder.log"
-          # This pinned builder installs CPython under /usr/local, while the pinned
-          # package recipes invoke the unqualified python3.12 build interpreter.
+          # The pinned Python recipe cross-compiles 3.12 and requires a matching host
+          # interpreter, while this older pinned builder image does not ship one.
           ./scripts/run-docker.sh bash -lc \
-            'sudo ln -sf /usr/local/bin/python3.12 /usr/bin/python3.12 && python3.12 --version' \
+            'set -euo pipefail
+            work_dir=$(mktemp -d)
+            trap '\''rm -r "$work_dir"'\'' EXIT
+            cd "$work_dir"
+            curl --fail --location --retry 3 --output Python-3.12.11.tar.xz \
+              https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tar.xz
+            echo "c30bb24b7f1e9a19b11b55a546434f74e739bb4c271a3e3a80ff4380d49f7adb  Python-3.12.11.tar.xz" \
+              | sha256sum --check --strict
+            tar xf Python-3.12.11.tar.xz
+            cd Python-3.12.11
+            ./configure --prefix=/usr/local
+            make -j"$(nproc)"
+            sudo make altinstall
+            sudo ln -sf /usr/local/bin/python3.12 /usr/bin/python3.12
+            /usr/bin/python3.12 --version' \
             2>&1 | tee -a "$GITHUB_WORKSPACE/setup-builder.log"
 
       - name: Build bootstrap

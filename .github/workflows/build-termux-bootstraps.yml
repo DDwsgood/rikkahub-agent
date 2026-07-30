@@ -71,6 +71,11 @@ jobs:
           docker pull "$TERMUX_BUILDER_IMAGE_NAME" 2>&1 | tee "$GITHUB_WORKSPACE/setup-builder.log"
           ./scripts/run-docker.sh ./scripts/setup-android-sdk.sh \
             2>&1 | tee -a "$GITHUB_WORKSPACE/setup-builder.log"
+          # This pinned builder installs CPython under /usr/local, while the pinned
+          # package recipes invoke the unqualified python3.12 build interpreter.
+          ./scripts/run-docker.sh bash -lc \
+            'sudo ln -sf /usr/local/bin/python3.12 /usr/bin/python3.12 && python3.12 --version' \
+            2>&1 | tee -a "$GITHUB_WORKSPACE/setup-builder.log"
 
       - name: Build bootstrap
         id: build

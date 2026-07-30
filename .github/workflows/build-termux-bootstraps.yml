@@ -76,7 +76,7 @@ jobs:
           ./scripts/run-docker.sh bash -lc \
             'set -euo pipefail
             work_dir=$(mktemp -d)
-            trap '\''rm -r "$work_dir"'\'' EXIT
+            trap '\''sudo rm -r "$work_dir"'\'' EXIT
             cd "$work_dir"
             curl --fail --location --retry 3 --output Python-3.12.11.tar.xz \
               https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tar.xz

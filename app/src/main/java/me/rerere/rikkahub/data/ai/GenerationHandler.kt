@@ -55,6 +55,7 @@ import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
+import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -305,6 +306,9 @@ class GenerationHandler(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        // ToolSearch hybrid: the context supplies tools discovered during earlier steps so
+        // they are declared in the next provider request. Null for callers without ToolSearch.
+        invocationContext: ToolInvocationContext? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -377,6 +381,9 @@ class GenerationHandler(
                     ).let(this::addAll)
                 }
                 addAll(tools)
+                invocationContext?.dynamicToolsProvider?.invoke()?.forEach { dynamicTool ->
+                    if (none { it.name == dynamicTool.name }) add(dynamicTool)
+                }
             }
 
             // Check if we have tool calls ready to continue after user interaction.

@@ -16,4 +16,10 @@ object TermuxRuntime {
     @Volatile var maxStdoutBytes: Int     = TermuxDefaults.DEFAULT_MAX_STDOUT
     @Volatile var maxStderrBytes: Int     = TermuxDefaults.DEFAULT_MAX_STDERR
     @Volatile var aptWrapEnabled: Boolean = TermuxDefaults.DEFAULT_APT_WRAP_ENABLED
+
+    // Embedded Termux bootstrap state. Set by TermuxInstaller after a successful
+    // install/upgrade. Read by tools to decide whether to use the in-process runner
+    // (embedded) or fall back to the external Termux RUN_COMMAND intent (legacy).
+    @Volatile var embeddedTermuxInstalled: Boolean = false
+    @Volatile var embeddedTermuxVersion: String?   = null
 }

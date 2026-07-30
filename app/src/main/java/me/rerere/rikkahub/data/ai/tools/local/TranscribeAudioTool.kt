@@ -18,14 +18,16 @@ import java.io.File
 
 // Whisper model paths that whisper-cli checks by default, in preference order.
 // The first path that contains a .bin file wins. The user only needs one model.
-private val WHISPER_MODEL_SEARCH_PATHS = listOf(
-    // Standard Termux whisper.cpp package default
-    "/data/data/com.termux/files/home/.cache/whisper-models",
-    // Common alternate location used by manual builds
-    "/data/data/com.termux/files/home/whisper.cpp/models",
-    // Our own suggested install path (documented in error hint)
-    "/data/data/com.termux/files/home/.local/share/whisper",
-)
+// Paths point to the embedded Termux home (not the external Termux app).
+private val WHISPER_MODEL_SEARCH_PATHS: List<String>
+    get() = listOf(
+        // Standard whisper.cpp package default
+        "$TERMUX_HOME_DIR/.cache/whisper-models",
+        // Common alternate location used by manual builds
+        "$TERMUX_HOME_DIR/whisper.cpp/models",
+        // Our own suggested install path (documented in error hint)
+        "$TERMUX_HOME_DIR/.local/share/whisper",
+    )
 
 // Candidate locations of the whisper-cli binary, in priority order.
 // Built-from-source installs (`git clone whisper.cpp && cmake -B build && cmake --build build`)
@@ -33,17 +35,18 @@ private val WHISPER_MODEL_SEARCH_PATHS = listOf(
 // `main` instead of `whisper-cli`. Some manual installs symlink into `~/.local/bin`.
 // We check explicit candidates BEFORE falling back to PATH so manual builds work even
 // without symlinking into Termux's $PATH.
-private val WHISPER_CLI_CANDIDATES = listOf(
-    // 1. Termux pkg install (when/if it lands)
-    "/data/data/com.termux/files/usr/bin/whisper-cli",
-    // 2. Built-from-source — current upstream binary name (post-rename)
-    "/data/data/com.termux/files/home/whisper.cpp/build/bin/whisper-cli",
-    // 3. Built-from-source — legacy binary name, still used by older checkouts
-    "/data/data/com.termux/files/home/whisper.cpp/build/bin/main",
-    "/data/data/com.termux/files/home/whisper.cpp/main",
-    // 4. User's local-bin symlink convention
-    "/data/data/com.termux/files/home/.local/bin/whisper-cli",
-)
+private val WHISPER_CLI_CANDIDATES: List<String>
+    get() = listOf(
+        // 1. pkg install (when/if it lands)
+        "$TERMUX_BIN_DIR/whisper-cli",
+        // 2. Built-from-source — current upstream binary name (post-rename)
+        "$TERMUX_HOME_DIR/whisper.cpp/build/bin/whisper-cli",
+        // 3. Built-from-source — legacy binary name, still used by older checkouts
+        "$TERMUX_HOME_DIR/whisper.cpp/build/bin/main",
+        "$TERMUX_HOME_DIR/whisper.cpp/main",
+        // 4. User's local-bin symlink convention
+        "$TERMUX_HOME_DIR/.local/bin/whisper-cli",
+    )
 
 // The preferred model. tiny is the smallest (75 MB) and works offline.
 private const val PREFERRED_MODEL_NAME = "ggml-tiny.bin"
@@ -156,17 +159,16 @@ fun transcribeAudioFileTool(context: Context): Tool = Tool(
                 }
             }
             is CaptureResult.Timeout ->
-                return@Tool errEnv("termux_timeout", "Timed out checking for whisper-cli. Ensure Termux is running and allow-external-apps=true is set.")
+                return@Tool errEnv("termux_timeout", "Timed out checking for whisper-cli in the embedded Termux environment.")
             is CaptureResult.Denied ->
-                return@Tool errEnv("termux_permission_denied", "Termux rejected the command. Ensure allow-external-apps=true in ~/.termux/termux.properties.")
+                return@Tool errEnv("termux_permission_denied", "The embedded Termux command could not be executed.")
             is CaptureResult.OtherError ->
                 return@Tool errEnv("termux_error", whichResult.message)
         }
 
         // --- 6. Locate a whisper model via Termux shell ---
-        // We cannot use java.io.File for Termux paths — Termux's sandbox is owned by the
-        // Termux uid, not our app uid. File.isDirectory / listFiles always return false/null
-        // because the OS blocks cross-uid reads. Use a shell script instead.
+        // Use a shell probe so glob expansion and model preference stay within the same
+        // environment that executes whisper-cli.
         val modelPath = findWhisperModelViaShell(context)
         if (modelPath == null) {
             val searchedPaths = WHISPER_MODEL_SEARCH_PATHS.joinToString(", ")
@@ -184,13 +186,9 @@ fun transcribeAudioFileTool(context: Context): Tool = Tool(
         // (Telegram voice notes), MP3, etc. The robust path is to ALWAYS pre-convert
         // via ffmpeg first. ffmpeg is in Termux's default repos and tiny vs. whisper.
         //
-        // Stable filename means ffmpeg's `-y` overwrites the previous WAV — no
-        // accumulation across calls. We deliberately do NOT try to delete it from
-        // our side after; java.io.File.delete fails cross-uid under Android's app
-        // sandbox (Termux's home is owned by Termux's uid, not ours), so the delete
-        // silently no-ops and we'd just be lying about cleanup. The next call
-        // overwrites in place.
-        val convertedWav = "/data/data/com.termux/files/home/rikkahub_transcribe_input.wav"
+        // Stable filename means ffmpeg's `-y` overwrites the previous WAV, avoiding
+        // accumulation across calls.
+        val convertedWav = "$TERMUX_HOME_DIR/rikkahub_transcribe_input.wav"
 
         // Verify ffmpeg is installed before we try to use it.
         val ffmpegCheck = runCommandCapture(
@@ -236,12 +234,7 @@ fun transcribeAudioFileTool(context: Context): Tool = Tool(
         }
 
         // Run whisper-cli with `-nt` (--no-timestamps) and let it print to stdout.
-        // We deliberately DO NOT use `-otxt -of <file>` because the output file would
-        // be written under Termux's uid in /data/data/com.termux/files/... and our
-        // app's uid (different) cannot read it back via java.io.File — Android's
-        // cross-app sandbox blocks the read silently and we'd see `output_missing`
-        // even though the transcription succeeded. stdout is captured by the
-        // RUN_COMMAND broadcast result bundle and crosses uid boundaries cleanly.
+        // Capture stdout directly instead of creating a temporary transcript file.
         val whisperArgs = buildList {
             add("-m"); add(modelPath)
             add("-f"); add(convertedWav)
@@ -330,10 +323,7 @@ fun transcribeAudioFileTool(context: Context): Tool = Tool(
  * Locate the first whisper model (.bin) across [WHISPER_MODEL_SEARCH_PATHS] by running
  * a shell script inside Termux.
  *
- * This MUST be a shell-based probe — java.io.File reads on Termux paths silently fail
- * because Termux's sandbox is owned by the Termux uid, not our app uid. The OS rejects
- * cross-uid stat() calls so File.isDirectory / listFiles always return false / null even
- * when the path exists and the file is there.
+ * A shell probe keeps glob expansion and path selection consistent with whisper-cli.
  *
  * Returns the absolute path string of the first suitable model, or null if none found
  * (or if Termux is unreachable).
@@ -474,7 +464,12 @@ private fun errEnv(code: String, detail: String): List<UIMessagePart> =
         put("detail", detail)
     }.toString()))
 
-// Re-export Termux internals needed by this file (they are internal to the package,
-// so no import is needed — they share the same package).
-private const val TERMUX_BIN_DIR = "/data/data/com.termux/files/usr/bin"
-private const val TERMUX_HOME_DIR = "/data/data/com.termux/files/home"
+// Embedded Termux paths — resolved lazily via EmbeddedRunnerHolder so they reflect
+// the actual app filesDir. These replace the old external-Termux hardcoded paths.
+private val TERMUX_BIN_DIR: String
+    get() = EmbeddedRunnerHolder.get()?.env?.prefix?.resolve("bin")?.absolutePath
+        ?: "/data/data/excp.rikkahub/files/termux/usr/bin"
+
+private val TERMUX_HOME_DIR: String
+    get() = EmbeddedRunnerHolder.get()?.env?.homeDir?.absolutePath
+        ?: "/data/data/excp.rikkahub/files/termux/home"

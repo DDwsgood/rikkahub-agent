@@ -116,6 +116,9 @@ class RikkaHubApp : Application() {
         // is a one-time install — user edits / deletes are respected on subsequent launches.
         seedDefaultSkillsIfNeeded()
 
+        // 内嵌 Termux bootstrap 检查与安装
+        initEmbeddedTermux()
+
         // Increment launch count
         incrementLaunchCount()
 
@@ -380,6 +383,27 @@ class RikkaHubApp : Application() {
                 get<me.rerere.rikkahub.data.files.SkillManager>().seedDefaultSkillsIfNeeded()
             }.onFailure {
                 Log.e(TAG, "seedDefaultSkillsIfNeeded failed", it)
+            }
+        }
+    }
+
+    private fun initEmbeddedTermux() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                val env = get<me.rerere.rikkahub.data.termux.TermuxEnvironment>()
+                if (env.needsBootstrap()) {
+                    Log.i(TAG, "initEmbeddedTermux: installing bootstrap...")
+                    val installer = get<me.rerere.rikkahub.data.termux.TermuxInstaller>()
+                    installer.install().onSuccess {
+                        Log.i(TAG, "initEmbeddedTermux: bootstrap installed successfully")
+                    }.onFailure { e ->
+                        Log.e(TAG, "initEmbeddedTermux: bootstrap install failed", e)
+                    }
+                } else {
+                    Log.d(TAG, "initEmbeddedTermux: bootstrap already installed")
+                }
+            }.onFailure {
+                Log.e(TAG, "initEmbeddedTermux failed", it)
             }
         }
     }

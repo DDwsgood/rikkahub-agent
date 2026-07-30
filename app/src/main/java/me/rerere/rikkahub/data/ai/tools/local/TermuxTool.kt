@@ -1,16 +1,6 @@
 package me.rerere.rikkahub.data.ai.tools.local
 
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.Build
-import android.os.Bundle
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -21,34 +11,38 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.rikkahub.data.ai.AgentTurnTracker
 import me.rerere.rikkahub.data.preferences.TermuxDefaults
 import me.rerere.rikkahub.data.preferences.TermuxRuntime
-import java.util.UUID
+import me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner
+import me.rerere.rikkahub.data.termux.TermuxEnvironment
+import me.rerere.rikkahub.data.termux.TermuxResult
 
-private const val TERMUX_PACKAGE = "com.termux"
-private const val TERMUX_RUN_COMMAND_SERVICE = "com.termux.app.RunCommandService"
-private const val TERMUX_RUN_COMMAND_ACTION = "com.termux.RUN_COMMAND"
-private const val TERMUX_BIN_DIR = "/data/data/com.termux/files/usr/bin"
-private const val TERMUX_HOME_DIR = "/data/data/com.termux/files/home"
+/**
+ * Process-scoped holder for the [EmbeddedTermuxRunner] singleton.
+ *
+ * The legacy free-function [runCommandCapture] (still called by [TranscribeAudioTool]) needs
+ * access to the runner without a DI parameter. [LocalTools] calls
+ * [setRunner] during tool construction so all subsequent [runCommandCapture] invocations
+ * route through the embedded engine.
+ */
+internal object EmbeddedRunnerHolder {
+    @Volatile
+    private var runner: EmbeddedTermuxRunner? = null
 
-// Termux delivers stdout / stderr / exitCode via a result Bundle attached to the
-// RUN_COMMAND_PENDING_INTENT we register. Documented at:
-// https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent
-private const val EXTRA_PENDING_INTENT = "com.termux.RUN_COMMAND_PENDING_INTENT"
-private const val EXTRA_RESULT_BUNDLE = "result"
-private const val RESULT_KEY_STDOUT = "stdout"
-private const val RESULT_KEY_STDERR = "stderr"
-private const val RESULT_KEY_EXIT_CODE = "exitCode"
-private const val RESULT_KEY_ERR = "err"
-private const val RESULT_KEY_ERRMSG = "errmsg"
+    fun setRunner(r: EmbeddedTermuxRunner) {
+        runner = r
+    }
 
-// DEFAULT_CAPTURE_TIMEOUT_MS, MAX_RETURNED_STDOUT, MAX_RETURNED_STDERR removed — read from
-// TermuxRuntime at call time so they reflect any user edits from Settings → Termux.
+    fun get(): EmbeddedTermuxRunner? = runner
+}
 
 /**
  * Termux installation + integration probe used by both the LLM tool and the toggle row in
  * the assistant tools page.
+ *
+ * After the embedded Termux migration, [state] checks the embedded bootstrap (not the
+ * external Termux APK). The [State] enum retains [NOT_INSTALLED], [NO_PERMISSION], and
+ * [READY] for compatibility with existing UI consumers.
  */
 internal object TermuxIntegration {
     enum class State { NOT_INSTALLED, NO_PERMISSION, READY }
@@ -56,7 +50,7 @@ internal object TermuxIntegration {
     /**
      * Process-scoped timestamp of the last successful end-to-end smoke test. The toggle row
      * in the assistant Local-tools page reads this so the green indicator persists across
-     * navigations within the session — without it the dot would reset to orange every time
+     * navigations within the session - without it the dot would reset to orange every time
      * the user left and re-entered the page. Resets on app restart, which is acceptable
      * since re-verifying is one tap.
      */
@@ -72,42 +66,33 @@ internal object TermuxIntegration {
         lastVerifiedOkAtMs = 0L
     }
 
+    /**
+     * Check whether the embedded Termux bootstrap is installed. [NO_PERMISSION] is never
+     * returned in the embedded model (the process inherits the app's own permissions), but
+     * the state is retained for callers that still branch on it.
+     */
     fun state(ctx: Context): State {
-        val pm = ctx.packageManager
-        val installed = try {
-            pm.getPackageInfo(TERMUX_PACKAGE, 0); true
-        } catch (_: Throwable) { false }
-        if (!installed) return State.NOT_INSTALLED
-        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
-            ctx, "com.termux.permission.RUN_COMMAND"
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (!granted) return State.NO_PERMISSION
-        return State.READY
+        val env = TermuxEnvironment(ctx)
+        return if (env.isInstalled()) State.READY else State.NOT_INSTALLED
     }
 
     /**
-     * Run a tiny `echo` smoke test through the Termux RUN_COMMAND service and wait for the
-     * result bundle. Returns true iff the bundle came back with our marker on stdout, which
-     * proves the entire chain works (manifest perm + runtime perm + allow-external-apps in
-     * termux.properties + Termux is allowed to start a background session).
+     * Run a tiny `echo` smoke test through the embedded runner and check the output.
+     * Returns true iff stdout contains our marker, proving the bootstrap bash works.
      */
     suspend fun verify(ctx: Context, timeoutMs: Long = TermuxRuntime.verifyTimeoutMs): VerifyResult {
-        val s = state(ctx)
-        if (s == State.NOT_INSTALLED) return VerifyResult.NotInstalled
-        if (s == State.NO_PERMISSION) return VerifyResult.NoPermission
-        val result = runCommandCapture(
-            ctx = ctx,
-            executable = "$TERMUX_BIN_DIR/bash",
-            arguments = arrayOf("-c", "echo RIKKAHUB_OK"),
-            workingDir = TERMUX_HOME_DIR,
+        val runner = EmbeddedRunnerHolder.get()
+            ?: return VerifyResult.OtherError("embedded termux runner not initialized")
+        if (!runner.isInstalled()) return VerifyResult.NotInstalled
+        val result = runner.runCommand(
+            command = "echo RIKKAHUB_OK",
             timeoutMs = timeoutMs,
+            wrapApt = false,
         )
-        return when (result) {
-            is CaptureResult.Success -> if (result.stdout.contains("RIKKAHUB_OK"))
-                VerifyResult.Ok else VerifyResult.UnexpectedOutput(result.stdout)
-            is CaptureResult.Timeout -> VerifyResult.AllowExternalAppsMissing
-            is CaptureResult.Denied -> VerifyResult.NoPermission
-            is CaptureResult.OtherError -> VerifyResult.OtherError(result.message)
+        return if (result.exitCode == 0 && result.stdout.contains("RIKKAHUB_OK")) {
+            VerifyResult.Ok
+        } else {
+            VerifyResult.OtherError("exit=${result.exitCode} stderr=${result.stderr}")
         }
     }
 
@@ -133,154 +118,91 @@ internal sealed class CaptureResult {
 }
 
 /**
- * Dispatch a Termux command and suspend until it completes (or times out), returning the
- * captured output. Implementation registers a one-shot BroadcastReceiver, hands a
- * PendingIntent for it to Termux, and waits on a CompletableDeferred until Termux fires
- * the broadcast back. Always uses background mode internally because the result-bundle
- * delivery path only fires for background commands.
+ * Convert a [TermuxResult] from the embedded runner into the legacy [CaptureResult] sealed
+ * type that [TranscribeAudioTool] pattern-matches on.
+ *
+ * - exitCode -1 with a timeout marker in stderr → [CaptureResult.Timeout]
+ * - exitCode 127 with an IO failure message → [CaptureResult.OtherError]
+ * - otherwise → [CaptureResult.Success]
+ */
+internal fun TermuxResult.toCaptureResult(): CaptureResult {
+    return if (exitCode == 0 || (exitCode != -1 && exitCode != 127)) {
+        CaptureResult.Success(stdout, stderr, exitCode)
+    } else if (stderr.contains("[command timed out")) {
+        CaptureResult.Timeout
+    } else {
+        CaptureResult.OtherError(stderr.ifBlank { "exit code $exitCode" })
+    }
+}
+
+/**
+ * Dispatch a command through the embedded Termux runner and suspend until it completes (or
+ * times out), returning the captured output as a [CaptureResult].
+ *
+ * This is the compatibility bridge for callers that still use the (executable, arguments,
+ * workingDir) tuple shape - currently [TranscribeAudioTool]. The executable is expected to be
+ * bash; the arguments array is joined into a single command string.
  */
 internal suspend fun runCommandCapture(
     ctx: Context,
     executable: String,
     arguments: Array<String>,
     workingDir: String,
-    // Default reads from the runtime holder so callers that don't pass a timeout get the
-    // user-configured value, not a stale compile-time constant.
     timeoutMs: Long = TermuxRuntime.commandTimeoutMs,
 ): CaptureResult {
-    // Mark Termux as freshly touched BEFORE we issue the broadcast. The notification
-    // listener uses this signal to suppress Termux's foreground-service notification
-    // updates (the "0 sessions, N tasks" pill) from auto-forwarding to Telegram while
-    // the agent is actively running shell commands. Without this, every internal
-    // runCommandCapture (whisper_status, transcribe_audio_file, etc.) makes Termux
-    // flap its notification and the listener forwards each flap to the user's chat.
-    // The touch here covers ALL callers of runCommandCapture, so individual tool
-    // factories don't have to remember to call it themselves.
-    me.rerere.rikkahub.data.ai.AgentTurnTracker.touchPackage(TERMUX_PACKAGE, "com.termux.api")
-    val resultDeferred = CompletableDeferred<Bundle>()
-    val resultAction = "${ctx.packageName}.TERMUX_RESULT_${UUID.randomUUID()}"
-    val receiver = object : BroadcastReceiver() {
-        override fun onReceive(c: Context, intent: Intent) {
-            // Termux's RunCommandService fires the PendingIntent *twice* in 0.118.x:
-            // - once almost immediately as a "started" / acknowledgement broadcast with
-            //   intent.extras == null
-            // - again when the command actually completes, this time with a "result" Bundle
-            //   containing stdout / stderr / exitCode.
-            // FLAG_ONE_SHOT used to consume the first empty fire and the real one was
-            // never delivered. Now we ignore empty broadcasts and only complete the
-            // deferred when we see a usable payload.
-            val keys = intent.extras?.keySet()?.joinToString(",")
-            val bundle = intent.getBundleExtra(EXTRA_RESULT_BUNDLE)
-            android.util.Log.i(
-                "RikkaTermux",
-                "broadcast: action=${intent.action} hasExtras=${intent.extras != null} extraKeys=[$keys] hasResultBundle=${bundle != null}",
-            )
-            if (bundle == null && intent.extras == null) return  // empty ack, wait for real fire
-            if (bundle != null) {
-                // Do NOT log stdout/stderr content: command output can carry secrets and
-                // lands in logcat in release builds. Log only non-sensitive metadata.
-                android.util.Log.i(
-                    "RikkaTermux",
-                    "result bundle keys=${bundle.keySet().joinToString(",")} exit=${bundle.getInt(RESULT_KEY_EXIT_CODE, -999)} err=${bundle.getInt(RESULT_KEY_ERR, -999)} errmsg='${bundle.getString(RESULT_KEY_ERRMSG, "<null>")}'",
-                )
-            }
-            // Some Termux variants put the keys directly on the broadcast intent rather than
-            // nested under "result". Support both shapes by falling back to flat extras.
-            val effective = bundle ?: intent.extras ?: Bundle()
-            if (resultDeferred.isActive) resultDeferred.complete(effective)
-        }
-    }
-    val filter = IntentFilter(resultAction)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-    } else {
-        @Suppress("UnspecifiedRegisterReceiverFlag")
-        ctx.registerReceiver(receiver, filter)
+    val runner = EmbeddedRunnerHolder.get()
+        ?: return CaptureResult.OtherError("embedded termux runner not initialized")
+
+    if (!runner.isInstalled()) {
+        return CaptureResult.OtherError("embedded termux bootstrap not installed")
     }
 
-    val pi = try {
-        val resultIntent = Intent(resultAction).setPackage(ctx.packageName)
-        PendingIntent.getBroadcast(
-            ctx,
-            resultAction.hashCode(),
-            resultIntent,
-            // Termux fires this PendingIntent twice (started ack + final result). Using
-            // FLAG_ONE_SHOT used to consume the ack and lose the real result; FLAG_MUTABLE
-            // lets Termux append its own extras to the intent it sends.
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-        )
-    } catch (t: Throwable) {
-        try { ctx.unregisterReceiver(receiver) } catch (_: Throwable) {}
-        return CaptureResult.OtherError("PendingIntent creation failed: ${t.message}")
-    }
-
-    val intent = Intent().apply {
-        setClassName(TERMUX_PACKAGE, TERMUX_RUN_COMMAND_SERVICE)
-        action = TERMUX_RUN_COMMAND_ACTION
-        putExtra("com.termux.RUN_COMMAND_PATH", executable)
-        putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arguments)
-        putExtra("com.termux.RUN_COMMAND_WORKDIR", workingDir)
-        putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
-        putExtra(EXTRA_PENDING_INTENT, pi)
-    }
-
-    return try {
-        ctx.startService(intent)
-        val bundle = withTimeoutOrNull(timeoutMs) { resultDeferred.await() }
-        if (bundle == null) {
-            CaptureResult.Timeout
+    // Build a single command string from the executable + arguments. Callers always use
+    // bash -c "<script>", so we reconstruct: <executable> <arg1> <arg2> ...
+    // The executable itself is bash, and the first arg is typically "-c" followed by the
+    // script. We pass the script directly to runCommand which already uses bash -lc.
+    val isBashLauncher = executable.endsWith("/bash") || executable.endsWith("/sh")
+    val command = if (isBashLauncher && arguments.isNotEmpty()) {
+        // arguments[0] is "-c" or "-lc", arguments[1] is the script
+        val scriptIndex = arguments.indexOfFirst { !it.startsWith("-") }
+        if (scriptIndex >= 0 && scriptIndex < arguments.size) {
+            arguments[scriptIndex]
         } else {
-            // Per the Termux RUN_COMMAND wiki: `err = -1` (= Activity.RESULT_OK) means
-            // "no internal error" — i.e. the success sentinel. Any value other than -1
-            // is an actual Termux internal failure (service start failed, manual exit,
-            // OS killed it, etc). Earlier revisions inverted this and rejected the
-            // success path because err=-1 != 0.
-            val errCode = bundle.getInt(RESULT_KEY_ERR, -1)
-            if (errCode != -1) {
-                val errMsg = bundle.getString(RESULT_KEY_ERRMSG).orEmpty()
-                if (errMsg.contains("PermissionDenied", ignoreCase = true) ||
-                    errMsg.contains("not allowed", ignoreCase = true)
-                ) {
-                    CaptureResult.Denied
-                } else {
-                    CaptureResult.OtherError("err=$errCode: $errMsg")
-                }
-            } else {
-                CaptureResult.Success(
-                    stdout = bundle.getString(RESULT_KEY_STDOUT).orEmpty(),
-                    stderr = bundle.getString(RESULT_KEY_STDERR).orEmpty(),
-                    exitCode = bundle.getInt(RESULT_KEY_EXIT_CODE, -1),
-                )
-            }
+            arguments.joinToString(" ")
         }
-    } catch (t: SecurityException) {
-        CaptureResult.Denied
-    } catch (t: Throwable) {
-        CaptureResult.OtherError(t.message ?: t::class.java.simpleName)
-    } finally {
-        try { ctx.unregisterReceiver(receiver) } catch (_: Throwable) {}
-        try { pi.cancel() } catch (_: Throwable) {}
+    } else {
+        listOf(executable, *arguments).joinToString(" ") { "'${it.replace("'", "'\\''")}'" }
     }
+
+    val result = runner.runCommand(
+        command = command,
+        workdir = workingDir.takeIf { java.io.File(it).isDirectory },
+        timeoutMs = timeoutMs,
+        wrapApt = false,
+    )
+    return result.toCaptureResult()
 }
 
 /**
  * LLM-callable termux command tool. Defaults to capture mode (background command, output
  * returned in the JSON envelope so the model can reason about it). Pass `interactive=true`
- * for the legacy "open visible Termux session" mode where the user sees output live but
- * the bot cannot read it.
+ * for the legacy "open visible session" mode - in the embedded model this runs the command
+ * in a foreground process; output is still captured (unlike the old external Termux path
+ * where the foreground session couldn't be read back).
  */
-fun termuxRunCommandTool(context: Context): Tool = Tool(
+fun termuxRunCommandTool(
+    @Suppress("UNUSED_PARAMETER") context: Context,
+    embeddedTermuxRunner: EmbeddedTermuxRunner,
+): Tool = Tool(
     name = "termux_run_command",
     description = """
-        Execute a shell command in Termux. By default the command runs in the background and
-        its stdout / stderr / exit_code are returned to you so you can reason on the output
-        (e.g. check if a package is installed, read a file, run a script). Pass
-        interactive=true to instead open a visible Termux session - useful when the user
-        explicitly wants to watch output live or when the command needs an interactive prompt;
-        in that mode no output is returned. Termux must have allow-external-apps=true set in
-        ~/.termux/termux.properties (one-time setup). In command mode, apt/apt-get are
-        automatically wrapped with DEBIAN_FRONTEND=noninteractive and safe dpkg defaults;
-        do not add extra -y flags unless the user specifically asked for unattended upgrades.
+        Execute a shell command in the embedded Termux environment. By default the command
+        runs in the background and its stdout / stderr / exit_code are returned to you so
+        you can reason on the output (e.g. check if a package is installed, read a file,
+        run a script). Pass interactive=true to run in a foreground process; output is still
+        captured. In command mode, apt/apt-get are automatically wrapped with
+        DEBIAN_FRONTEND=noninteractive and safe dpkg defaults; do not add extra -y flags
+        unless the user specifically asked for unattended upgrades.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -291,7 +213,7 @@ fun termuxRunCommandTool(context: Context): Tool = Tool(
                 })
                 put("executable", buildJsonObject {
                     put("type", "string")
-                    put("description", "Absolute path to executable, e.g. /data/data/com.termux/files/usr/bin/bash. Pairs with arguments[].")
+                    put("description", "Absolute path to executable, e.g. /data/data/excp.rikkahub/files/termux/usr/bin/bash. Pairs with arguments[].")
                 })
                 put("arguments", buildJsonObject {
                     put("type", "array")
@@ -300,15 +222,15 @@ fun termuxRunCommandTool(context: Context): Tool = Tool(
                 })
                 put("working_dir", buildJsonObject {
                     put("type", "string")
-                    put("description", "Working directory. Defaults to Termux home (/data/data/com.termux/files/home).")
+                    put("description", "Working directory. Defaults to the embedded Termux home.")
                 })
                 put("interactive", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "If true, opens a visible Termux session and does NOT capture output. Default false (background + capture).")
+                    put("description", "If true, runs in a foreground process. In the embedded model output is still captured. Default false.")
                 })
                 put("background", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Command mode only. If true, launch the command fully detached (nohup, streams redirected) and return immediately with its PID. Use for servers / long-running processes that would otherwise keep the capture pipe open and block until timeout. Default false.")
+                    put("description", "Command mode only. If true, launch the command fully detached (nohup, streams redirected) and return immediately with its PID. Use for servers / long-running processes that would otherwise block until timeout. Default false.")
                 })
                 put("timeout_seconds", buildJsonObject {
                     put("type", "integer")
@@ -322,6 +244,7 @@ fun termuxRunCommandTool(context: Context): Tool = Tool(
         val executable = input.jsonObject["executable"]?.jsonPrimitive?.contentOrNull
         val argumentsArr = input.jsonObject["arguments"]?.jsonArray
         val workingDir = input.jsonObject["working_dir"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() && java.io.File(it).isDirectory() }
             ?: TermuxRuntime.defaultWorkingDir
         val interactive = input.jsonObject["interactive"]?.jsonPrimitive?.contentOrNull
             ?.toBooleanStrictOrNull() ?: false
@@ -352,155 +275,126 @@ fun termuxRunCommandTool(context: Context): Tool = Tool(
             )
         }
 
-        // Pre-flight: Termux installed?
-        when (TermuxIntegration.state(context)) {
-            TermuxIntegration.State.NOT_INSTALLED -> {
-                return@Tool listOf(
-                    UIMessagePart.Text(
-                        buildJsonObject {
-                            put("error", "termux_not_installed")
-                            put("recovery", "Install Termux from the official GitHub releases page: https://github.com/termux/termux-app/releases . Do not use the Play Store or F-Droid build - those are unmaintained.")
-                        }.toString()
-                    )
+        // Pre-flight: embedded bootstrap installed?
+        if (!embeddedTermuxRunner.isInstalled()) {
+            return@Tool listOf(
+                UIMessagePart.Text(
+                    buildJsonObject {
+                        put("error", "termux_not_installed")
+                        put("recovery", "The embedded Termux bootstrap is not installed. It is downloaded automatically on app startup. Restart the app and wait a moment, then retry. If the issue persists, check your network connection.")
+                    }.toString()
                 )
-            }
-            TermuxIntegration.State.NO_PERMISSION -> {
-                return@Tool listOf(
-                    UIMessagePart.Text(
-                        buildJsonObject {
-                            put("error", "termux_permission_not_granted")
-                            put("recovery", "Toggle Termux on in Assistant -> Local tools so the runtime permission dialog appears, OR run: adb shell pm grant ${context.packageName} com.termux.permission.RUN_COMMAND")
-                        }.toString()
-                    )
-                )
-            }
-            TermuxIntegration.State.READY -> Unit  // proceed
+            )
         }
 
-        // Mark Termux + Termux:API as freshly touched by the agent so the notification
-        // listener stops forwarding their persistent foreground notifications ("0 sessions",
-        // "1 session", "2 sessions") to the user's Telegram chat for the duration of the
-        // turn plus a short grace window. The user knows the agent is running Termux work;
-        // they don't need a Telegram ping for every session counter flap.
-        AgentTurnTracker.touchPackage(TERMUX_PACKAGE, "com.termux.api")
+        // In the embedded model there is no external package to touch, so the
+        // AgentTurnTracker.touchPackage() call is no longer needed.
 
-        // Prepend a noninteractive preamble for `command` mode so apt/pkg upgrades don't
-        // hang waiting for "keep your existing config?" debconf prompts. Only applies to
-        // the bash -c path; raw executable+arguments callers get no wrapping.
-        // Gated on TermuxRuntime.aptWrapEnabled — user can disable from Settings → Termux.
-        val (resolvedExe, resolvedArgs) = if (rawCommand != null) {
-            // apt/dpkg noninteractive wrapping, gated on TermuxRuntime.aptWrapEnabled (user can
-            // disable from Settings -> Termux).
-            val preamble = if (TermuxRuntime.aptWrapEnabled) {
-                "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a; " +
-                    "apt(){ command apt -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' \"\$@\"; }; " +
-                    "apt-get(){ command apt-get -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' \"\$@\"; }; " +
-                    "export -f apt apt-get; "
-            } else ""
-            // background: detach so a long-running child doesn't keep the capture pipe open and
-            // stall the result bundle until timeout. Same inherited-fd hazard as the SSH exec
-            // channel; wrapDetachedCommand applies the identical nohup + redirect + echo-pid fix.
-            val body = if (background) wrapDetachedCommand(rawCommand) else rawCommand
-            "$TERMUX_BIN_DIR/bash" to arrayOf("-c", preamble + body)
-        } else {
-            val args = argumentsArr?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                ?.toTypedArray()
-                ?: emptyArray()
-            executable!! to args
+        if (rawCommand != null) {
+            // APT non-interactive wrapping is handled inside EmbeddedTermuxRunner when
+            // wrapApt=true (gated on TermuxRuntime.aptWrapEnabled). Background mode is also
+            // handled by the runner's runCommandBackground. Here we just pick the right path.
+            val (result, effectiveTimeoutMs) = if (background) {
+                embeddedTermuxRunner.runCommandBackground(
+                    command = rawCommand,
+                    workdir = workingDir,
+                ) to 10_000L
+            } else {
+                embeddedTermuxRunner.runCommand(
+                    command = rawCommand,
+                    workdir = workingDir,
+                    timeoutMs = timeoutMs,
+                    wrapApt = TermuxRuntime.aptWrapEnabled,
+                ) to timeoutMs
+            }
+            return@Tool listOf(UIMessagePart.Text(formatResult(result, "capture", effectiveTimeoutMs)))
         }
 
-        if (interactive) {
-            // Legacy fire-and-forget interactive session. Cannot read output back.
-            val intent = Intent().apply {
-                setClassName(TERMUX_PACKAGE, TERMUX_RUN_COMMAND_SERVICE)
-                action = TERMUX_RUN_COMMAND_ACTION
-                putExtra("com.termux.RUN_COMMAND_PATH", resolvedExe)
-                putExtra("com.termux.RUN_COMMAND_ARGUMENTS", resolvedArgs)
-                putExtra("com.termux.RUN_COMMAND_WORKDIR", workingDir)
-                putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
-                putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0")
-            }
-            return@Tool try {
-                context.startService(intent)
-                listOf(
-                    UIMessagePart.Text(
-                        buildJsonObject {
-                            put("success", true)
-                            put("mode", "interactive")
-                            put("note", "Opened a visible Termux session. Output is NOT captured by this tool. The user can see it directly.")
-                        }.toString()
-                    )
-                )
-            } catch (t: SecurityException) {
-                listOf(
-                    UIMessagePart.Text(
-                        buildJsonObject {
-                            put("error", "termux_permission_denied")
-                            put("recovery", "In Termux, run: mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties. Force-stop Termux and reopen, then retry.")
-                        }.toString()
-                    )
-                )
-            } catch (t: Throwable) {
-                listOf(
-                    UIMessagePart.Text(
-                        buildJsonObject {
-                            put("error", "dispatch_failed")
-                            put("reason", t.message ?: t::class.java.simpleName)
-                        }.toString()
-                    )
-                )
-            }
-        }
-
-        // Capture mode (default).
-        val payload = when (val res = runCommandCapture(
-            ctx = context,
-            executable = resolvedExe,
-            arguments = resolvedArgs,
-            workingDir = workingDir,
+        // executable + arguments mode: no wrapping, direct execution.
+        val args = argumentsArr?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?.toTypedArray()
+            ?: emptyArray()
+        // Reconstruct a command string for the runner.
+        val commandStr = listOf(executable!!, *args)
+            .joinToString(" ") { "'${it.replace("'", "'\\''")}'" }
+        val result = embeddedTermuxRunner.runCommand(
+            command = commandStr,
+            workdir = workingDir,
             timeoutMs = timeoutMs,
-        )) {
-            is CaptureResult.Success -> buildJsonObject {
-                put("success", true)
-                put("mode", "capture")
-                put("exit_code", res.exitCode)
-                val maxOut = TermuxRuntime.maxStdoutBytes
-                val maxErr = TermuxRuntime.maxStderrBytes
-                // maxStdoutBytes/maxStderrBytes are UTF-8 byte budgets. Measure and cut on bytes
-                // (boundary-aligned via takeFirstUtf8Bytes) so multibyte output isn't mis-sized
-                // and the "bytes more" count is honest rather than a char-count delta.
-                put(
-                    "stdout",
-                    res.stdout.let {
-                        val outBytes = it.toByteArray(Charsets.UTF_8).size
-                        if (outBytes > maxOut) takeFirstUtf8Bytes(it, maxOut) + "\n…[truncated; ${outBytes - maxOut} bytes more]" else it
-                    }
-                )
-                if (res.stderr.isNotBlank()) {
-                    put(
-                        "stderr",
-                        res.stderr.let {
-                            if (it.toByteArray(Charsets.UTF_8).size > maxErr) takeFirstUtf8Bytes(it, maxErr) + "\n…[truncated]" else it
-                        }
-                    )
-                }
-                if (res.exitCode != 0) {
-                    put("note", "Non-zero exit code; check stderr.")
-                }
-            }
-            is CaptureResult.Timeout -> buildJsonObject {
-                put("error", "timeout")
-                put("recovery", "Command did not return within ${timeoutMs / 1000}s. Either bump timeout_seconds or, if Termux gave no result at all, the user likely has not set allow-external-apps=true in ~/.termux/termux.properties (or did not restart Termux after editing it).")
-            }
-            is CaptureResult.Denied -> buildJsonObject {
-                put("error", "termux_permission_denied")
-                put("recovery", "Open Termux, then run: mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties. Force-stop Termux from app info and reopen it. Then retry.")
-            }
-            is CaptureResult.OtherError -> buildJsonObject {
-                put("error", "termux_run_failed")
-                put("reason", res.message)
-            }
-        }
-        listOf(UIMessagePart.Text(payload.toString()))
+            wrapApt = false,
+        )
+        // In interactive mode we still return the captured output (the embedded model can
+        // always read it back, unlike the old external Termux foreground session).
+        val mode = if (interactive) "interactive" else "capture"
+        listOf(UIMessagePart.Text(formatResult(result, mode, timeoutMs)))
     }
 )
+
+/**
+ * Format an [TermuxResult] into the JSON envelope the LLM expects.
+ */
+private fun formatResult(
+    result: TermuxResult,
+    mode: String,
+    timeoutMs: Long,
+): String {
+    val isTimeout = result.exitCode == -1 && result.stderr.contains("[command timed out")
+    val payload = if (isTimeout) {
+        buildJsonObject {
+            put("error", "timeout")
+            put("recovery", "Command did not return within ${timeoutMs / 1000}s. Increase timeout_seconds or check if the command is waiting for input.")
+        }
+    } else if (result.exitCode == 127 && result.stderr.contains("Failed to start")) {
+        buildJsonObject {
+            put("error", "termux_run_failed")
+            put("reason", result.stderr)
+        }
+    } else {
+        buildJsonObject {
+            put("success", result.exitCode == 0)
+            put("mode", mode)
+            put("exit_code", result.exitCode)
+            val maxOut = TermuxRuntime.maxStdoutBytes
+            val maxErr = TermuxRuntime.maxStderrBytes
+            put(
+                "stdout",
+                result.stdout.let {
+                    val outBytes = it.toByteArray(Charsets.UTF_8).size
+                    if (outBytes > maxOut) takeFirstUtf8Bytes(it, maxOut) + "\n…[truncated; ${outBytes - maxOut} bytes more]" else it
+                }
+            )
+            if (result.stderr.isNotBlank()) {
+                put(
+                    "stderr",
+                    result.stderr.let {
+                        if (it.toByteArray(Charsets.UTF_8).size > maxErr) takeFirstUtf8Bytes(it, maxErr) + "\n…[truncated]" else it
+                    }
+                )
+            }
+            if (result.exitCode != 0) {
+                put("note", "Non-zero exit code; check stderr.")
+            }
+        }
+    }
+    return payload.toString()
+}
+
+private fun takeFirstUtf8Bytes(value: String, maxBytes: Int): String {
+    if (maxBytes <= 0) return ""
+    if (value.toByteArray(Charsets.UTF_8).size <= maxBytes) return value
+    var bytes = 0
+    var index = 0
+    while (index < value.length) {
+        val codePoint = value.codePointAt(index)
+        val width = when {
+            codePoint < 0x80 -> 1
+            codePoint < 0x800 -> 2
+            codePoint < 0x10000 -> 3
+            else -> 4
+        }
+        if (bytes + width > maxBytes) break
+        bytes += width
+        index += Character.charCount(codePoint)
+    }
+    return value.substring(0, index)
+}

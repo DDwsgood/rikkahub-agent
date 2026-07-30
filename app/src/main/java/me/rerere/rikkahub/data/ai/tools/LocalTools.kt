@@ -374,7 +374,15 @@ class LocalTools(
     private val okHttpClient: okhttp3.OkHttpClient,
     // agent-keyboard IPC client — backs the keyboard_* tools (drives the active text field).
     private val keyboardApiClient: me.rerere.rikkahub.data.keyboard.KeyboardApiClient,
+    // Embedded Termux runner - backs the stateless termux_run_command tool.
+    private val embeddedTermuxRunner: me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner,
 ) {
+    init {
+        // Bridge the DI-provided runner into the process-scoped holder so legacy
+        // free functions (runCommandCapture, TranscribeAudioTool) can access it.
+        me.rerere.rikkahub.data.ai.tools.local.EmbeddedRunnerHolder.setRunner(embeddedTermuxRunner)
+    }
+
     val javascriptTool by lazy {
         Tool(
             name = "eval_javascript",
@@ -874,14 +882,7 @@ class LocalTools(
             tools.add(me.rerere.rikkahub.data.ai.tools.local.openUrlTool(context, invocationContext, interactiveToolStreamer))
         }
         if (options.contains(LocalToolOption.Termux)) {
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.termuxRunCommandTool(context))
-            // Persistent interactive (tmux-backed) sessions: ssh-with-prompts, sudo, REPLs,
-            // stateful shells. start is approval-gated; send is hardline-guarded per call.
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.termuxSessionStartTool(context))
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.termuxSessionSendTool(context))
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.termuxSessionReadTool(context))
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.termuxSessionKillTool(context))
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.termuxSessionListTool(context))
+            tools.add(me.rerere.rikkahub.data.ai.tools.local.termuxRunCommandTool(context, embeddedTermuxRunner))
             // transcribe_audio_file shells out to whisper-cli via Termux's RUN_COMMAND
             // service — it has a hard transitive dependency on Termux being present. No
             // separate toggle; it lives under the Termux toggle.
@@ -1054,8 +1055,23 @@ class LocalTools(
             tools.add(keyboardSetCursorTool(keyboardApiClient))
             tools.add(keyboardSelectRangeTool(keyboardApiClient))
         }
+        // Register all tools to ToolRegistry so search_tools can discover them by keyword
+        // or category. The schema lambda is invoked eagerly here (wrapped in runCatching so
+        // a factory that throws doesn't abort the whole registration pass).
+        tools.forEach { tool ->
+            ToolRegistry.register(
+                ToolRegistry.ToolEntry(
+                    name = tool.name,
+                    description = tool.description,
+                    category = categorizeTool(tool.name),
+                    schema = runCatching { tool.parameters() }.getOrNull(),
+                    needsApproval = ToolApprovalDefaults.requiresApproval(tool.name),
+                    source = ToolRegistry.ToolSource.LOCAL,
+                )
+            )
+        }
         // Centralised opt-in to needsApproval. Tool factories themselves don't have to know
-        // whether their op is destructive — ToolApprovalDefaults is the single source of
+        // whether their op is destructive - ToolApprovalDefaults is the single source of
         // truth, and the GenerationHandler / Telegram/in-app prompt path keys off needsApproval.
         return tools.map { t ->
             val withApproval = if (ToolApprovalDefaults.requiresApproval(t.name)) {
@@ -1066,4 +1082,76 @@ class LocalTools(
             addHumanErrorEnvelopes(appendTopToolExample(withApproval))
         }
     }
+}
+
+/**
+ * Maps a tool name to its search category for [ToolRegistry].
+ *
+ * Prefix-based matching covers tool families whose names share a common prefix
+ * (termux_*, ssh_*, telegram_*, etc.). Explicit set membership covers tools
+ * whose names don't follow a prefix convention (tap, swipe, read_file, …).
+ * Order matters: prefix checks run first, then exact-name sets.
+ */
+internal fun categorizeTool(name: String): String = when {
+    name.startsWith("termux_") || name.startsWith("ssh_") -> "shell"
+    name.startsWith("telegram_") -> "telegram"
+    name.startsWith("browser_") -> "browser"
+    name.startsWith("workflow_") -> "workflow"
+    name.startsWith("mcp_") -> "mcp"
+    name.startsWith("keyboard_") -> "keyboard"
+    name.startsWith("keystore_") -> "security"
+    name.startsWith("nfc_") -> "nfc"
+    name.startsWith("subagent_") -> "subagent"
+    name.startsWith("external_automation_") -> "automation"
+    name in setOf(
+        "list_recent_notifications", "list_active_notifications",
+        "dismiss_notification", "notification_action_click", "notification_reply",
+        "notification_status"
+    ) -> "notification"
+    name.startsWith("workspace_") -> "workspace"
+    name.startsWith("skill_") || name == "run_js" -> "skill"
+    name in setOf(
+        "tap", "long_press", "swipe", "scroll", "find_node", "click_node",
+        "set_text", "global_action", "wake_screen"
+    ) -> "screen"
+    name in setOf(
+        "play_media", "stop_media", "pause_media", "resume_media", "seek_media",
+        "get_media_status", "scan_media"
+    ) -> "media"
+    name in setOf(
+        "search_contacts", "list_contacts", "list_call_log", "list_sms_inbox",
+        "search_sms", "send_sms"
+    ) -> "phone"
+    name in setOf("take_photo", "record_audio", "speech_to_text", "verify_fingerprint") -> "camera"
+    name in setOf("launch_app", "list_installed_apps", "open_url") -> "app"
+    name in setOf(
+        "show_toast", "post_notification", "share", "set_torch", "vibrate",
+        "get_brightness", "set_brightness", "get_volume", "set_volume"
+    ) -> "device"
+    name in setOf(
+        "list_files", "read_file", "write_text_file", "write_binary_file",
+        "delete_file", "move_file", "copy_file", "create_directory", "file_info",
+        "find_files", "show_image", "open_file", "batch_copy", "batch_move", "batch_delete"
+    ) -> "file"
+    name in setOf(
+        "schedule_job", "list_jobs", "delete_job", "pause_job", "resume_job",
+        "trigger_job_now", "get_job_history"
+    ) -> "cron"
+    name in setOf("list_sensors", "read_sensor") -> "sensor"
+    name in setOf(
+        "list_storage_volumes", "list_granted_directories", "grant_directory_access"
+    ) -> "storage"
+    name in setOf("zip_files", "unzip_file", "list_zip_contents") -> "archive"
+    name in setOf("check_app_updates", "generate_bug_report", "check_token_usage") -> "config"
+    name in setOf(
+        "create_calendar_event", "create_contact", "send_email_intent",
+        "send_sms_intent", "open_wifi_settings", "show_location_on_map"
+    ) -> "intent"
+    name in setOf("download_file") -> "download"
+    name in setOf("get_location") -> "location"
+    name in setOf("get_telephony_info") -> "telephony"
+    name in setOf("set_wallpaper") -> "wallpaper"
+    name in setOf("transcribe_audio_file", "whisper_status") -> "shell"
+    name in setOf("take_screenshot", "read_window_tree") -> "screen"
+    else -> "misc"
 }

@@ -34,6 +34,7 @@ class SystemPromptBuilder {
             if (toolPrompts.isNotEmpty()) {
                 if (isNotEmpty()) appendLine()
                 appendLine("Tool cost guidance: prefer low-cost text tools before expensive visual or broad tools. Use read_window_tree/browser_get_text before screenshots when text is enough, and avoid repeating high-cost tools unless the state likely changed.")
+                appendLine("Tool discovery: you have access to many more tools than those listed in your current tool set. Use the search_tools function to find tools by keyword or category when you need a capability not currently available. The search results include each tool's parameter schema so you can call the tool immediately in your next action.")
                 toolPrompts.forEachIndexed { index, toolPrompt ->
                     if (index > 0) appendLine()
                     append(toolPrompt)

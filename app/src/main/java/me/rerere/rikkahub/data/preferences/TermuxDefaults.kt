@@ -28,7 +28,7 @@ object TermuxDefaults {
     const val MAX_VERIFY_TIMEOUT_MS     = 30_000L   // 30 s
 
     // --- Working directory -----------------------------------------------------------------
-    const val DEFAULT_WORKING_DIR = "/data/data/com.termux/files/home"
+    const val DEFAULT_WORKING_DIR = "/data/data/excp.rikkahub/files/termux/home"
 
     // --- Stdout / stderr capture caps (bytes) ----------------------------------------------
     const val DEFAULT_MAX_STDOUT =  8_000

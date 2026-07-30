@@ -4,6 +4,9 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import java.io.FileInputStream
 import java.util.Properties
 
+fun buildConfigString(value: String): String =
+    "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -27,6 +30,26 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
+
+        // Official Termux bootstraps are compiled for /data/data/com.termux and cannot be
+        // relocated into this app. Release builders must provide bootstraps compiled for the
+        // exact application id and files/termux/usr prefix. The URL may use {package} and
+        // {arch} placeholders.
+        buildConfigField(
+            "String",
+            "TERMUX_BOOTSTRAP_URL_TEMPLATE",
+            buildConfigString(providers.gradleProperty("termuxBootstrapUrlTemplate").orNull.orEmpty()),
+        )
+        buildConfigField(
+            "String",
+            "TERMUX_BOOTSTRAP_AARCH64_SHA256",
+            buildConfigString(providers.gradleProperty("termuxBootstrapAarch64Sha256").orNull.orEmpty()),
+        )
+        buildConfigField(
+            "String",
+            "TERMUX_BOOTSTRAP_X86_64_SHA256",
+            buildConfigString(providers.gradleProperty("termuxBootstrapX8664Sha256").orNull.orEmpty()),
+        )
     }
 
     splits {

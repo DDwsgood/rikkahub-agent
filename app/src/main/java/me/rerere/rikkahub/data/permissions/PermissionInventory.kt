@@ -172,8 +172,29 @@ object PermissionInventory {
             null
         }
 
+        // Special handling for the Termux RUN_COMMAND custom permission. The embedded
+        // terminal environment does not need this - it is kept only for backward
+        // compatibility with users who still have a standalone Termux installation.
+        // Group it with Services & Integrations rather than Runtime so it is visually
+        // separated from the app's own dangerous permissions.
+        if (perm == "com.termux.permission.RUN_COMMAND") {
+            val granted = ContextCompat.checkSelfPermission(context, perm) ==
+                PackageManager.PERMISSION_GRANTED
+            return Row(
+                id = perm,
+                label = labelOrHumanize(perm),
+                description = describeRuntime(perm),
+                status = if (granted) Status.GRANTED else Status.DENIED,
+                group = Group.ServicesAndIntegrations,
+                // No actionable grant flow from within the app: granting this custom
+                // permission requires the external Termux app to be installed and
+                // co-signed. Show None so the user is not sent to a dead-end dialog.
+                grant = GrantAction.None,
+            )
+        }
+
         if (info == null) {
-            // Unknown to this device — typically a custom perm declared by an app that isn't
+            // Unknown to this device - typically a custom perm declared by an app that isn't
             // installed (e.g. com.termux.permission.RUN_COMMAND when Termux isn't installed).
             // Best we can do is check checkSelfPermission and offer no grant flow.
             val granted = ContextCompat.checkSelfPermission(context, perm) ==
@@ -266,7 +287,7 @@ object PermissionInventory {
         Manifest.permission.READ_SMS to "SMS",
         Manifest.permission.SEND_SMS to "Send SMS",
         Manifest.permission.POST_NOTIFICATIONS to "Post notifications",
-        "com.termux.permission.RUN_COMMAND" to "Termux RUN_COMMAND",
+        "com.termux.permission.RUN_COMMAND" to "Termux terminal (external, legacy)",
     )
 
     private val DESCRIPTIONS = mapOf(
@@ -279,7 +300,8 @@ object PermissionInventory {
         Manifest.permission.READ_CALL_LOG to "Used by list_call_log.",
         Manifest.permission.READ_SMS to "Used by list_sms_inbox and search_sms.",
         Manifest.permission.SEND_SMS to "Used by send_sms to send text messages programmatically.",
-        "com.termux.permission.RUN_COMMAND" to "Lets RikkaHub start commands inside Termux for the termux_run_command tool.",
+        Manifest.permission.POST_NOTIFICATIONS to "Required so the bot foreground service and TTS / progress notifications can show.",
+        "com.termux.permission.RUN_COMMAND" to "Backward-compatible permission for the external Termux app. The embedded terminal environment does not require this - it runs in-process with the app's own permissions. Only needed if the user still has a standalone Termux installation and prefers the legacy RUN_COMMAND path.",
     )
 
     private fun labelOrHumanize(perm: String) = LABELS[perm] ?: humanize(perm)

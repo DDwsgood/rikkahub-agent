@@ -63,10 +63,14 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
+import me.rerere.rikkahub.data.ai.tools.ToolRegistry
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
+import me.rerere.rikkahub.data.ai.tools.toolSearchTool
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
@@ -810,6 +814,126 @@ class ChatService(
 
             // start generating
             val session = getOrCreateSession(conversationId)
+
+            val baseInvocationCtx = ToolInvocationContext(
+                callerAssistantId = assistant.id.toString(),
+                callerConversationId = conversationId.toString(),
+                isHeadless = me.rerere.rikkahub.data.ai.tools.HeadlessConversations
+                    .isHeadless(conversationId),
+                modelCanSeeImages = Modality.IMAGE in model.inputModalities,
+            )
+            val allLocalTools = localTools.getTools(assistant.localTools, baseInvocationCtx)
+
+            val availableMcpTools = mcpManager.getAllAvailableTools()
+            val invalidMcpNames = availableMcpTools
+                .map { it.second }
+                .distinct()
+                .filter { name ->
+                    name.isEmpty() || !name.all {
+                        it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9'
+                    }
+                }
+            if (invalidMcpNames.isNotEmpty()) {
+                addError(
+                    error = IllegalStateException(
+                        context.getString(
+                            R.string.error_mcp_invalid_server_name,
+                            invalidMcpNames.joinToString(", ")
+                        )
+                    ),
+                    conversationId = conversationId,
+                )
+                return
+            }
+
+            val mcpToolDefinitions = availableMcpTools.map { (serverId, serverName, tool) ->
+                val serverSlug = serverId.toString().take(8).replace("-", "")
+                val mcpToolName = "mcp__${serverSlug}_${serverName}__${tool.name}"
+                ToolRegistry.register(
+                    ToolRegistry.ToolEntry(
+                        name = mcpToolName,
+                        description = tool.description ?: "",
+                        category = "mcp",
+                        schema = tool.inputSchema,
+                        needsApproval = true,
+                        source = ToolRegistry.ToolSource.MCP,
+                    )
+                )
+                Tool(
+                    name = mcpToolName,
+                    description = tool.description ?: "",
+                    parameters = { tool.inputSchema },
+                    needsApproval = { true },
+                    execute = { args -> mcpManager.callTool(serverId, tool.name, args.jsonObject) },
+                )
+            }
+
+            // Keep discovery state local to this generation. A process-global discovered set
+            // would leak one assistant's enabled tools into another assistant.
+            val discoverableTools = (allLocalTools + mcpToolDefinitions).associateBy { it.name }
+            val discoveredToolNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+            val invocationCtx = baseInvocationCtx.copy(
+                dynamicToolsProvider = {
+                    discoveredToolNames.mapNotNull(discoverableTools::get)
+                },
+            )
+
+            // Build the tools list: only core tools + search_tools meta-tool are
+            // injected. Non-core tools and MCP tools live in ToolRegistry only.
+            val tools = buildList {
+                // ① Always inject the search_tools meta-tool first.
+                add(
+                    toolSearchTool(
+                        availableToolNames = discoverableTools.keys,
+                        onToolsDiscovered = discoveredToolNames::addAll,
+                    )
+                )
+
+                // ② Search tools (web search) - conditionally injected, unchanged.
+                if (settings.enableWebSearch) {
+                    addAll(createSearchTools(settings))
+                }
+
+                // ③ Core local tools - always injected to cover daily use.
+                val coreOptions = listOf(
+                    LocalToolOption.TimeInfo,
+                    LocalToolOption.AskUser,
+                    LocalToolOption.Clipboard,
+                    LocalToolOption.Tts,
+                    LocalToolOption.Battery,
+                    LocalToolOption.AudioInfo,
+                    LocalToolOption.WifiInfo,
+                    LocalToolOption.StorageInfo,
+                    LocalToolOption.JavascriptEngine,
+                )
+                val coreToolNames = localTools.getTools(
+                    assistant.localTools.filter { it in coreOptions },
+                    baseInvocationCtx,
+                ).mapTo(mutableSetOf()) { it.name }
+                addAll(allLocalTools.filter { it.name in coreToolNames })
+
+                // ④ Workspace tools - conditionally injected, unchanged.
+                addAll(
+                    createWorkspaceToolsIfReady(
+                        assistant.workspaceId?.toString(),
+                        conversation.workspaceCwd,
+                    )
+                )
+
+                // ⑤ Skill tools - conditionally injected, unchanged.
+                if (assistant.enabledSkills.isNotEmpty()) {
+                    addAll(
+                        createSkillTools(
+                            enabledSkills = assistant.enabledSkills,
+                            allSkills = skillManager.listSkills(),
+                            skillManager = skillManager,
+                        )
+                    )
+                }
+
+                // MCP tools are declared only after search_tools discovers them.
+            }
+
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -821,9 +945,9 @@ class ChatService(
                 systemAddendum = me.rerere.rikkahub.data.ai.tools
                     .ConversationSystemAddendum.get(conversationId),
                 isToolAutoApproved = { toolName ->
-                    // YOLO mode ("I AM STUPID" toggle in Settings → Tool approvals): every
+                    // YOLO mode ("I AM STUPID" toggle in Settings -> Tool approvals): every
                     // tool auto-approves. User opted into this explicitly. HARDLINE still
-                    // blocks rm -rf / et al — that check runs BEFORE auto-approval in
+                    // blocks rm -rf / et al - that check runs BEFORE auto-approval in
                     // GenerationHandler, so YOLO can't smuggle one through.
                     //
                     // Headless conversations (cron-driven) also auto-approve EVERY tool;
@@ -834,11 +958,11 @@ class ChatService(
                     // "Always Allow" (DataStore-backed, across the whole app). The
                     // Once-grant lives in the message itself as
                     // ToolApprovalState.Approved, so it's already handled by the regular
-                    // Pending → Approved transition.
+                    // Pending -> Approved transition.
                     //
                     // ask_user is a human-input request, NOT a permission gate. It must pause
                     // for the user whenever there's a surface to ask on (the in-app question card
-                    // or the Telegram clarify flow), so it ignores YOLO and the allow-lists —
+                    // or the Telegram clarify flow), so it ignores YOLO and the allow-lists -
                     // otherwise it auto-executes its placeholder body and returns
                     // ask_user_unavailable. In a headless run (cron / sub-agent) there's nobody to
                     // answer, so it still auto-approves there and falls through to that graceful
@@ -878,94 +1002,8 @@ class ChatService(
                     add(workspaceReminderTransformer)
                 },
                 outputTransformers = outputTransformers,
-                tools = buildList {
-                    if (settings.enableWebSearch) {
-                        addAll(createSearchTools(settings))
-                    }
-                    // Pass the caller context so context-aware tools (subagent_dispatch
-                    // recursion guard, workflow_create authoring-id) can read the
-                    // calling conversation + assistant. isHeadless is read from
-                    // HeadlessConversations — true iff this is a cron / sub-agent /
-                    // workflow / external-automation flow.
-                    val invocationCtx = me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
-                        callerAssistantId = assistant.id.toString(),
-                        callerConversationId = conversationId.toString(),
-                        isHeadless = me.rerere.rikkahub.data.ai.tools.HeadlessConversations
-                            .isHeadless(conversationId),
-                        // show_image keys its result envelope off this — a text-only model
-                        // gets told it cannot see the image instead of confabulating one.
-                        modelCanSeeImages = Modality.IMAGE in model.inputModalities,
-                    )
-                    addAll(localTools.getTools(assistant.localTools, invocationCtx))
-                    addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))
-                    if (assistant.enabledSkills.isNotEmpty()) {
-                        addAll(
-                            createSkillTools(
-                                enabledSkills = assistant.enabledSkills,
-                                allSkills = skillManager.listSkills(),
-                                skillManager = skillManager,
-                            )
-                        )
-                    }
-                    mcpManager.getAllAvailableTools().also { allTools ->
-                        // Upstream name validation: a server name that isn't pure
-                        // English+digits would produce an invalid `mcp__<name>__tool`
-                        // surface, so surface it as an error rather than emit a tool the
-                        // model can't address.
-                        val invalidNames = allTools
-                            .map { it.second }
-                            .distinct()
-                            .filter { name -> name.isEmpty() || !name.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' } }
-                        if (invalidNames.isNotEmpty()) {
-                            addError(
-                                error = IllegalStateException(
-                                    context.getString(
-                                        R.string.error_mcp_invalid_server_name,
-                                        invalidNames.joinToString(", ")
-                                    )
-                                ),
-                                conversationId = conversationId,
-                            )
-                            return
-                        }
-                    }.forEach { (serverId, serverName, tool) ->
-                        // Namespace MCP tools by a server-id slug so two enabled servers that
-                        // each expose a tool of the same name don't collide (which would 400 or
-                        // mis-route to whichever server registered last). Keep the `mcp__` prefix
-                        // intact: HardlineCommandGuard and ToolApprovalDefaults both branch on
-                        // `startsWith("mcp__")`. The slug is the first 8 hex chars of the id with
-                        // dashes stripped; the validated server name follows for human-readable
-                        // disambiguation, keeping the name within the 64-char /
-                        // ^[a-zA-Z0-9_-]+$ limit. The execute lambda below still calls callTool
-                        // with the REAL tool.name, since the namespacing exists only on the
-                        // model-facing surface.
-                        val serverSlug = serverId.toString().take(8).replace("-", "")
-                        val mcpToolName = "mcp__" + serverSlug + "_" + serverName + "__" + tool.name
-                        add(
-                            Tool(
-                                name = mcpToolName,
-                                description = tool.description ?: "",
-                                parameters = { tool.inputSchema },
-                                // MCP servers' tool surfaces are opaque to us — we can't
-                                // tell read from write or safe from destructive — so
-                                // every MCP call is approval-gated by default. The user
-                                // can grant Always-Allow per-tool to suppress prompts on
-                                // a known-safe MCP server. The HARDLINE floor still
-                                // applies via HardlineCommandGuard's `mcp__*` branch,
-                                // which scans every string arg for shell-content
-                                // patterns (rm -rf /, mkfs, shutdown, encoded payloads).
-                                needsApproval = {
-                                    me.rerere.rikkahub.data.ai.tools
-                                        .ToolApprovalDefaults.requiresApproval(mcpToolName) ||
-                                        tool.needsApproval
-                                },
-                                execute = {
-                                    mcpManager.callTool(serverId, tool.name, it.jsonObject)
-                                },
-                            )
-                        )
-                    }
-                },
+                tools = tools,
+                invocationContext = invocationCtx,
             ).onCompletion {
                 // 取消 Live Update 通知
                 cancelLiveUpdateNotification(conversationId)

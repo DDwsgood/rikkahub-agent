@@ -36,13 +36,15 @@ class TermuxPreferences(private val context: Context) {
 
     private val store = context.termuxDataStore
 
-    private val commandTimeoutKey = longPreferencesKey("command_timeout_ms")
-    private val turnBudgetKey     = longPreferencesKey("turn_budget_ms")
-    private val verifyTimeoutKey  = longPreferencesKey("verify_timeout_ms")
-    private val workingDirKey     = stringPreferencesKey("working_dir")
-    private val maxStdoutKey      = intPreferencesKey("max_stdout_bytes")
-    private val maxStderrKey      = intPreferencesKey("max_stderr_bytes")
-    private val aptWrapKey        = booleanPreferencesKey("apt_wrap_enabled")
+    private val commandTimeoutKey       = longPreferencesKey("command_timeout_ms")
+    private val turnBudgetKey           = longPreferencesKey("turn_budget_ms")
+    private val verifyTimeoutKey        = longPreferencesKey("verify_timeout_ms")
+    private val workingDirKey           = stringPreferencesKey("working_dir")
+    private val maxStdoutKey            = intPreferencesKey("max_stdout_bytes")
+    private val maxStderrKey            = intPreferencesKey("max_stderr_bytes")
+    private val aptWrapKey              = booleanPreferencesKey("apt_wrap_enabled")
+    private val embeddedInstalledKey    = booleanPreferencesKey("embedded_termux_installed")
+    private val embeddedVersionKey      = stringPreferencesKey("embedded_termux_version")
 
     init {
         // Seed the runtime holders SYNCHRONOUSLY from DataStore before starting the async
@@ -54,13 +56,15 @@ class TermuxPreferences(private val context: Context) {
         // latest Preferences instance after its first decode, so steady-state cost is
         // a flow .first() against an in-memory replay.
         val initial = snapshotBlocking()
-        TermuxRuntime.commandTimeoutMs   = initial.commandTimeoutMs
-        TermuxRuntime.verifyTimeoutMs    = initial.verifyTimeoutMs
-        TermuxRuntime.defaultWorkingDir  = initial.defaultWorkingDir
-        TermuxRuntime.maxStdoutBytes     = initial.maxStdoutBytes
-        TermuxRuntime.maxStderrBytes     = initial.maxStderrBytes
-        TermuxRuntime.aptWrapEnabled     = initial.aptWrapEnabled
-        ToolRuntimeLimits.turnBudgetMs   = initial.turnBudgetMs
+        TermuxRuntime.commandTimeoutMs      = initial.commandTimeoutMs
+        TermuxRuntime.verifyTimeoutMs       = initial.verifyTimeoutMs
+        TermuxRuntime.defaultWorkingDir     = initial.defaultWorkingDir
+        TermuxRuntime.maxStdoutBytes        = initial.maxStdoutBytes
+        TermuxRuntime.maxStderrBytes        = initial.maxStderrBytes
+        TermuxRuntime.aptWrapEnabled        = initial.aptWrapEnabled
+        TermuxRuntime.embeddedTermuxInstalled = initial.embeddedTermuxInstalled
+        TermuxRuntime.embeddedTermuxVersion   = initial.embeddedTermuxVersion
+        ToolRuntimeLimits.turnBudgetMs      = initial.turnBudgetMs
 
         // Async collectors keep the holders live on subsequent user edits. This scope is
         // intentionally NOT stored as a field — it is process-lived and we want it to stay
@@ -109,6 +113,18 @@ class TermuxPreferences(private val context: Context) {
                 .onEach { TermuxRuntime.aptWrapEnabled = it }
                 .collect {}
         }
+        scope.launch {
+            embeddedTermuxInstalledFlow()
+                .distinctUntilChanged()
+                .onEach { TermuxRuntime.embeddedTermuxInstalled = it }
+                .collect {}
+        }
+        scope.launch {
+            embeddedTermuxVersionFlow()
+                .distinctUntilChanged()
+                .onEach { TermuxRuntime.embeddedTermuxVersion = it }
+                .collect {}
+        }
     }
 
     // --- Flow accessors -------------------------------------------------------------------
@@ -153,6 +169,14 @@ class TermuxPreferences(private val context: Context) {
         prefs[aptWrapKey] ?: TermuxDefaults.DEFAULT_APT_WRAP_ENABLED
     }
 
+    fun embeddedTermuxInstalledFlow(): Flow<Boolean> = store.data.map { prefs ->
+        prefs[embeddedInstalledKey] ?: false
+    }
+
+    fun embeddedTermuxVersionFlow(): Flow<String?> = store.data.map { prefs ->
+        prefs[embeddedVersionKey]
+    }
+
     // --- Suspend writers (clamped before persist) -----------------------------------------
 
     suspend fun setCommandTimeoutMs(ms: Long) {
@@ -183,6 +207,20 @@ class TermuxPreferences(private val context: Context) {
         store.edit { it[aptWrapKey] = enabled }
     }
 
+    suspend fun setEmbeddedTermuxInstalled(installed: Boolean) {
+        store.edit { it[embeddedInstalledKey] = installed }
+    }
+
+    suspend fun setEmbeddedTermuxVersion(version: String?) {
+        store.edit {
+            if (version.isNullOrBlank()) {
+                it.remove(embeddedVersionKey)
+            } else {
+                it[embeddedVersionKey] = version
+            }
+        }
+    }
+
     /**
      * One-shot suspend snapshot for callers that need all fields at once (e.g. the VM's
      * combined state flow). Fields are clamped on read, same as the individual flow accessors.
@@ -190,13 +228,15 @@ class TermuxPreferences(private val context: Context) {
     suspend fun snapshot(): TermuxRuntimeConfig {
         val prefs = store.data.first()
         return TermuxRuntimeConfig(
-            commandTimeoutMs   = TermuxDefaults.clampCommandTimeoutMs(prefs[commandTimeoutKey] ?: TermuxDefaults.DEFAULT_COMMAND_TIMEOUT_MS),
-            turnBudgetMs       = TermuxDefaults.clampTurnBudgetMs(prefs[turnBudgetKey]         ?: TermuxDefaults.DEFAULT_TURN_BUDGET_MS),
-            verifyTimeoutMs    = TermuxDefaults.clampVerifyTimeoutMs(prefs[verifyTimeoutKey]    ?: TermuxDefaults.DEFAULT_VERIFY_TIMEOUT_MS),
-            defaultWorkingDir  = TermuxDefaults.clampWorkingDir(prefs[workingDirKey]            ?: TermuxDefaults.DEFAULT_WORKING_DIR),
-            maxStdoutBytes     = TermuxDefaults.clampMaxStdout(prefs[maxStdoutKey]              ?: TermuxDefaults.DEFAULT_MAX_STDOUT),
-            maxStderrBytes     = TermuxDefaults.clampMaxStderr(prefs[maxStderrKey]              ?: TermuxDefaults.DEFAULT_MAX_STDERR),
-            aptWrapEnabled     = prefs[aptWrapKey]                                              ?: TermuxDefaults.DEFAULT_APT_WRAP_ENABLED,
+            commandTimeoutMs        = TermuxDefaults.clampCommandTimeoutMs(prefs[commandTimeoutKey] ?: TermuxDefaults.DEFAULT_COMMAND_TIMEOUT_MS),
+            turnBudgetMs            = TermuxDefaults.clampTurnBudgetMs(prefs[turnBudgetKey]         ?: TermuxDefaults.DEFAULT_TURN_BUDGET_MS),
+            verifyTimeoutMs         = TermuxDefaults.clampVerifyTimeoutMs(prefs[verifyTimeoutKey]    ?: TermuxDefaults.DEFAULT_VERIFY_TIMEOUT_MS),
+            defaultWorkingDir       = TermuxDefaults.clampWorkingDir(prefs[workingDirKey]            ?: TermuxDefaults.DEFAULT_WORKING_DIR),
+            maxStdoutBytes          = TermuxDefaults.clampMaxStdout(prefs[maxStdoutKey]              ?: TermuxDefaults.DEFAULT_MAX_STDOUT),
+            maxStderrBytes          = TermuxDefaults.clampMaxStderr(prefs[maxStderrKey]              ?: TermuxDefaults.DEFAULT_MAX_STDERR),
+            aptWrapEnabled          = prefs[aptWrapKey]                                              ?: TermuxDefaults.DEFAULT_APT_WRAP_ENABLED,
+            embeddedTermuxInstalled = prefs[embeddedInstalledKey]                                    ?: false,
+            embeddedTermuxVersion   = prefs[embeddedVersionKey],
         )
     }
 
@@ -216,4 +256,6 @@ data class TermuxRuntimeConfig(
     val maxStdoutBytes: Int,
     val maxStderrBytes: Int,
     val aptWrapEnabled: Boolean,
+    val embeddedTermuxInstalled: Boolean = false,
+    val embeddedTermuxVersion: String? = null,
 )

@@ -44,6 +44,7 @@ import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.ai.tools.ToolRegistry
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
@@ -354,6 +355,7 @@ class McpManager(
         }
         val serverTools = client.listTools().tools
         Log.i(TAG, "sync: tools: $serverTools")
+        var syncedTools: List<McpTool> = emptyList()
         settingsStore.update { old ->
             old.copy(
                 mcpServers = old.mcpServers.map { serverConfig ->
@@ -400,6 +402,7 @@ class McpManager(
                     )
 
                     // 返回新的serverConfig，更新到settings store
+                    syncedTools = tools.toList()
                     serverConfig.clone(
                         commonOptions = common.copy(
                             tools = tools
@@ -409,7 +412,33 @@ class McpManager(
             )
         }
 
+        // 同步 ToolRegistry
+        syncToolRegistry(config, syncedTools)
+
         setStatus(config = config, status = McpStatus.Connected)
+    }
+
+    private fun syncToolRegistry(config: McpServerConfig, tools: List<McpTool>) {
+        val serverSlug = config.id.toString().take(8).replace("-", "")
+        val prefix = "mcp__${serverSlug}_${config.commonOptions.name}__"
+
+        // 移除该服务器所有已注册的工具
+        ToolRegistry.getAll()
+            .filter { it.source == ToolRegistry.ToolSource.MCP && it.name.startsWith(prefix) }
+            .forEach { ToolRegistry.unregister(it.name) }
+
+        // 注册当前工具
+        tools.forEach { tool ->
+            val mcpToolName = "mcp__${serverSlug}_${config.commonOptions.name}__${tool.name}"
+            ToolRegistry.register(ToolRegistry.ToolEntry(
+                name = mcpToolName,
+                description = tool.description ?: "",
+                category = "mcp",
+                schema = tool.inputSchema,
+                needsApproval = true,
+                source = ToolRegistry.ToolSource.MCP,
+            ))
+        }
     }
 
     suspend fun syncAll() = withContext(Dispatchers.IO) {
@@ -470,6 +499,12 @@ class McpManager(
             Log.i(TAG, "removeClient: ${entry.key} / ${entry.key.commonOptions.name}")
         }
         reconnectAttempts.remove(config.id)
+
+        // 清除该服务器的 ToolRegistry 注册
+        val serverSlug = config.id.toString().take(8).replace("-", "")
+        ToolRegistry.getAll()
+            .filter { it.source == ToolRegistry.ToolSource.MCP && it.name.contains(serverSlug) }
+            .forEach { ToolRegistry.unregister(it.name) }
     }
 
     // Close and drop any client entry whose key id matches, without touching reconnect state.

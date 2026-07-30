@@ -96,11 +96,25 @@ jobs:
         shell: bash
         working-directory: termux-packages
         run: |
-          set -o pipefail
+          set +e
           ./scripts/run-docker.sh ./scripts/build-bootstraps.sh \
             --architectures "${{ matrix.arch }}" \
             --no-build-unneeded-subpackages \
             2>&1 | tee "$GITHUB_WORKSPACE/build-${{ matrix.variant.name }}-${{ matrix.arch }}.log"
+          build_status=${PIPESTATUS[0]}
+          set -e
+          if ((build_status != 0)); then
+            # The pinned infra-improvs script can return 1 from its EXIT cleanup trap
+            # after it has successfully finalized the archive. Accept that known case
+            # only when both the archive and the explicit success marker exist.
+            if [[ -s "bootstrap-${{ matrix.arch }}.zip" ]] && \
+                grep -Fq "Finished successfully (bootstrap-${{ matrix.arch }}.zip)." \
+                  "$GITHUB_WORKSPACE/build-${{ matrix.variant.name }}-${{ matrix.arch }}.log"; then
+              echo "::warning::Builder returned $build_status after creating a successful archive; continuing to strict validation."
+            else
+              exit "$build_status"
+            fi
+          fi
 
       - name: Validate and describe artifact
         shell: bash

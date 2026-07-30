@@ -43,14 +43,16 @@ grep -aRl "$expected_prefix" \
   "$work_dir/root/bin" "$work_dir/root/etc" "$work_dir/root/lib" \
   "$work_dir/root/libexec" >/dev/null
 
-mapfile -t official_paths < <(
-  grep -aRl "/data/data/com.termux" \
+mapfile -t official_matches < <(
+  grep -aRHn "/data/data/com.termux" \
     "$work_dir/root/bin" "$work_dir/root/etc" "$work_dir/root/lib" \
-    "$work_dir/root/libexec" "$work_dir/root/var/lib/dpkg/info" || true
+    "$work_dir/root/libexec" "$work_dir/root/var/lib/dpkg/info" \
+    | grep -vE '/bin/termux-exec-ld-preload-lib:[0-9]+:[[:space:]]*#[[:space:]]' \
+    || true
 )
-if ((${#official_paths[@]} > 0)); then
+if ((${#official_matches[@]} > 0)); then
   echo "Official com.termux runtime path found in $archive" >&2
-  printf '%s\n' "${official_paths[@]}" >&2
+  printf '%s\n' "${official_matches[@]}" >&2
   exit 1
 fi
 

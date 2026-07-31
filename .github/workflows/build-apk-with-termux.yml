@@ -73,7 +73,7 @@ jobs:
           sdkmanager="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
           test -x "$sdkmanager"
           yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
-          "$sdkmanager" "platforms;android-37" "build-tools;37.0.0"
+          "$sdkmanager" --channel=3 "platforms;android-37.0" "build-tools;36.0.0"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2

@@ -111,6 +111,28 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
 
+internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
+    LocalToolOption.AskUser,
+    LocalToolOption.Files,
+    LocalToolOption.WebFetch,
+)
+
+internal const val TERMUX_RUN_COMMAND_TOOL_NAME = "termux_run_command"
+
+internal fun selectDirectLocalToolNames(
+    enabledOptions: Set<LocalToolOption>,
+    directOptionToolNames: Set<String>,
+    availableToolNames: Set<String>,
+): Set<String> = buildSet {
+    addAll(directOptionToolNames.intersect(availableToolNames))
+    if (
+        LocalToolOption.Termux in enabledOptions &&
+        TERMUX_RUN_COMMAND_TOOL_NAME in availableToolNames
+    ) {
+        add(TERMUX_RUN_COMMAND_TOOL_NAME)
+    }
+}
+
 internal fun backgroundTextGenerationParams(
     model: Model,
     reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,
@@ -920,22 +942,16 @@ class ChatService(
                     addAll(createSearchTools(settings))
                 }
 
-                // ③ Core local tools - always injected to cover daily use.
-                val coreOptions = listOf(
-                    LocalToolOption.TimeInfo,
-                    LocalToolOption.AskUser,
-                    LocalToolOption.Clipboard,
-                    LocalToolOption.Tts,
-                    LocalToolOption.Battery,
-                    LocalToolOption.AudioInfo,
-                    LocalToolOption.WifiInfo,
-                    LocalToolOption.StorageInfo,
-                    LocalToolOption.JavascriptEngine,
-                )
-                val coreToolNames = localTools.getTools(
-                    assistant.localTools.filter { it in coreOptions },
+                // ③ Direct local tools - basic file/web/user interaction plus command execution.
+                val directOptionToolNames = localTools.getTools(
+                    assistant.localTools.filter { it in DIRECT_LOCAL_TOOL_OPTIONS },
                     baseInvocationCtx,
                 ).mapTo(mutableSetOf()) { it.name }
+                val coreToolNames = selectDirectLocalToolNames(
+                    enabledOptions = assistant.localTools.toSet(),
+                    directOptionToolNames = directOptionToolNames,
+                    availableToolNames = discoverableTools.keys,
+                )
                 addAll(allLocalTools.filter { it.name in coreToolNames })
 
                 // ④ Workspace tools - conditionally injected, unchanged.

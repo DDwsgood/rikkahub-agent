@@ -134,6 +134,22 @@ enum class ChatErrorSolution {
     CheckTitleModelSettings,
 }
 
+/**
+ * Reconstruct tools discovered earlier in the current user turn. Approval pauses end the
+ * generation call, so the in-memory discovery set must be rebuilt when execution resumes.
+ */
+internal fun rehydrateDiscoveredToolNames(
+    messages: List<UIMessage>,
+    discoverableToolNames: Set<String>,
+): Set<String> {
+    val turnStart = messages.indexOfLast { it.role == MessageRole.USER }
+    return messages
+        .drop((turnStart + 1).coerceAtLeast(0))
+        .flatMap(UIMessage::getTools)
+        .map(UIMessagePart.Tool::toolName)
+        .filterTo(linkedSetOf()) { it in discoverableToolNames }
+}
+
 private val inputTransformers by lazy {
     listOf(
         TimeReminderTransformer,
@@ -814,6 +830,13 @@ class ChatService(
 
             // start generating
             val session = getOrCreateSession(conversationId)
+            val generationMessages = conversation.currentMessages.let {
+                if (messageRange != null) {
+                    it.subList(messageRange.start, messageRange.endInclusive + 1)
+                } else {
+                    it
+                }
+            }
 
             val baseInvocationCtx = ToolInvocationContext(
                 callerAssistantId = assistant.id.toString(),
@@ -872,6 +895,9 @@ class ChatService(
             // would leak one assistant's enabled tools into another assistant.
             val discoverableTools = (allLocalTools + mcpToolDefinitions).associateBy { it.name }
             val discoveredToolNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+            discoveredToolNames.addAll(
+                rehydrateDiscoveredToolNames(generationMessages, discoverableTools.keys)
+            )
             val invocationCtx = baseInvocationCtx.copy(
                 dynamicToolsProvider = {
                     discoveredToolNames.mapNotNull(discoverableTools::get)
@@ -979,13 +1005,7 @@ class ChatService(
                             toolApprovalPreferences.current().contains(toolName)
                     }
                 },
-                messages = conversation.currentMessages.let {
-                    if (messageRange != null) {
-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
-                    } else {
-                        it
-                    }
-                },
+                messages = generationMessages,
                 assistant = assistant,
                 conversationSystemPrompt = conversation.customSystemPrompt,
                 conversationModeInjectionIds = conversation.modeInjectionIds,

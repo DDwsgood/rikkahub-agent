@@ -1,14 +1,14 @@
 package me.rerere.rikkahub.data.termux
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import java.io.File
 
 /**
  * 内嵌 Termux 环境的常量与状态检测。
  *
- * 与 workspace (proot) 完全隔离：不使用 proot，直接以 app UID 运行。
- * 环境变量和路径约定复制自原生 Termux。
+ * 与 workspace rootfs 隔离，并使用原生 Termux 的环境变量和路径约定。
  */
 class TermuxEnvironment(private val context: Context) {
 
@@ -30,6 +30,16 @@ class TermuxEnvironment(private val context: Context) {
     /** $PREFIX/bin/bash */
     val bashPath: File = File(prefix, "bin/bash")
 
+    /** termux-exec variant appropriate for the platform's app-data execution policy. */
+    val termuxExecPreloadLibrary: File = File(
+        prefix,
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "lib/libtermux-exec-linker-ld-preload.so"
+        } else {
+            "lib/libtermux-exec-direct-ld-preload.so"
+        },
+    )
+
     /** staging 目录: {filesDir}/termux/usr-staging/ */
     val stagingDir: File = File(termuxRoot, "usr-staging")
 
@@ -37,7 +47,7 @@ class TermuxEnvironment(private val context: Context) {
      * 检测 bootstrap 是否已安装: $PREFIX/bin/bash 存在且可执行。
      */
     fun isInstalled(): Boolean = runCatching {
-        bashPath.exists() && bashPath.canExecute()
+        bashPath.exists() && bashPath.canExecute() && termuxExecPreloadLibrary.isFile
     }.getOrElse {
         Log.w(TAG, "isInstalled check failed", it)
         false
@@ -53,9 +63,17 @@ class TermuxEnvironment(private val context: Context) {
      */
     fun defaultEnvironment(): Map<String, String> = mapOf(
         "PREFIX" to prefix.absolutePath,
+        "TERMUX__PREFIX" to prefix.absolutePath,
         "HOME" to homeDir.absolutePath,
+        "TERMUX__HOME" to homeDir.absolutePath,
         "PATH" to "${prefix.absolutePath}/bin:${prefix.absolutePath}/bin/applets",
         "LD_LIBRARY_PATH" to "${prefix.absolutePath}/lib",
+        "LD_PRELOAD" to termuxExecPreloadLibrary.absolutePath,
+        "TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE" to "enable",
+        "TERMUX_APP__PACKAGE_NAME" to context.packageName,
+        "TERMUX_APP__DATA_DIR" to context.applicationInfo.dataDir,
+        "TERMUX_APP__LEGACY_DATA_DIR" to "/data/data/${context.packageName}",
+        "TERMUX__ROOTFS" to termuxRoot.absolutePath,
         "TMPDIR" to tmpDir.absolutePath,
         "LANG" to "en_US.UTF-8",
         "TERM" to "xterm-256color",
@@ -105,6 +123,7 @@ class TermuxEnvironment(private val context: Context) {
      */
     fun buildProcessEnv(): Map<String, String> {
         val systemEnv = System.getenv().toMap()
+        val systemPath = systemEnv["PATH"].orEmpty()
         val termuxEnv = loadEnvironment()
         val merged = systemEnv.toMutableMap()
         // termux 环境变量覆盖系统同名变量
@@ -112,7 +131,6 @@ class TermuxEnvironment(private val context: Context) {
         // 确保 PATH 包含 termux 的 bin 目录（优先放在前面）
         val termuxPath = termuxEnv["PATH"]
         if (termuxPath != null) {
-            val systemPath = merged["PATH"] ?: ""
             merged["PATH"] = if (systemPath.isBlank()) {
                 termuxPath
             } else {

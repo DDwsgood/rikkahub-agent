@@ -75,3 +75,9 @@ CI builds may instead place variant-specific archives at
 `app/src/<variant>/assets/termux/bootstrap-{arch}.zip`. The installer prefers a bundled
 archive and falls back to the configured URL only when the asset is absent. SHA-256 remains
 mandatory for bundled archives so the build cannot accidentally package the wrong variant.
+
+On Android 10 and newer, apps targeting API 29+ cannot directly `execve()` writable files
+under their app-data directory. RikkaHub therefore starts the bootstrap shell through
+`/system/bin/linker64` and preloads the bootstrap's
+`libtermux-exec-linker-ld-preload.so`; termux-exec applies the same system-linker routing to
+child commands. Android 8 and 9 use the direct termux-exec variant.

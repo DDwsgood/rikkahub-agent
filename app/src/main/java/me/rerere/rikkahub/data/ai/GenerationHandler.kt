@@ -385,6 +385,10 @@ class GenerationHandler(
                     if (none { it.name == dynamicTool.name }) add(dynamicTool)
                 }
             }
+            fun resolveTool(name: String): Tool? =
+                toolsInternal.find { it.name == name }
+                    ?: invocationContext?.dynamicToolsProvider?.invoke()
+                        ?.find { it.name == name }
 
             // Check if we have tool calls ready to continue after user interaction.
             val pendingTools = messages.lastOrNull()?.getTools()?.filter {
@@ -512,7 +516,7 @@ class GenerationHandler(
                 var hasPendingApproval = false
                 val updatedTools = ArrayList<UIMessagePart.Tool>(tools.size)
                 for (tool in tools) {
-                    val toolDef = toolsInternal.find { it.name == tool.toolName }
+                    val toolDef = resolveTool(tool.toolName)
                     // HARDLINE check: certain command patterns (rm -rf /, mkfs, shutdown,
                     // fork bomb, …) are blocked unconditionally — even "Always Allow"
                     // can't override. We check BEFORE the auto-approval lookup so a
@@ -759,7 +763,7 @@ class GenerationHandler(
                             return@forEach
                         }
                         runCatching {
-                            val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
+                            val toolDef = resolveTool(tool.toolName)
                                 ?: error("Tool ${tool.toolName} not found")
                             val args = parsedArgs.getOrThrow()
                             Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: ${redactSecrets(args)}")

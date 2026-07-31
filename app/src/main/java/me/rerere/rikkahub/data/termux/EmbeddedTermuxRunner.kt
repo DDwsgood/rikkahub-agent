@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.termux
 
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
@@ -12,7 +13,7 @@ import java.io.InputStream
 /**
  * 内嵌 Termux 命令执行引擎。
  * 替代外部 Termux 的 RunCommandService Intent 通信，
- * 直接在当前进程通过 ProcessBuilder 执行命令。
+ * 通过 Android system linker 启动 bootstrap shell，并由 termux-exec 处理子进程。
  */
 class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
 
@@ -28,6 +29,7 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
         private const val MAX_OUTPUT_CHARS = 128 * 1024
         // 进程超时后等待流读取线程退出的宽限时间
         private const val STREAM_JOIN_TIMEOUT_MS = 1_000L
+        private const val SYSTEM_LINKER_64 = "/system/bin/linker64"
     }
 
     /**
@@ -109,7 +111,16 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
      * 使用 bash login shell (-lc) 确保加载 profile 环境变量。
      */
     private fun buildProcess(command: String, workdir: String?): ProcessBuilder {
-        return ProcessBuilder(env.bashPath.absolutePath, "-lc", command).apply {
+        val launcher = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ forbids execve() of writable app-data files for targetSdk >= 29.
+            // The system linker is executable from /system and can load the signed APK's
+            // bundled bootstrap binary. LD_PRELOAD installs termux-exec so child commands
+            // under the same prefix are routed through the linker as well.
+            listOf(SYSTEM_LINKER_64, env.bashPath.absolutePath, "-lc", command)
+        } else {
+            listOf(env.bashPath.absolutePath, "-lc", command)
+        }
+        return ProcessBuilder(launcher).apply {
             directory(File(workdir ?: env.homeDir.absolutePath))
             environment().putAll(env.buildProcessEnv())
             redirectErrorStream(false)
@@ -139,6 +150,7 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
         val escaped = command.replace("'", "'\\''")
         return "nohup sh -c '$escaped' >/dev/null 2>&1 </dev/null & echo \"rikkahub_bg_pid=\$!\""
     }
+
 }
 
 /**

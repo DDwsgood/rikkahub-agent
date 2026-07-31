@@ -57,8 +57,8 @@ val appModule = module {
 
     // 内嵌 Termux
     single { me.rerere.rikkahub.data.termux.TermuxEnvironment(get()) }
-    single { me.rerere.rikkahub.data.termux.TermuxInstaller(get(), get()) }
-    single { me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner(get()) }
+    single { me.rerere.rikkahub.data.termux.TermuxInstaller(get(), get(), get()) }
+    single { me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner(get(), get()) }
     // Pass 3: Telegram-bound screenshot streamer for headless browser mode. Bound to the
     // [BrowserScreenshotStreamer] interface so [BrowserController.streamScreenshotIfHeadless]
     // can resolve it lazily via Koin without taking a constructor dep — avoids a cycle

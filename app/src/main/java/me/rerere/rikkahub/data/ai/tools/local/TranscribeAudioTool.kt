@@ -11,6 +11,7 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.BuildConfig
 import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -468,8 +469,8 @@ private fun errEnv(code: String, detail: String): List<UIMessagePart> =
 // the actual app filesDir. These replace the old external-Termux hardcoded paths.
 private val TERMUX_BIN_DIR: String
     get() = EmbeddedRunnerHolder.get()?.env?.prefix?.resolve("bin")?.absolutePath
-        ?: "/data/data/excp.rikkahub/files/termux/usr/bin"
+        ?: "/data/data/${BuildConfig.APPLICATION_ID}/files/termux/usr/bin"
 
 private val TERMUX_HOME_DIR: String
     get() = EmbeddedRunnerHolder.get()?.env?.homeDir?.absolutePath
-        ?: "/data/data/excp.rikkahub/files/termux/home"
+        ?: "/data/data/${BuildConfig.APPLICATION_ID}/files/termux/home"

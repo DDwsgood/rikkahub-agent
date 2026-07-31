@@ -5,6 +5,12 @@ import android.os.Build
 import android.util.Log
 import java.io.File
 
+internal fun matchesRequiredTermuxEnvironment(
+    values: Map<String, String>,
+    expected: Map<String, String>,
+): Boolean = listOf("PREFIX", "HOME", "LD_PRELOAD", "TERMUX_APP__PACKAGE_NAME")
+    .all { key -> values[key] == expected[key] }
+
 /**
  * 内嵌 Termux 环境的常量与状态检测。
  *
@@ -12,8 +18,12 @@ import java.io.File
  */
 class TermuxEnvironment(private val context: Context) {
 
-    /** 内嵌 Termux 根目录: {filesDir}/termux/ */
-    val termuxRoot: File = File(context.filesDir, "termux")
+    /**
+     * Embedded Termux root. Bootstrap binaries and scripts are compiled with this legacy
+     * primary-user path, so environment strings must match it exactly instead of mixing in
+     * Android's equivalent `/data/user/0` alias returned by Context.filesDir.
+     */
+    val termuxRoot: File = File("/data/data/${context.packageName}/files/termux")
 
     /** $PREFIX: {filesDir}/termux/usr */
     val prefix: File = File(termuxRoot, "usr")
@@ -30,6 +40,14 @@ class TermuxEnvironment(private val context: Context) {
     /** $PREFIX/bin/bash */
     val bashPath: File = File(prefix, "bin/bash")
 
+    val secondStageScript: File = File(
+        prefix,
+        "etc/termux/termux-bootstrap/second-stage/termux-bootstrap-second-stage.sh",
+    )
+
+    /** Written only after second-stage package configuration and a runtime smoke test pass. */
+    val installationMarker: File = File(prefix, ".rikkahub-bootstrap-complete")
+
     /** termux-exec variant appropriate for the platform's app-data execution policy. */
     val termuxExecPreloadLibrary: File = File(
         prefix,
@@ -43,11 +61,18 @@ class TermuxEnvironment(private val context: Context) {
     /** staging 目录: {filesDir}/termux/usr-staging/ */
     val stagingDir: File = File(termuxRoot, "usr-staging")
 
+    /** Rollback copy used only while atomically replacing an unrecoverable PREFIX. */
+    val prefixBackupDir: File = File(termuxRoot, "usr-backup")
+
     /**
      * 检测 bootstrap 是否已安装: $PREFIX/bin/bash 存在且可执行。
      */
     fun isInstalled(): Boolean = runCatching {
-        bashPath.exists() && bashPath.canExecute() && termuxExecPreloadLibrary.isFile
+        hasBootstrapCore() &&
+            homeDir.isDirectory &&
+            tmpDir.isDirectory &&
+            hasValidEnvironmentFile() &&
+            installationMarker.isFile
     }.getOrElse {
         Log.w(TAG, "isInstalled check failed", it)
         false
@@ -57,6 +82,31 @@ class TermuxEnvironment(private val context: Context) {
      * 是否需要安装 bootstrap。
      */
     fun needsBootstrap(): Boolean = !isInstalled()
+
+    /** Core files whose presence lets the installer repair an incomplete layout in place. */
+    fun hasBootstrapCore(): Boolean = runCatching {
+        bashPath.isFile &&
+            bashPath.canExecute() &&
+            termuxExecPreloadLibrary.isFile &&
+            secondStageScript.isFile
+    }.getOrDefault(false)
+
+    /** Reject stale env files left by another build variant or execution mode. */
+    fun hasValidEnvironmentFile(): Boolean = runCatching {
+        if (!envFile.isFile) return@runCatching false
+        val values = envFile.useLines { lines ->
+            lines.mapNotNull { rawLine ->
+                val line = rawLine.trim()
+                val separator = line.indexOf('=')
+                if (line.isEmpty() || line.startsWith("#") || separator <= 0) {
+                    null
+                } else {
+                    line.substring(0, separator).trim() to line.substring(separator + 1).trim()
+                }
+            }.toMap()
+        }
+        matchesRequiredTermuxEnvironment(values, defaultEnvironment())
+    }.getOrDefault(false)
 
     /**
      * 默认环境变量。路径使用绝对字符串，与原生 Termux 一致。
@@ -71,7 +121,7 @@ class TermuxEnvironment(private val context: Context) {
         "LD_PRELOAD" to termuxExecPreloadLibrary.absolutePath,
         "TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE" to "enable",
         "TERMUX_APP__PACKAGE_NAME" to context.packageName,
-        "TERMUX_APP__DATA_DIR" to context.applicationInfo.dataDir,
+        "TERMUX_APP__DATA_DIR" to "/data/data/${context.packageName}",
         "TERMUX_APP__LEGACY_DATA_DIR" to "/data/data/${context.packageName}",
         "TERMUX__ROOTFS" to termuxRoot.absolutePath,
         "TMPDIR" to tmpDir.absolutePath,

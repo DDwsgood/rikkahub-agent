@@ -26,13 +26,30 @@ unzip -t "$archive" >/dev/null
 mkdir "$work_dir/root"
 unzip -q "$archive" -d "$work_dir/root"
 test -f "$work_dir/root/SYMLINKS.txt"
-test -f "$work_dir/root/bin/bash"
+required_files=(
+  bin/bash
+  bin/pkg
+  etc/profile
+  etc/profile.d/01-termux-bootstrap-second-stage-fallback.sh
+  etc/termux/termux-bootstrap/second-stage/termux-bootstrap-second-stage.sh
+  lib/libtermux-exec-direct-ld-preload.so
+  lib/libtermux-exec-linker-ld-preload.so
+)
+for path in "${required_files[@]}"; do
+  test -s "$work_dir/root/$path"
+done
+test -d "$work_dir/root/tmp"
+grep -Fq 'dash←./bin/sh' "$work_dir/root/SYMLINKS.txt"
 
 machine=$(readelf -h "$work_dir/root/bin/bash" | awk -F: '/Machine:/ {gsub(/^[[:space:]]+/, "", $2); print $2}')
 case "$arch:$machine" in
   aarch64:AArch64|x86_64:Advanced\ Micro\ Devices\ X86-64) ;;
   *) echo "Unexpected ELF machine for $arch: $machine" >&2; exit 1 ;;
 esac
+
+interpreter=$(readelf -l "$work_dir/root/bin/bash" |
+  sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
+[[ "$interpreter" == "/system/bin/linker64" ]]
 
 runtime_paths=(bin etc lib libexec var/lib/dpkg/info)
 for path in "${runtime_paths[@]}"; do

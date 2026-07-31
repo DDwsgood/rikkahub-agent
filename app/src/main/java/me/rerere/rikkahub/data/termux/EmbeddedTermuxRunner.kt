@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.termux
 
 import android.os.Build
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
@@ -9,13 +10,17 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.util.concurrent.TimeUnit
 
 /**
  * 内嵌 Termux 命令执行引擎。
  * 替代外部 Termux 的 RunCommandService Intent 通信，
  * 通过 Android system linker 启动 bootstrap shell，并由 termux-exec 处理子进程。
  */
-class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
+class EmbeddedTermuxRunner(
+    val env: TermuxEnvironment,
+    private val installer: TermuxInstaller,
+) {
 
     /**
      * Check whether the embedded Termux bootstrap is installed and ready.
@@ -29,7 +34,11 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
         private const val MAX_OUTPUT_CHARS = 128 * 1024
         // 进程超时后等待流读取线程退出的宽限时间
         private const val STREAM_JOIN_TIMEOUT_MS = 1_000L
-        private const val SYSTEM_LINKER_64 = "/system/bin/linker64"
+        internal val SYSTEM_LINKER_64_CANDIDATES = listOf(
+            "/system/bin/linker64",
+            "/apex/com.android.runtime/bin/linker64",
+            "/system/bin/bootstrap/linker64",
+        )
     }
 
     /**
@@ -46,6 +55,15 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
         timeoutMs: Long = 60_000,
         wrapApt: Boolean = true,
     ): TermuxResult = withContext(Dispatchers.IO) {
+        val installFailure = installer.ensureInstalled().exceptionOrNull()
+        if (installFailure != null) {
+            Log.e(TAG, "Embedded Termux is not ready", installFailure)
+            return@withContext TermuxResult(
+                stdout = "",
+                stderr = "Failed to prepare embedded Termux: ${installFailure.message}",
+                exitCode = 127,
+            )
+        }
         val effectiveCommand = if (wrapApt) wrapAptNonInteractive(command) else command
         val process = try {
             buildProcess(effectiveCommand, workdir).start()
@@ -61,15 +79,20 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
         val stdoutCollector = StreamCollector(process.inputStream, MAX_OUTPUT_CHARS)
         val stderrCollector = StreamCollector(process.errorStream, MAX_OUTPUT_CHARS)
 
-        val finished = withTimeoutOrNull(timeoutMs) {
-            // runInterruptible 确保协程取消时中断阻塞的 waitFor 线程
-            runInterruptible { process.waitFor() }
+        val finished = try {
+            withTimeoutOrNull(timeoutMs) {
+                // runInterruptible 确保协程取消时中断阻塞的 waitFor 线程
+                runInterruptible { process.waitFor() }
+            }
+        } catch (e: CancellationException) {
+            terminateProcessTree(process)
+            throw e
         }
 
         if (finished == null) {
             // 超时: 杀掉进程, 回收读取线程
             Log.w(TAG, "Command timed out after ${timeoutMs}ms, killing process")
-            process.destroyForcibly()
+            terminateProcessTree(process)
             stdoutCollector.join(STREAM_JOIN_TIMEOUT_MS)
             stderrCollector.join(STREAM_JOIN_TIMEOUT_MS)
             return@withContext TermuxResult(
@@ -116,12 +139,18 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
             // The system linker is executable from /system and can load the signed APK's
             // bundled bootstrap binary. LD_PRELOAD installs termux-exec so child commands
             // under the same prefix are routed through the linker as well.
-            listOf(SYSTEM_LINKER_64, env.bashPath.absolutePath, "-lc", command)
+            val linker = findExecutableSystemLinker(SYSTEM_LINKER_64_CANDIDATES)
+                ?: throw IOException(
+                    "No executable 64-bit Android linker found at " +
+                        SYSTEM_LINKER_64_CANDIDATES.joinToString()
+                )
+            listOf(linker.absolutePath, env.bashPath.absolutePath, "-lc", command)
         } else {
             listOf(env.bashPath.absolutePath, "-lc", command)
         }
+        val effectiveWorkdir = resolveTermuxWorkingDirectory(workdir, env.homeDir)
         return ProcessBuilder(launcher).apply {
-            directory(File(workdir ?: env.homeDir.absolutePath))
+            directory(effectiveWorkdir)
             environment().putAll(env.buildProcessEnv())
             redirectErrorStream(false)
         }
@@ -151,6 +180,78 @@ class EmbeddedTermuxRunner(val env: TermuxEnvironment) {
         return "nohup sh -c '$escaped' >/dev/null 2>&1 </dev/null & echo \"rikkahub_bg_pid=\$!\""
     }
 
+}
+
+/**
+ * A saved working directory may point at another build variant (for example release instead
+ * of debug) or may have been deleted. Never pass such a path to ProcessBuilder: a failed chdir
+ * is reported as the misleading executable ENOENT seen for `/system/bin/linker64`.
+ */
+internal fun resolveTermuxWorkingDirectory(requested: String?, homeDir: File): File {
+    if (!homeDir.isDirectory && !homeDir.mkdirs()) {
+        throw IOException("Failed to create Termux home directory: ${homeDir.absolutePath}")
+    }
+    return requested
+        ?.takeIf(String::isNotBlank)
+        ?.let(::File)
+        ?.takeIf(File::isDirectory)
+        ?: homeDir
+}
+
+internal fun findExecutableSystemLinker(candidates: List<String>): File? = candidates
+    .asSequence()
+    .map(::File)
+    .firstOrNull { it.isFile && it.canExecute() }
+
+internal fun terminateProcessTree(process: Process, graceSeconds: Long = 5L) {
+    val rootPid = processPid(process)
+    val descendants = rootPid?.let(::collectDescendantPids).orEmpty()
+    descendants.asReversed().forEach { pid ->
+        runCatching { android.os.Process.killProcess(pid) }
+    }
+    process.destroyForcibly()
+    runCatching { process.waitFor(graceSeconds, TimeUnit.SECONDS) }
+    descendants.forEach { pid ->
+        runCatching { android.os.Process.killProcess(pid) }
+    }
+}
+
+private fun processPid(process: Process): Int? = runCatching {
+    val pidMethod = process.javaClass.methods.firstOrNull {
+        (it.name == "pid" || it.name == "getPid") && it.parameterCount == 0
+    }
+    (pidMethod?.invoke(process) as? Number)?.toInt() ?: run {
+        var type: Class<*>? = process.javaClass
+        var pid: Int? = null
+        while (type != null && pid == null) {
+            val currentType = type
+            val field = runCatching { currentType.getDeclaredField("pid") }.getOrNull()
+            if (field != null) {
+                field.isAccessible = true
+                pid = (field.get(process) as? Number)?.toInt()
+            }
+            type = currentType.superclass
+        }
+        pid
+    }
+}.getOrNull()
+
+private fun collectDescendantPids(rootPid: Int): List<Int> {
+    val result = mutableListOf<Int>()
+    fun visit(pid: Int) {
+        val children = runCatching {
+            File("/proc/$pid/task/$pid/children").readText()
+                .trim()
+                .split(Regex("\\s+"))
+                .mapNotNull(String::toIntOrNull)
+        }.getOrDefault(emptyList())
+        children.forEach { child ->
+            visit(child)
+            result += child
+        }
+    }
+    visit(rootPid)
+    return result.distinct()
 }
 
 /**

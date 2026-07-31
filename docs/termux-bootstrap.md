@@ -77,7 +77,18 @@ archive and falls back to the configured URL only when the asset is absent. SHA-
 mandatory for bundled archives so the build cannot accidentally package the wrong variant.
 
 On Android 10 and newer, apps targeting API 29+ cannot directly `execve()` writable files
-under their app-data directory. RikkaHub therefore starts the bootstrap shell through
-`/system/bin/linker64` and preloads the bootstrap's
+under their app-data directory. RikkaHub therefore starts the bootstrap shell through the
+first executable 64-bit Android linker at `/system/bin/linker64`,
+`/apex/com.android.runtime/bin/linker64`, or `/system/bin/bootstrap/linker64`, and preloads
+the bootstrap's
 `libtermux-exec-linker-ld-preload.so`; termux-exec applies the same system-linker routing to
 child commands. Android 8 and 9 use the direct termux-exec variant.
+
+Installation is serialized between app startup and tool calls. The installer creates HOME
+before publishing PREFIX, runs the mandatory bootstrap second stage, then checks `pkg`,
+`apt`, termux-exec child launching, and `dpkg --audit` before writing its readiness marker.
+An intact but incomplete installation is repaired in place: HOME, TMPDIR, and the app-managed
+environment file are restored without replacing PREFIX or HOME. Consequently packages,
+configuration, scripts, and projects survive app restarts and APK upgrades. A saved working
+directory that belongs to another build variant or no longer exists falls back to the current
+variant's persistent Termux HOME instead of being passed to `ProcessBuilder` as an invalid cwd.

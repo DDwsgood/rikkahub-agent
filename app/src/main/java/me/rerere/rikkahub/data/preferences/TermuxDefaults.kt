@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.preferences
 
+import me.rerere.rikkahub.BuildConfig
+
 /**
  * Authoritative defaults and clamp helpers for every Termux-configurable knob. Mirrors
  * [me.rerere.rikkahub.browser.BrowserToolDefaults] in shape — one object, constants +
@@ -28,7 +30,7 @@ object TermuxDefaults {
     const val MAX_VERIFY_TIMEOUT_MS     = 30_000L   // 30 s
 
     // --- Working directory -----------------------------------------------------------------
-    const val DEFAULT_WORKING_DIR = "/data/data/excp.rikkahub/files/termux/home"
+    val DEFAULT_WORKING_DIR = "/data/data/${BuildConfig.APPLICATION_ID}/files/termux/home"
 
     // --- Stdout / stderr capture caps (bytes) ----------------------------------------------
     const val DEFAULT_MAX_STDOUT =  8_000

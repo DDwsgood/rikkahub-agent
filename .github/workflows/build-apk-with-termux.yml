@@ -40,6 +40,15 @@ jobs:
           run-id: ${{ inputs.bootstrap_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Revalidate embedded bootstraps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash .github/termux-bootstrap/validate-bootstrap.sh \
+            debug aarch64 bootstrap-artifacts/aarch64
+          bash .github/termux-bootstrap/validate-bootstrap.sh \
+            debug x86_64 bootstrap-artifacts/x86_64
+
       - name: Prepare embedded bootstrap assets
         id: bootstraps
         shell: bash

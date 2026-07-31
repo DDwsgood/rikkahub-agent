@@ -7,8 +7,12 @@ import android.os.StatFs
 import android.system.Os
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.BuildConfig
+import me.rerere.rikkahub.data.preferences.TermuxPreferences
+import me.rerere.rikkahub.data.preferences.TermuxRuntime
 import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.File
@@ -17,7 +21,33 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
+
+internal enum class TermuxInstallAction {
+    NONE,
+    REPAIR,
+    INSTALL,
+}
+
+internal fun selectTermuxInstallAction(isInstalled: Boolean, hasBootstrapCore: Boolean): TermuxInstallAction =
+    when {
+        isInstalled -> TermuxInstallAction.NONE
+        hasBootstrapCore -> TermuxInstallAction.REPAIR
+        else -> TermuxInstallAction.INSTALL
+    }
+
+internal fun recoverInterruptedTermuxPrefix(prefix: File, backup: File, marker: File) {
+    if (!backup.exists()) return
+    if (marker.isFile) {
+        backup.deleteRecursively()
+        return
+    }
+    prefix.deleteRecursively()
+    if (!backup.renameTo(prefix)) {
+        throw IOException("Failed to recover previous Termux PREFIX after interrupted install")
+    }
+}
 
 /**
  * 从 Termux GitHub Release 下载 bootstrap 并解压安装。
@@ -39,14 +69,39 @@ import java.util.zip.ZipInputStream
 class TermuxInstaller(
     private val context: Context,
     private val environment: TermuxEnvironment,
+    private val preferences: TermuxPreferences,
 ) {
+    private val installMutex = Mutex()
+
+    /**
+     * Return an existing healthy installation, repair an incomplete runtime layout without
+     * touching installed packages, or perform a fresh bootstrap install. Concurrent startup
+     * and tool calls share this lock so commands never observe a half-installed prefix.
+     */
+    suspend fun ensureInstalled(): Result<Unit> {
+        val result = installMutex.withLock {
+            recoverInterruptedPrefixSwap()
+            when (selectTermuxInstallAction(environment.isInstalled(), environment.hasBootstrapCore())) {
+                TermuxInstallAction.NONE -> Result.success(Unit)
+                TermuxInstallAction.REPAIR -> repairExistingInstallation()
+                TermuxInstallAction.INSTALL -> installLocked()
+            }
+        }
+        val ready = result.isSuccess && environment.isInstalled()
+        TermuxRuntime.embeddedTermuxInstalled = ready
+        preferences.setEmbeddedTermuxInstalled(ready)
+        return result
+    }
 
     /**
      * 完整的安装流程。在 IO dispatcher 上执行。
      *
      * @return Result<Unit> 成功返回 Result.success(Unit)，失败返回 Result.failure
      */
-    suspend fun install(): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun install(): Result<Unit> = ensureInstalled()
+
+    private suspend fun installLocked(): Result<Unit> = withContext(Dispatchers.IO) {
+        var activatedFreshPrefix = false
         runCatching {
             val arch = detectArch()
             Log.i(TAG, "Installing bootstrap for arch=$arch")
@@ -54,9 +109,13 @@ class TermuxInstaller(
             val stagingDir = environment.stagingDir
             val prefixDir = environment.prefix
 
-            // 1. 清理可能残留的 staging 和 prefix 目录
+            // 1. 清理可能残留的 staging 目录，并先创建持久化 HOME。HOME 位于 PREFIX
+            // 外部，重新安装 bootstrap 时不会删除用户脚本、dotfiles 或项目。
             cleanupOnFailure()
             stagingDir.mkdirs()
+            ensureDirectory(environment.homeDir, "Termux home")
+            ensureDirectory(File(environment.homeDir, ".termux"), "Termux config directory")
+            runCatching { Os.chmod(environment.homeDir.absolutePath, 0b111_000_000) }
 
             // 2. 检查磁盘空间
             val availableBytes = getAvailableSpace(context.filesDir)
@@ -96,36 +155,171 @@ class TermuxInstaller(
 
             // 5-7. 解压 + 符号链接 + 权限
             extractBootstrap(zipFile, stagingDir)
+            ensureDirectory(File(stagingDir, "tmp"), "Termux temporary directory")
 
             // 8. 重命名 staging -> prefix
-            if (prefixDir.exists()) {
-                prefixDir.deleteRecursively()
+            val backupDir = environment.prefixBackupDir
+            if (backupDir.exists()) {
+                backupDir.deleteRecursively()
+            }
+            if (prefixDir.exists() && !prefixDir.renameTo(backupDir)) {
+                throw IOException("Failed to preserve existing PREFIX before replacement")
             }
             prefixDir.parentFile?.mkdirs()
             if (!stagingDir.renameTo(prefixDir)) {
+                if (backupDir.exists()) backupDir.renameTo(prefixDir)
                 throw IOException("Failed to move staging to prefix: ${stagingDir.absolutePath}")
             }
+            activatedFreshPrefix = true
             Log.i(TAG, "Bootstrap extracted to ${prefixDir.absolutePath}")
 
             // 9. 写入 termux.env
             writeEnvFile()
 
-            // 10. 创建 $HOME 目录
-            environment.homeDir.mkdirs()
-            File(environment.homeDir, ".termux").mkdirs()
-
             // 11. 创建 storage symlinks
             setupStorageSymlinks()
+
+            configureAndVerifyBootstrap()
+
+            if (!environment.isInstalled()) {
+                throw IOException("Bootstrap installation completed without a ready runtime layout")
+            }
 
             // 清理下载的 zip
             zipFile.delete()
 
             Log.i(TAG, "Bootstrap installation complete")
+            backupDir.deleteRecursively()
             Unit
         }.onFailure {
             Log.e(TAG, "Bootstrap installation failed", it)
             cleanupOnFailure()
+            if (activatedFreshPrefix && !environment.installationMarker.isFile) {
+                runCatching {
+                    environment.prefix.deleteRecursively()
+                    if (environment.prefixBackupDir.exists() &&
+                        !environment.prefixBackupDir.renameTo(environment.prefix)
+                    ) {
+                        throw IOException("Failed to restore previous PREFIX")
+                    }
+                }
+                    .onFailure { cleanupError ->
+                        Log.w(TAG, "Failed to roll back incomplete fresh PREFIX", cleanupError)
+                    }
+            }
         }
+    }
+
+    /** Repair directories/config around an intact PREFIX without replacing installed packages. */
+    private suspend fun repairExistingInstallation(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            ensureDirectory(environment.homeDir, "Termux home")
+            ensureDirectory(File(environment.homeDir, ".termux"), "Termux config directory")
+            ensureDirectory(environment.tmpDir, "Termux temporary directory")
+            runCatching { Os.chmod(environment.homeDir.absolutePath, 0b111_000_000) }
+            runCatching { Os.chmod(environment.tmpDir.absolutePath, 0b111_000_000) }
+            // This file is app-managed. Rewriting it migrates stale release/debug paths and
+            // old termux-exec variants while leaving PREFIX packages and HOME untouched.
+            writeEnvFile()
+            if (!File(environment.homeDir, "storage").isDirectory) {
+                setupStorageSymlinks()
+            }
+            if (!environment.installationMarker.isFile) {
+                configureAndVerifyBootstrap()
+            }
+            if (!environment.isInstalled()) {
+                throw IOException("Embedded Termux repair did not produce a ready runtime layout")
+            }
+            Log.i(TAG, "Repaired embedded Termux runtime without replacing PREFIX or HOME")
+            Unit
+        }.onFailure {
+            Log.e(TAG, "Embedded Termux runtime repair failed", it)
+        }
+    }
+
+    private fun ensureDirectory(directory: File, label: String) {
+        if (!directory.isDirectory && !directory.mkdirs()) {
+            throw IOException("Failed to create $label: ${directory.absolutePath}")
+        }
+    }
+
+    /** Recover an app/process death between PREFIX backup and verified activation. */
+    private fun recoverInterruptedPrefixSwap() {
+        recoverInterruptedTermuxPrefix(
+            prefix = environment.prefix,
+            backup = environment.prefixBackupDir,
+            marker = environment.installationMarker,
+        )
+    }
+
+    /**
+     * Run the bootstrap's mandatory package post-install stage once, then prove that the shell,
+     * termux-exec child launching, and dpkg database are usable before declaring readiness.
+     */
+    private fun configureAndVerifyBootstrap() {
+        if (!environment.secondStageScript.isFile) {
+            throw IOException("Missing Termux bootstrap second-stage script")
+        }
+        runBootstrapProcess(
+            arguments = listOf(environment.bashPath.absolutePath, environment.secondStageScript.absolutePath),
+            label = "bootstrap second stage",
+            timeoutSeconds = BOOTSTRAP_CONFIG_TIMEOUT_SECONDS,
+        )
+        val smokeOutput = runBootstrapProcess(
+            arguments = listOf(
+                environment.bashPath.absolutePath,
+                "--noprofile",
+                "--norc",
+                "-c",
+                "command -v pkg >/dev/null && command -v apt >/dev/null && " +
+                    "audit=\$(dpkg --audit) && test -z \"\$audit\" || " +
+                    "{ printf '%s\\n' \"\$audit\"; exit 1; }; " +
+                    "printf 'rikkahub-termux-ok'",
+            ),
+            label = "runtime smoke test",
+            timeoutSeconds = RUNTIME_SMOKE_TIMEOUT_SECONDS,
+        )
+        if (!smokeOutput.contains("rikkahub-termux-ok")) {
+            throw IOException("Termux runtime smoke test did not produce its success marker")
+        }
+        environment.installationMarker.writeText("ready\n")
+    }
+
+    private fun runBootstrapProcess(
+        arguments: List<String>,
+        label: String,
+        timeoutSeconds: Long,
+    ): String {
+        val launcher = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val linker = findExecutableSystemLinker(EmbeddedTermuxRunner.SYSTEM_LINKER_64_CANDIDATES)
+                ?: throw IOException(
+                    "No executable 64-bit Android linker found at " +
+                        EmbeddedTermuxRunner.SYSTEM_LINKER_64_CANDIDATES.joinToString()
+                )
+            listOf(linker.absolutePath) + arguments
+        } else {
+            arguments
+        }
+        val outputFile = File(context.cacheDir, "termux-${label.replace(' ', '-')}.log")
+        val process = ProcessBuilder(launcher).apply {
+            directory(resolveTermuxWorkingDirectory(null, environment.homeDir))
+            environment().putAll(environment.buildProcessEnv())
+            redirectErrorStream(true)
+            redirectOutput(outputFile)
+        }.start()
+        if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+            terminateProcessTree(process, PROCESS_TREE_SHUTDOWN_SECONDS)
+            throw IOException("Termux $label timed out after ${timeoutSeconds}s")
+        }
+        val output = runCatching { outputFile.readText().takeLast(MAX_BOOTSTRAP_LOG_CHARS) }
+            .getOrDefault("")
+        outputFile.delete()
+        if (process.exitValue() != 0) {
+            throw IOException(
+                "Termux $label failed with exit ${process.exitValue()}: ${output.ifBlank { "no output" }}"
+            )
+        }
+        return output
     }
 
     /**
@@ -434,6 +628,10 @@ class TermuxInstaller(
         private const val RETRY_BASE_DELAY_MS = 2_000L
         private const val MIN_DISK_SPACE_BYTES = 500L * 1024 * 1024 // 500MB
         private const val MB = 1024 * 1024
+        private const val BOOTSTRAP_CONFIG_TIMEOUT_SECONDS = 300L
+        private const val RUNTIME_SMOKE_TIMEOUT_SECONDS = 30L
+        private const val PROCESS_TREE_SHUTDOWN_SECONDS = 5L
+        private const val MAX_BOOTSTRAP_LOG_CHARS = 16 * 1024
 
         /**
          * 获取指定路径所在分区的可用空间（字节）。

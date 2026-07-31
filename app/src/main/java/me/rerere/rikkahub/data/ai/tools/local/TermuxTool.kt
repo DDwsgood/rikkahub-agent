@@ -153,10 +153,6 @@ internal suspend fun runCommandCapture(
     val runner = EmbeddedRunnerHolder.get()
         ?: return CaptureResult.OtherError("embedded termux runner not initialized")
 
-    if (!runner.isInstalled()) {
-        return CaptureResult.OtherError("embedded termux bootstrap not installed")
-    }
-
     // Build a single command string from the executable + arguments. Callers always use
     // bash -c "<script>", so we reconstruct: <executable> <arg1> <arg2> ...
     // The executable itself is bash, and the first arg is typically "-c" followed by the
@@ -213,7 +209,7 @@ fun termuxRunCommandTool(
                 })
                 put("executable", buildJsonObject {
                     put("type", "string")
-                    put("description", "Absolute path to executable, e.g. /data/data/excp.rikkahub/files/termux/usr/bin/bash. Pairs with arguments[].")
+                    put("description", "Absolute path to executable, e.g. ${embeddedTermuxRunner.env.bashPath.absolutePath}. Pairs with arguments[].")
                 })
                 put("arguments", buildJsonObject {
                     put("type", "array")
@@ -275,20 +271,8 @@ fun termuxRunCommandTool(
             )
         }
 
-        // Pre-flight: embedded bootstrap installed?
-        if (!embeddedTermuxRunner.isInstalled()) {
-            return@Tool listOf(
-                UIMessagePart.Text(
-                    buildJsonObject {
-                        put("error", "termux_not_installed")
-                        put("recovery", "The embedded Termux bootstrap is not installed. It is downloaded automatically on app startup. Restart the app and wait a moment, then retry. If the issue persists, check your network connection.")
-                    }.toString()
-                )
-            )
-        }
-
-        // In the embedded model there is no external package to touch, so the
-        // AgentTurnTracker.touchPackage() call is no longer needed.
+        // The runner serializes first-use installation/repair with app startup. This avoids
+        // rejecting a command while the bundled bootstrap is still being extracted.
 
         if (rawCommand != null) {
             // APT non-interactive wrapping is handled inside EmbeddedTermuxRunner when

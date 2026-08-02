@@ -8,10 +8,16 @@ import java.time.ZoneId
 
 class CatchupPlannerTest {
 
-    private fun job(catchup: String, cron: String = "0 * * * *") = ScheduledJobEntity(
+    private fun job(
+        catchup: String,
+        cron: String = "0 * * * *",
+        startAtUnixMs: Long? = null,
+        endAtUnixMs: Long? = null,
+    ) = ScheduledJobEntity(
         id = "j", name = "n", prompt = "p", assistantId = "a",
         scheduleType = "cron", cronExpression = cron, timezone = "UTC",
         catchup = catchup, createdAtMs = 0L,
+        startAtUnixMs = startAtUnixMs, endAtUnixMs = endAtUnixMs,
     )
 
     private fun onceJob(atUnixMs: Long, lastRunAtMs: Long? = null) = ScheduledJobEntity(
@@ -31,6 +37,7 @@ class CatchupPlannerTest {
             nowMs = ms(1, 13)         // now June 1 13:00 → 5 missed: 9,10,11,12,13
         )
         assertEquals(0, plan.fireDelaysMs.size)
+        assertEquals(emptyList<Long>(), plan.fireSlotsMs)
         assertEquals(5, plan.skippedCatchupCount)
     }
 
@@ -42,6 +49,7 @@ class CatchupPlannerTest {
             nowMs = ms(1, 12),        // no time elapsed
         )
         assertEquals(0, plan.fireDelaysMs.size)
+        assertEquals(emptyList<Long>(), plan.fireSlotsMs)
         assertEquals(0, plan.skippedCatchupCount)
     }
 
@@ -53,6 +61,7 @@ class CatchupPlannerTest {
             nowMs = ms(1, 13),
         )
         assertEquals(listOf(0L), plan.fireDelaysMs)
+        assertEquals(listOf(ms(1, 13)), plan.fireSlotsMs)
         assertEquals(4, plan.skippedCatchupCount)
     }
 
@@ -64,6 +73,7 @@ class CatchupPlannerTest {
             nowMs = ms(1, 11),        // 3 missed: 9, 10, 11
         )
         assertEquals(listOf(0L, 2_000L, 4_000L), plan.fireDelaysMs)
+        assertEquals(listOf(ms(1, 9), ms(1, 10), ms(1, 11)), plan.fireSlotsMs)
         assertEquals(0, plan.skippedCatchupCount)
     }
 
@@ -75,7 +85,38 @@ class CatchupPlannerTest {
             nowMs = ms(2, 1),         // 25 missed: hours 1..25
         )
         assertEquals(20, plan.fireDelaysMs.size)
+        assertEquals(ms(1, 6), plan.fireSlotsMs.first())
+        assertEquals(ms(2, 1), plan.fireSlotsMs.last())
         assertEquals(5, plan.skippedCatchupCount)
+    }
+
+    @Test
+    fun `catchup excludes slots before start bound and includes slot at bound`() {
+        val plan = CatchupPlanner.plan(
+            job = job("fire_all", startAtUnixMs = ms(1, 10)),
+            lastRunMs = ms(1, 8),
+            nowMs = ms(1, 13),
+        )
+        assertEquals(
+            listOf(ms(1, 10), ms(1, 11), ms(1, 12), ms(1, 13)),
+            plan.fireSlotsMs,
+        )
+        assertEquals(0, plan.skippedCatchupCount)
+    }
+
+    @Test
+    fun `catchup excludes slots after inclusive end bound`() {
+        val plan = CatchupPlanner.plan(
+            job = job(
+                catchup = "fire_all",
+                startAtUnixMs = ms(1, 10),
+                endAtUnixMs = ms(1, 12),
+            ),
+            lastRunMs = ms(1, 8),
+            nowMs = ms(1, 14),
+        )
+        assertEquals(listOf(ms(1, 10), ms(1, 11), ms(1, 12)), plan.fireSlotsMs)
+        assertEquals(0, plan.skippedCatchupCount)
     }
 
     @Test
@@ -88,6 +129,7 @@ class CatchupPlannerTest {
             nowMs = nowMs,
         )
         assertEquals(listOf(0L), plan.fireDelaysMs)
+        assertEquals(listOf(atMs), plan.fireSlotsMs)
         assertEquals(0, plan.skippedCatchupCount)
     }
 

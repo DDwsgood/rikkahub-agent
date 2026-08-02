@@ -41,6 +41,12 @@ class ScheduledJobsViewModel(
         }
     }
 
+    fun reconcileSchedules() {
+        viewModelScope.launch(Dispatchers.IO) {
+            scheduler.reconcileAllEnabled()
+        }
+    }
+
     fun delete(id: String, onDone: () -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
             scheduler.cancel(id)

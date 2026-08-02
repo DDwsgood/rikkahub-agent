@@ -46,4 +46,6 @@ data class ScheduledJobEntity(
     val catchup: String = "fire_once",              // "skip" | "fire_once" | "fire_all"
     val description: String? = null,                // optional, ≤500 chars
     val tags: String? = null,                       // optional comma-joined ids
+    @ColumnInfo(defaultValue = "'flexible'")
+    val schedulePrecision: String = "flexible",    // "flexible" | "exact"
 )

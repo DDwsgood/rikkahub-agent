@@ -28,6 +28,7 @@ import me.rerere.rikkahub.data.repository.ScheduledJobRunRepository
 import me.rerere.rikkahub.service.CronExpressionParser
 import me.rerere.rikkahub.service.CronJobScheduler
 import java.time.ZoneId
+import java.time.Instant
 
 private fun textPart(s: String) = listOf(UIMessagePart.Text(s))
 private fun errEnvelope(code: String, detail: String, extra: JsonObject? = null): String =
@@ -56,6 +57,18 @@ object ScheduleJobValidator {
         val scheduleType = (input["schedule_type"] as? JsonPrimitive)?.contentOrNull
         if (scheduleType != "once" && scheduleType != "cron")
             return ValidationError("bad_schedule_type", "schedule_type must be 'once' or 'cron'")
+
+        val schedulePrecision = (input["schedule_precision"] as? JsonPrimitive)?.contentOrNull
+            ?: CronJobScheduler.PRECISION_FLEXIBLE
+        if (schedulePrecision !in setOf(
+                CronJobScheduler.PRECISION_FLEXIBLE,
+                CronJobScheduler.PRECISION_EXACT,
+            )) {
+            return ValidationError(
+                "bad_schedule_precision",
+                "schedule_precision must be 'flexible' or 'exact'",
+            )
+        }
 
         // Mode-specific
         val prompt = (input["prompt"] as? JsonPrimitive)?.contentOrNull
@@ -126,6 +139,29 @@ object ScheduleJobValidator {
         if (!tz.isNullOrBlank() && runCatching { ZoneId.of(tz) }.isFailure)
             return ValidationError("bad_timezone", "unknown IANA zone: '$tz'")
 
+        // Exact wakeups are intentionally restricted to low-frequency, user-visible
+        // schedules. Android throttles while-idle alarms and frequent wakeups are hostile
+        // to battery life on both AOSP and OEM Android builds.
+        if (schedulePrecision == CronJobScheduler.PRECISION_EXACT && scheduleType == "cron") {
+            val zone = tz?.takeIf { it.isNotBlank() }?.let(ZoneId::of) ?: ZoneId.systemDefault()
+            val parsed = CronExpressionParser.parse(cronExpression!!).getOrNull()
+            if (parsed != null) {
+                val first = CronExpressionParser.nextExecution(
+                    parsed,
+                    Instant.ofEpochMilli(System.currentTimeMillis()).atZone(zone),
+                )
+                val second = first?.let { CronExpressionParser.nextExecution(parsed, it) }
+                if (first != null && second != null &&
+                    second.toInstant().toEpochMilli() - first.toInstant().toEpochMilli() < 15L * 60_000L
+                ) {
+                    return ValidationError(
+                        "exact_schedule_too_frequent",
+                        "exact schedules must be at least 15 minutes apart; use flexible precision for high-frequency work",
+                    )
+                }
+            }
+        }
+
         // max_runs
         val maxRuns = (input["max_runs"] as? JsonPrimitive)?.intOrNull
         if (maxRuns != null && maxRuns < 1)
@@ -164,6 +200,7 @@ private fun jobToJson(j: ScheduledJobEntity): JsonObject = buildJsonObject {
     j.maxRuns?.let { put("max_runs", it) }
     put("runs_so_far", j.runsSoFar)
     put("catchup", j.catchup)
+    put("schedule_precision", j.schedulePrecision)
     j.tags?.let {
         put("tags", buildJsonArray { it.split(",").filter { t -> t.isNotBlank() }.forEach { t -> add(t) } })
     }
@@ -198,6 +235,11 @@ fun scheduleJobTool(
 
         catchup controls missed-window behavior on reboot/process kill: 'skip',
         'fire_once' (DEFAULT), 'fire_all' (capped at 20).
+
+        schedule_precision is 'flexible' by default (battery-friendly WorkManager, may run
+        late) or 'exact' for a user-visible reminder that must start near its requested time.
+        Exact schedules require the user-granted Alarms & reminders access, fall back safely
+        to WorkManager when unavailable, and must be at least 15 minutes apart.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -220,6 +262,7 @@ fun scheduleJobTool(
                     })
                 })
                 put("schedule_type", buildJsonObject { put("type","string"); put("enum", buildJsonArray { add("once"); add("cron") }) })
+                put("schedule_precision", buildJsonObject { put("type","string"); put("enum", buildJsonArray { add("flexible"); add("exact") }) })
                 put("at_unix_ms", buildJsonObject { put("type","integer") })
                 put("cron_expression", buildJsonObject { put("type","string") })
                 put("timezone", buildJsonObject { put("type","string") })
@@ -257,6 +300,8 @@ fun scheduleJobTool(
             endAtUnixMs = (obj["end_at_unix_ms"] as? JsonPrimitive)?.longOrNull,
             maxRuns = (obj["max_runs"] as? JsonPrimitive)?.intOrNull,
             catchup = (obj["catchup"] as? JsonPrimitive)?.contentOrNull ?: "fire_once",
+            schedulePrecision = (obj["schedule_precision"] as? JsonPrimitive)?.contentOrNull
+                ?: CronJobScheduler.PRECISION_FLEXIBLE,
             mode = mode,
             prompt = (obj["prompt"] as? JsonPrimitive)?.contentOrNull,
             actionsJson = (obj["actions"] as? kotlinx.serialization.json.JsonArray)?.toString(),
@@ -265,8 +310,19 @@ fun scheduleJobTool(
             createdAtMs = nowMs,
         )
         repo.upsert(job)
-        scheduler.schedule(job)
-        textPart(buildJsonObject { put("success", true); put("job", jobToJson(job)) }.toString())
+        val scheduling = scheduler.schedule(job)
+        val storedJob = repo.getById(job.id) ?: job
+        textPart(buildJsonObject {
+            put("success", true)
+            put("job", jobToJson(storedJob))
+            put("schedule_backend", scheduling.backend.name.lowercase())
+            if (scheduling.backend == CronJobScheduler.Backend.WORK_MANAGER_FALLBACK) {
+                put(
+                    "warning",
+                    "exact_alarm_not_granted: running with flexible timing until the user grants Alarms & reminders access",
+                )
+            }
+        }.toString())
     },
 )
 

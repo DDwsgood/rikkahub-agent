@@ -3,16 +3,11 @@ package me.rerere.rikkahub.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import androidx.work.Data
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import java.util.concurrent.TimeUnit
+import android.app.AlarmManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import me.rerere.rikkahub.data.db.entity.ScheduledJobRunEntity
 import me.rerere.rikkahub.data.repository.ScheduledJobRepository
 import me.rerere.rikkahub.data.repository.ScheduledJobRunRepository
 import org.koin.core.component.KoinComponent
@@ -34,29 +29,42 @@ class CronBootReceiver : BroadcastReceiver(), KoinComponent {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
-        if (action != Intent.ACTION_BOOT_COMPLETED &&
-            action != Intent.ACTION_MY_PACKAGE_REPLACED &&
-            action != "android.intent.action.QUICKBOOT_POWERON") return
+        val isBootLike = action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            action == "android.intent.action.QUICKBOOT_POWERON"
+        val isClockChange = action == Intent.ACTION_TIME_CHANGED ||
+            action == Intent.ACTION_TIMEZONE_CHANGED
+        val isExactAlarmGrant = action == AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED
+        if (!isBootLike && !isClockChange && !isExactAlarmGrant) return
         val pending = goAsync()
         scope.launch {
             try {
-                sweepStrandedRunRows(context)
-                applyCatchupAndSchedule(context)
+                if (isBootLike) sweepStrandedRunRows(context)
+                if (isClockChange || isExactAlarmGrant) {
+                    // Wall-clock schedules must be recomputed after timezone/manual clock
+                    // changes. Permission grants promote exact jobs from their safe
+                    // WorkManager fallback to AlarmManager immediately.
+                    scheduler.scheduleAllEnabled()
+                } else {
+                    scheduler.reconcileAllEnabled()
+                }
 
                 // Re-start Telegram bot if it was enabled (existing behavior) AND
                 // re-arm the periodic health probe. Both are idempotent — the probe uses
                 // ExistingPeriodicWorkPolicy.KEEP so re-arming on every boot is harmless.
-                val cfg = try { telegramPrefs.current() } catch (_: Throwable) { null }
-                if (cfg != null && cfg.isUsable) {
-                    me.rerere.rikkahub.service.TelegramBotService.start(context)
-                    me.rerere.rikkahub.service.TelegramBotHealthWorker.schedule(context)
-                }
+                if (isBootLike) {
+                    val cfg = try { telegramPrefs.current() } catch (_: Throwable) { null }
+                    if (cfg != null && cfg.isUsable) {
+                        runCatching { me.rerere.rikkahub.service.TelegramBotService.start(context) }
+                        me.rerere.rikkahub.service.TelegramBotHealthWorker.schedule(context)
+                    }
 
-                // Phase 12 — fire any boot-completed workflows. The dispatcher reads the
-                // boot trigger family which has been bound to current matching workflows
-                // by TriggerRegistry.start().
-                runCatching {
-                    me.rerere.rikkahub.workflow.trigger.WorkflowBootDispatcher.onBoot()
+                    // Phase 12 — fire any boot-completed workflows. The dispatcher reads the
+                    // boot trigger family which has been bound to current matching workflows
+                    // by TriggerRegistry.start().
+                    runCatching {
+                        me.rerere.rikkahub.workflow.trigger.WorkflowBootDispatcher.onBoot()
+                    }
                 }
             } finally {
                 pending.finish()
@@ -109,46 +117,4 @@ class CronBootReceiver : BroadcastReceiver(), KoinComponent {
         } catch (_: SecurityException) { /* POST_NOTIFICATIONS not granted — fine */ }
     }
 
-    private suspend fun applyCatchupAndSchedule(context: Context) {
-        val nowMs = System.currentTimeMillis()
-        val wm = WorkManager.getInstance(context)
-        for (job in repo.getEnabled()) {
-            // Compute catchup plan based on the job's last fire vs now.
-            val plan = CatchupPlanner.plan(job, lastRunMs = job.lastRunAtMs, nowMs = nowMs)
-
-            // Enqueue catchup fires FIRST, then write skipped rows.
-            // Write-order matters: if the process dies between enqueue and DB write,
-            // no orphan skipped_catchup rows exist for fires that never had a chance.
-            for ((idx, delayMs) in plan.fireDelaysMs.withIndex()) {
-                val req = OneTimeWorkRequestBuilder<CronJobWorker>()
-                    .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
-                    .setInputData(Data.Builder().putString(CronJobWorker.KEY_JOB_ID, job.id).build())
-                    .build()
-                // Each catchup fire gets a distinct unique work name so they don't
-                // REPLACE-cancel each other.
-                wm.enqueueUniqueWork(
-                    "cron_job_${job.id}_catchup_$idx",
-                    ExistingWorkPolicy.REPLACE, req
-                )
-            }
-
-            // Record skipped_catchup rows for windows we deliberately drop (after enqueue).
-            for (i in 0 until plan.skippedCatchupCount) {
-                runRepo.insert(ScheduledJobRunEntity(
-                    id = kotlin.uuid.Uuid.random().toString(),
-                    jobId = job.id,
-                    mode = job.mode,
-                    scheduledAtMs = nowMs,                  // we don't reconstruct each missed window's exact time
-                    startedAtMs = nowMs,
-                    finishedAtMs = nowMs,
-                    outcome = "skipped_catchup",
-                    conversationId = null,
-                    errorMessage = null,
-                ))
-            }
-
-            // Schedule the next REGULAR fire (does not interfere with catchups above).
-            scheduler.schedule(job)
-        }
-    }
 }

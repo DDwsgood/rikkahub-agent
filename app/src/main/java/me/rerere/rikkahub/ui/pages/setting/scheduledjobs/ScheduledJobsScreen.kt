@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -30,14 +31,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
+import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
+import me.rerere.rikkahub.service.CronJobScheduler
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -49,9 +56,25 @@ import org.koin.androidx.compose.koinViewModel
 @Composable
 fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
     val nav = LocalNavController.current
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val jobs by vm.jobs.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     var showHowItWorks by remember { mutableStateOf(false) }
+    var exactAlarmGranted by remember {
+        mutableStateOf(PermissionHelper.canScheduleExactAlarms(context))
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                exactAlarmGranted = PermissionHelper.canScheduleExactAlarms(context)
+                if (exactAlarmGranted) vm.reconcileSchedules()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     if (showHowItWorks) {
         AlertDialog(
@@ -97,6 +120,29 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
                 contentPadding = innerPadding + PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                if (!exactAlarmGranted && jobs.any {
+                        it.enabled && it.schedulePrecision == CronJobScheduler.PRECISION_EXACT
+                    }
+                ) {
+                    item {
+                        ListItem(
+                            headlineContent = {
+                                Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_title))
+                            },
+                            supportingContent = {
+                                Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_body))
+                            },
+                            trailingContent = {
+                                TextButton(onClick = {
+                                    context.startActivity(PermissionHelper.exactAlarmAccessIntent(context))
+                                }) {
+                                    Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_grant))
+                                }
+                            },
+                        )
+                        HorizontalDivider()
+                    }
+                }
                 items(jobs, key = { it.id }) { job ->
                     ScheduledJobRow(
                         job = job,
@@ -128,6 +174,11 @@ private fun ScheduledJobRow(
     val schedule = remember(job.scheduleType, job.atUnixMs, job.cronExpression) {
         summariseSchedule(job)
     }
+    val precision = if (job.schedulePrecision == CronJobScheduler.PRECISION_EXACT) {
+        stringResource(R.string.setting_page_scheduled_jobs_precision_exact)
+    } else {
+        stringResource(R.string.setting_page_scheduled_jobs_precision_flexible)
+    }
     val statusLine: String = when (job.lastRunAtMs) {
         null -> stringResource(R.string.setting_page_scheduled_jobs_subtitle_never_run)
         else -> {
@@ -143,7 +194,7 @@ private fun ScheduledJobRow(
         headlineContent = { Text(job.name) },
         supportingContent = {
             Text(
-                text = "${stringResource(R.string.setting_page_scheduled_jobs_subtitle_when, schedule)}\n$statusLine",
+                text = "${stringResource(R.string.setting_page_scheduled_jobs_subtitle_when, schedule)}\n$precision · $statusLine",
                 maxLines = 3,
                 style = MaterialTheme.typography.bodySmall,
             )

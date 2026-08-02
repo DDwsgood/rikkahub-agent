@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai.tools.local
 
+import android.app.AlarmManager
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
@@ -52,6 +53,15 @@ object PermissionHelper {
     /** Fallback page for users who declined the prompt; shows the system-wide list. */
     fun batteryOptimizationsListIntent(): Intent =
         Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+
+    fun canScheduleExactAlarms(ctx: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ctx.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+
+    fun exactAlarmAccessIntent(ctx: Context): Intent =
+        Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+            .setData("package:${ctx.packageName}".toUri())
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     fun hasAccessibilityService(ctx: Context): Boolean =
         AccessibilityServiceHandle.isEnabledInSettings(ctx)

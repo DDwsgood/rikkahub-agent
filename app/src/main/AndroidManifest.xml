@@ -62,6 +62,10 @@
       tools:ignore="ScopedStorage" />
   <uses-permission android:name="android.permission.USE_BIOMETRIC" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!-- User-granted special access for opt-in, user-visible precise scheduled jobs.
+       USE_EXACT_ALARM is intentionally not used because this app is not primarily an
+       alarm-clock/calendar app and that permission is Play-policy restricted. -->
+  <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
   <uses-permission
       android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       tools:ignore="BatteryLife" />
@@ -342,8 +346,29 @@
         <action android:name="android.intent.action.BOOT_COMPLETED" />
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
         <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+        <action android:name="android.intent.action.TIME_SET" />
+        <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+        <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
       </intent-filter>
     </receiver>
+
+    <!-- Explicit PendingIntent target for exact scheduled jobs. It only persists the
+         trigger into WorkManager; agent execution never happens inside the receiver. -->
+    <receiver
+      android:name=".service.ExactCronAlarmReceiver"
+      android:enabled="true"
+      android:exported="false" />
+
+    <!-- CronJobWorker promotes itself only while a scheduled agent task is executing.
+         Declaring WorkManager's foreground service type is required on Android 14+. -->
+    <service
+      android:name="androidx.work.impl.foreground.SystemForegroundService"
+      android:foregroundServiceType="specialUse"
+      tools:node="merge">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="user-requested scheduled agent task execution" />
+    </service>
 
     <!-- Phase 12 — geofence transition receiver. Play Services delivers via
          PendingIntent.getBroadcast outside any active component, so this MUST be a

@@ -77,6 +77,43 @@ class CronJobSchedulerTest {
     }
 
     @Test
+    fun `flexible precision always selects WorkManager`() {
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER,
+            CronJobScheduler.selectBackend(
+                CronJobScheduler.PRECISION_FLEXIBLE,
+                exactAlarmGranted = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `exact precision selects alarm only while access is granted`() {
+        assertEquals(
+            CronJobScheduler.Backend.EXACT_ALARM,
+            CronJobScheduler.selectBackend(
+                CronJobScheduler.PRECISION_EXACT,
+                exactAlarmGranted = true,
+            ),
+        )
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            CronJobScheduler.selectBackend(
+                CronJobScheduler.PRECISION_EXACT,
+                exactAlarmGranted = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `exact execution work identity is stable per job slot`() {
+        val first = CronJobScheduler.exactExecutionWorkName("job-1", 1_000L)
+        assertEquals(first, CronJobScheduler.exactExecutionWorkName("job-1", 1_000L))
+        assertTrue(first != CronJobScheduler.exactExecutionWorkName("job-1", 2_000L))
+        assertTrue(first != CronJobScheduler.exactExecutionWorkName("job-2", 1_000L))
+    }
+
+    @Test
     fun `DST forward skip-day next fire correct`() {
         // 0 2 * * * in America/New_York on the 2026 DST forward day (March 8 2026 2am
         // doesn't exist — clock jumps 2:00 → 3:00). Expect: skip that fire, next fire is

@@ -197,6 +197,15 @@ fun ScheduledJobDetailScreen(
             item {
                 SectionHeader(stringResource(R.string.setting_page_scheduled_jobs_section_schedule))
                 Text(summariseSchedule(current))
+                Text(
+                    if (current.schedulePrecision == me.rerere.rikkahub.service.CronJobScheduler.PRECISION_EXACT) {
+                        stringResource(R.string.setting_page_scheduled_jobs_precision_exact)
+                    } else {
+                        stringResource(R.string.setting_page_scheduled_jobs_precision_flexible)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 current.timezone?.takeIf { it.isNotBlank() }?.let {
                     Text(
                         stringResource(R.string.setting_page_scheduled_jobs_schedule_tz, it),

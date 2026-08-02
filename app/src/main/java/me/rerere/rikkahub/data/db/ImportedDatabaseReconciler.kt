@@ -15,7 +15,7 @@ import java.io.File
  *  - it is missing the fork-only tables, so Room fails its integrity check or hits "no such
  *    table: scheduled_jobs" at first query (issue #8); and
  *  - it is stamped with upstream's user_version (24 for 2.4.x), which is LOWER than the
- *    fork's schema-equivalent version (27), so Room replays the fork's 24->25 / 25->26 /
+ *    fork's schema-equivalent version (28), so Room replays the fork's 24->25 / 25->26 /
  *    26->27 auto-migrations and re-ADDs columns the file already carries, crashing with
  *    "duplicate column name: custom_system_prompt" (issues #10, #11).
  * Either way the app crashes on the very first launch after the import.
@@ -23,7 +23,7 @@ import java.io.File
  * This step runs once, right after the restore writes `rikka_hub.db`, on the raw file before
  * Room touches it:
  *  - It creates any of the fork-only tables that are missing, empty, with the exact schema
- *    Room expects (copied verbatim from app/schemas/.../27.json), so the file looks like a
+ *    Room expects (copied verbatim from app/schemas/.../28.json), so the file looks like a
  *    clean agent install for those tables.
  *  - If the file is already at the fork's current schema (stamped at the matching version, or
  *    an upstream file whose shared tables already carry every modern column), it stamps Room's
@@ -48,14 +48,14 @@ object ImportedDatabaseReconciler {
 
     /**
      * Room's schema version and identity hash for [AppDatabase]. Both are copied verbatim
-     * from app/schemas/me.rerere.rikkahub.data.db.AppDatabase/27.json (the identity hash also
+     * from app/schemas/me.rerere.rikkahub.data.db.AppDatabase/28.json (the identity hash also
      * appears in the generated AppDatabase_Impl RoomOpenDelegate). When the schema version is
      * bumped, update BOTH constants (and the table DDL below if the fork-only tables changed,
      * and MODERN_COLUMN_SENTINELS if newer conversation columns were added) or this
      * reconciliation will silently stop matching.
      */
-    private const val EXPECTED_VERSION = 27
-    private const val EXPECTED_IDENTITY_HASH = "47dc97ce825856b039f96c2769103dd1"
+    private const val EXPECTED_VERSION = 28
+    private const val EXPECTED_IDENTITY_HASH = "f16c87ce1946b4661c2090b38ed74fb8"
 
     /**
      * Columns that a restored file must already have for its shared schema to be considered
@@ -73,7 +73,7 @@ object ImportedDatabaseReconciler {
      * backup (where the tables already exist) is a no-op.
      */
     private val FORK_ONLY_DDL: List<String> = listOf(
-        "CREATE TABLE IF NOT EXISTS `scheduled_jobs` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `prompt` TEXT, `assistantId` TEXT NOT NULL, `scheduleType` TEXT NOT NULL, `atUnixMs` INTEGER, `intervalSeconds` INTEGER, `enabled` INTEGER NOT NULL, `createdAtMs` INTEGER NOT NULL, `lastRunAtMs` INTEGER, `nextRunAtMs` INTEGER, `mode` TEXT NOT NULL DEFAULT 'llm', `actionsJson` TEXT, `cronExpression` TEXT, `timezone` TEXT, `startAtUnixMs` INTEGER, `endAtUnixMs` INTEGER, `maxRuns` INTEGER, `runsSoFar` INTEGER NOT NULL DEFAULT 0, `catchup` TEXT NOT NULL DEFAULT 'fire_once', `description` TEXT, `tags` TEXT, PRIMARY KEY(`id`))",
+        "CREATE TABLE IF NOT EXISTS `scheduled_jobs` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `prompt` TEXT, `assistantId` TEXT NOT NULL, `scheduleType` TEXT NOT NULL, `atUnixMs` INTEGER, `intervalSeconds` INTEGER, `enabled` INTEGER NOT NULL, `createdAtMs` INTEGER NOT NULL, `lastRunAtMs` INTEGER, `nextRunAtMs` INTEGER, `mode` TEXT NOT NULL DEFAULT 'llm', `actionsJson` TEXT, `cronExpression` TEXT, `timezone` TEXT, `startAtUnixMs` INTEGER, `endAtUnixMs` INTEGER, `maxRuns` INTEGER, `runsSoFar` INTEGER NOT NULL DEFAULT 0, `catchup` TEXT NOT NULL DEFAULT 'fire_once', `description` TEXT, `tags` TEXT, `schedulePrecision` TEXT NOT NULL DEFAULT 'flexible', PRIMARY KEY(`id`))",
         "CREATE TABLE IF NOT EXISTS `scheduled_job_runs` (`id` TEXT NOT NULL, `jobId` TEXT NOT NULL, `mode` TEXT NOT NULL, `scheduledAtMs` INTEGER NOT NULL, `startedAtMs` INTEGER NOT NULL, `finishedAtMs` INTEGER, `outcome` TEXT NOT NULL, `conversationId` TEXT, `errorMessage` TEXT, PRIMARY KEY(`id`))",
         "CREATE TABLE IF NOT EXISTS `ssh_hosts` (`name` TEXT NOT NULL, `host` TEXT NOT NULL, `port` INTEGER NOT NULL, `user` TEXT NOT NULL, `password` TEXT, `privateKey` TEXT, `passphrase` TEXT, `createdAtMs` INTEGER NOT NULL, PRIMARY KEY(`name`))",
         "CREATE TABLE IF NOT EXISTS `telegram_chats` (`chatId` INTEGER NOT NULL, `conversationId` TEXT NOT NULL, `createdAtMs` INTEGER NOT NULL, `lastMessageAtMs` INTEGER NOT NULL, PRIMARY KEY(`chatId`))",
@@ -123,9 +123,17 @@ object ImportedDatabaseReconciler {
                 // upstream 2.4.x backup stamps user_version 24 but carries every modern column;
                 // see issues #10, #11). Detect that case by the sentinel columns those very
                 // migrations add.
-                val alreadyCurrent = MODERN_COLUMN_SENTINELS.all {
+                val sharedSchemaCurrent = MODERN_COLUMN_SENTINELS.all {
                     hasColumn(db, "ConversationEntity", it)
                 }
+                // An upstream backup has no scheduled_jobs table; FORK_ONLY_DDL creates it
+                // below with the v28 precision column, so it is safe to stamp directly. A
+                // genuine fork v27 file already has the table but not the column and must be
+                // allowed through Room's 27->28 auto-migration instead of being falsely stamped.
+                val hasScheduledJobs = hasTable(db, "scheduled_jobs")
+                val precisionSchemaReady = !hasScheduledJobs ||
+                    hasColumn(db, "scheduled_jobs", "schedulePrecision")
+                val alreadyCurrent = sharedSchemaCurrent && precisionSchemaReady
 
                 db.beginTransaction()
                 try {
@@ -178,6 +186,18 @@ object ImportedDatabaseReconciler {
             }
         } catch (t: Throwable) {
             Log.w(TAG, "hasColumn: failed to inspect $table.$column", t)
+            false
+        }
+    }
+
+    private fun hasTable(db: SQLiteDatabase, table: String): Boolean {
+        return try {
+            db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+                arrayOf(table),
+            ).use { it.moveToFirst() }
+        } catch (t: Throwable) {
+            Log.w(TAG, "hasTable: failed to inspect $table", t)
             false
         }
     }

@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.service
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -86,6 +87,8 @@ class DirectModeActionRunner(
         return try {
             val out = withTimeoutOrNull(60_000L) { tool.execute(action.args) }
             if (out == null) StepResult.TimedOut else StepResult.Success(out)
+        } catch (c: CancellationException) {
+            throw c
         } catch (t: Throwable) {
             Log.w(TAG, "direct-mode action $idx tool=${action.tool} threw", t)
             StepResult.Failed("${t::class.simpleName}: ${t.message.orEmpty()}".take(500))

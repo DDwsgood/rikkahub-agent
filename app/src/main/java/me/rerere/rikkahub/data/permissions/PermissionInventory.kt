@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.permissions
 
 import android.Manifest
+import android.app.AlarmManager
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
@@ -144,6 +145,24 @@ object PermissionInventory {
                         Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri)
                     ),
                 )
+            }
+            Manifest.permission.SCHEDULE_EXACT_ALARM -> {
+                return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val alarmManager = context.getSystemService(AlarmManager::class.java)
+                    val granted = alarmManager?.canScheduleExactAlarms() == true
+                    Row(
+                        id = perm,
+                        label = "Alarms & reminders",
+                        description = "Allows opt-in scheduled jobs to wake near an exact user-requested time.",
+                        status = if (granted) Status.GRANTED else Status.DENIED,
+                        group = Group.SpecialAccess,
+                        grant = GrantAction.SystemSettings(
+                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, pkgUri)
+                        ),
+                    )
+                } else {
+                    autoRow(perm, "Alarms & reminders")
+                }
             }
             Manifest.permission.POST_NOTIFICATIONS -> {
                 return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

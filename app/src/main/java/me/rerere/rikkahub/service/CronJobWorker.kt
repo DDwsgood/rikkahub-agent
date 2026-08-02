@@ -3,13 +3,17 @@ package me.rerere.rikkahub.service
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -17,6 +21,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.agentrun.AgentRunKind
 import me.rerere.rikkahub.data.agentrun.AgentRunRepository
 import me.rerere.rikkahub.data.agentrun.AgentRunStatus
@@ -113,9 +118,17 @@ class CronJobWorker(
     private val directRunner: DirectModeActionRunner by inject()
     private val agentRunRepo: AgentRunRepository by inject()
 
+    /** Required for expedited exact-alarm work on Android 11 and lower. */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val jobId = inputData.getString(KEY_JOB_ID)
+        return createExecutionForegroundInfo(jobId = jobId, jobName = null)
+    }
+
     override suspend fun doWork(): Result {
         val jobId = inputData.getString(KEY_JOB_ID) ?: return Result.failure()
         val isManual = inputData.getBoolean(KEY_MANUAL, false)
+        val requestedSlotMs = inputData.getLong(KEY_SCHEDULED_AT_MS, Long.MIN_VALUE)
+            .takeUnless { it == Long.MIN_VALUE }
 
         if (!CronJobRunningTracker.start(jobId)) {
             recordRun(jobId, scheduledAtMs = System.currentTimeMillis(),
@@ -130,6 +143,18 @@ class CronJobWorker(
             val job = repo.getById(jobId) ?: return Result.success()
             if (!job.enabled) return Result.success()
 
+            // WorkManager otherwise imposes a roughly ten-minute execution limit. Promote
+            // only while this user-requested job is active; there is no always-on service.
+            try {
+                setForeground(createExecutionForegroundInfo(jobId, job.name))
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // Short jobs can still complete under normal WorkManager limits when an OEM
+                // rejects foreground promotion. Keep the run alive and retain diagnostics.
+                Log.w(TAG, "Unable to promote scheduled job $jobId to foreground", t)
+            }
+
             // Bounds re-check (defends against a stale enqueue surviving a job edit).
             if (boundsExpired(job, nowMs)) {
                 repo.update(job.copy(enabled = false))
@@ -138,7 +163,11 @@ class CronJobWorker(
 
             // Slot stamp: manual fires use nowMs (they aren't bound to a scheduled slot);
             // natural fires use job.nextRunAtMs so a true WorkManager replay can be detected.
-            val scheduledAtMs = computeRunSlot(isManual, job.nextRunAtMs, nowMs)
+            val scheduledAtMs = computeRunSlot(
+                isManual = isManual,
+                jobNextRunAtMs = requestedSlotMs ?: job.nextRunAtMs,
+                nowMs = nowMs,
+            )
 
             // Replay guard runs BEFORE the optimistic insert, else the insert self-matches.
             // Manual fires skip the guard so the user can always force a fresh fire.
@@ -158,6 +187,26 @@ class CronJobWorker(
                         conversationId = null,
                         errorMessage = "duplicate fire suppressed (prior run ${priorRow.id})",
                     ))
+                    // Suppressing a replay must not break the recursive schedule chain. The
+                    // original process may have died after side effects but before it armed
+                    // the next slot. Treat a one-shot as consumed (at-most-once semantics);
+                    // recurring jobs advance from now while retaining the stable input slot
+                    // used above for replay identity.
+                    val replayAdvanced = if (job.scheduleType == "once") {
+                        job.copy(
+                            enabled = false,
+                            lastRunAtMs = priorRow.startedAtMs,
+                            nextRunAtMs = null,
+                        )
+                    } else {
+                        job.copy(
+                            lastRunAtMs = maxOf(job.lastRunAtMs ?: Long.MIN_VALUE, priorRow.startedAtMs),
+                        )
+                    }
+                    repo.update(replayAdvanced)
+                    if (replayAdvanced.enabled) {
+                        scheduler.schedule(replayAdvanced)
+                    }
                     return Result.success()
                 }
             }
@@ -291,6 +340,10 @@ class CronJobWorker(
             )
             return if (!completed) Triple("timed_out", "llm turn exceeded 15min", conv.id)
                    else Triple("success", null, conv.id)
+        } catch (c: CancellationException) {
+            // WorkManager cancellation (deadline, replacement, system preemption) must
+            // retain its structured-concurrency semantics so the work can be replayed.
+            throw c
         } catch (t: Throwable) {
             return Triple("failed", "${t::class.simpleName}: ${t.message.orEmpty()}", conv.id)
         } finally {
@@ -370,9 +423,47 @@ class CronJobWorker(
         } catch (_: SecurityException) { /* POST_NOTIFICATIONS not granted — fine */ }
     }
 
+    private fun createExecutionForegroundInfo(jobId: String?, jobName: String?): ForegroundInfo {
+        val ctx = applicationContext
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannel(EXECUTION_CHANNEL_ID) == null) {
+            nm.createNotificationChannel(NotificationChannel(
+                EXECUTION_CHANNEL_ID,
+                "Scheduled job execution",
+                NotificationManager.IMPORTANCE_LOW,
+            ))
+        }
+        val notification = NotificationCompat.Builder(ctx, EXECUTION_CHANNEL_ID)
+            .setContentTitle(ctx.getString(R.string.scheduled_job_execution_notification_title))
+            .setContentText(
+                jobName ?: ctx.getString(R.string.scheduled_job_execution_notification_preparing)
+            )
+            .setSmallIcon(android.R.drawable.ic_popup_sync)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+        val notificationId = FOREGROUND_NOTIFICATION_ID_PREFIX or
+            ((jobId ?: id.toString()).hashCode() and FOREGROUND_NOTIFICATION_ID_MASK)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ForegroundInfo(
+                notificationId,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            ForegroundInfo(notificationId, notification)
+        }
+    }
+
     companion object {
         const val KEY_JOB_ID = "cron_job_id"
         const val KEY_MANUAL = "cron_job_manual"
+        const val KEY_SCHEDULED_AT_MS = "cron_job_scheduled_at_ms"
         const val CHANNEL_ID = "rikkahub_cron_jobs"
+        private const val EXECUTION_CHANNEL_ID = "rikkahub_cron_execution"
+        private const val FOREGROUND_NOTIFICATION_ID_PREFIX = 0x50000000
+        private const val FOREGROUND_NOTIFICATION_ID_MASK = 0x0fffffff
     }
 }

@@ -175,6 +175,36 @@ class ScheduleJobToolValidationTest {
     }
 
     @Test
+    fun `bad schedule precision rejected`() {
+        val r = ScheduleJobValidator.validate(buildJsonObject {
+            put("name", "x"); put("mode", "llm"); put("prompt", "p")
+            put("schedule_type", "cron"); put("cron_expression", "@hourly")
+            put("schedule_precision", "magic")
+        }, knownTools)
+        assertEquals("bad_schedule_precision", r!!.code)
+    }
+
+    @Test
+    fun `exact schedule below fifteen minutes rejected`() {
+        val r = ScheduleJobValidator.validate(buildJsonObject {
+            put("name", "x"); put("mode", "llm"); put("prompt", "p")
+            put("schedule_type", "cron"); put("cron_expression", "*/5 * * * *")
+            put("schedule_precision", "exact")
+        }, knownTools)
+        assertEquals("exact_schedule_too_frequent", r!!.code)
+    }
+
+    @Test
+    fun `exact hourly schedule accepted`() {
+        val r = ScheduleJobValidator.validate(buildJsonObject {
+            put("name", "x"); put("mode", "llm"); put("prompt", "p")
+            put("schedule_type", "cron"); put("cron_expression", "@hourly")
+            put("schedule_precision", "exact")
+        }, knownTools)
+        assertNull(r)
+    }
+
+    @Test
     fun `bad tag uppercase rejected`() {
         val r = ScheduleJobValidator.validate(buildJsonObject {
             put("name", "x"); put("mode", "llm"); put("prompt", "p")

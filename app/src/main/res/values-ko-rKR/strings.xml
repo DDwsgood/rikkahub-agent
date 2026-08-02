@@ -1119,7 +1119,6 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="setting_model_page_fast_model">빠른 모델</string>
   <string name="setting_model_page_fast_model_desc">빠른 작업 또는 백그라운드 작업을 위한 모델이며, 설정되지 않은 경우 제목 및 제안 모델의 대체로도 사용됩니다.</string>
   <string name="setting_model_page_enable_suggestion">채팅 제안 활성화</string>
-
   <!-- fork (agent) strings preserved from merge -->
   <string name="setting_display_page_show_date_below_name_desc">닉네임 또는 모델 이름 아래에 메시지 날짜를 표시할지 여부</string>
   <string name="setting_display_page_show_date_below_name_title">이름 아래 날짜 표시</string>
@@ -1211,7 +1210,7 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="assistant_page_local_tools_system_intents_desc">어시스턴트가 최종 확정용으로 시스템 앱을 미리 채울 수 있습니다: 캘린더 일정, 새 연락처, 이메일 작성, SMS 작성, WiFi 설정, 지도. 대상 앱에서 탭하지 않으면 아무것도 저장되거나 전송되지 않습니다.</string>
   <string name="assistant_page_local_tools_system_intents_title">시스템 인텐트</string>
   <string name="assistant_page_local_tools_telegram_desc">어시스턴트를 Telegram 봇으로 실행 — 메시지·파일 송수신, /명령 관리. 전적으로 도구로 구성(토큰, 화이트리스트, 기본 채팅 설정 후 활성화). 포그라운드 서비스가 롱 폴링을 처리합니다.</string>
-  <string name="assistant_page_local_tools_telegram_notoken_message">토글은 켜져 있지만 아직 봇 토큰이 설정되지 않았습니다.\n\n쉬운 방법: 채팅에서 어시스턴트에게 요청 — &quot;Telegram 봇을 설정해줘, 내 토큰은 …, 내 사용자 ID는 …, 나를 기본 채팅으로 설정하고, 활성화해줘.&quot;\n\n수동 방법: Telegram에서 @BotFather에게 /newbot 을 보내 토큰을 받고, @userinfobot 에게 /start 를 보내 숫자 사용자 ID를 받으세요. 그런 다음 어시스턴트에게 요청하거나 설정 → Telegram 봇 에 붙여넣으세요.</string>
+  <string name="assistant_page_local_tools_telegram_notoken_message">토글은 켜져 있지만 아직 봇 토큰이 설정되지 않았습니다.\n\n쉬운 방법: 채팅에서 어시스턴트에게 요청 — "Telegram 봇을 설정해줘, 내 토큰은 …, 내 사용자 ID는 …, 나를 기본 채팅으로 설정하고, 활성화해줘."\n\n수동 방법: Telegram에서 @BotFather에게 /newbot 을 보내 토큰을 받고, @userinfobot 에게 /start 를 보내 숫자 사용자 ID를 받으세요. 그런 다음 어시스턴트에게 요청하거나 설정 → Telegram 봇 에 붙여넣으세요.</string>
   <string name="assistant_page_local_tools_telegram_notoken_title">Telegram 봇에는 토큰이 필요합니다</string>
   <string name="assistant_page_local_tools_telegram_title">Telegram 봇</string>
   <string name="assistant_page_local_tools_telephony_desc">SIM 및 네트워크 정보(이동통신사, 네트워크 유형)를 읽습니다. READ_PHONE_STATE가 필요합니다.</string>
@@ -1279,10 +1278,10 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="local_llm_catalog_tag_speculative">추측 디코딩</string>
   <string name="local_llm_catalog_tag_thinking">사고</string>
   <string name="local_llm_catalog_title">추천 모델</string>
-  <string name="local_llm_crash_recovery_format">복구됨: 로컬 모델이 지난 세션에서 %1$s 에서 충돌했습니다 — 자동으로 CPU로 전환했습니다. 탭하여 닫기. 재시도하려면 아래의 &#8220;GPU 가속 시도&#8221; 를 전환하세요.</string>
+  <string name="local_llm_crash_recovery_format">복구됨: 로컬 모델이 지난 세션에서 %1$s 에서 충돌했습니다 — 자동으로 CPU로 전환했습니다. 탭하여 닫기. 재시도하려면 아래의 “GPU 가속 시도” 를 전환하세요.</string>
   <string name="local_llm_default_disabled">이 기기에서 오픈 모델을 실행. 약 1.5 GB 다운로드 필요(Qwen2.5 1.5B Q8).</string>
   <string name="local_llm_delete">삭제</string>
-  <string name="local_llm_delete_confirm_message">기기에서 &#8220;%1$s&#8221; 을(를) 제거할까요? 이는 파일을 삭제합니다(사용하려면 다시 다운로드해야 합니다).</string>
+  <string name="local_llm_delete_confirm_message">기기에서 “%1$s” 을(를) 제거할까요? 이는 파일을 삭제합니다(사용하려면 다시 다운로드해야 합니다).</string>
   <string name="local_llm_delete_confirm_title">모델을 삭제할까요?</string>
   <string name="local_llm_delete_model">모델 삭제</string>
   <string name="local_llm_download_cancel">취소</string>
@@ -1398,7 +1397,7 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="setting_page_accessibility_overlay_open_settings">다른 앱 위에 표시 허용</string>
   <string name="setting_page_accessibility_overlay_section">활동 오버레이</string>
   <string name="setting_page_accessibility_recent_section">최근 작업</string>
-  <string name="setting_page_accessibility_status_help">RikkaHub는 LLM을 위해 탭, 스와이프, 화면 읽기를 수행하려면 접근성 권한이 필요합니다. 설정 &#x2192; 접근성 &#x2192; 설치된 앱 &#x2192; RikkaHub 를 열고 켜세요.</string>
+  <string name="setting_page_accessibility_status_help">RikkaHub는 LLM을 위해 탭, 스와이프, 화면 읽기를 수행하려면 접근성 권한이 필요합니다. 설정 → 접근성 → 설치된 앱 → RikkaHub 를 열고 켜세요.</string>
   <string name="setting_page_accessibility_status_not_running">서비스: 실행되지 않음</string>
   <string name="setting_page_accessibility_status_running">서비스: 실행 중</string>
   <string name="setting_page_accessibility_status_section">상태</string>
@@ -1453,12 +1452,12 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="setting_page_scheduled_jobs_delete_confirm_yes">삭제</string>
   <string name="setting_page_scheduled_jobs_desc">어시스턴트가 예약한 시간 기반 작업 — 일회성 및 반복 cron 표현식.</string>
   <string name="setting_page_scheduled_jobs_edit">채팅에서 편집</string>
-  <string name="setting_page_scheduled_jobs_edit_prefill">&#8220;%1$s&#8221; 이름의 예약 작업을 편집합니다.</string>
+  <string name="setting_page_scheduled_jobs_edit_prefill">“%1$s” 이름의 예약 작업을 편집합니다.</string>
   <string name="setting_page_scheduled_jobs_empty">아직 예약 작업이 없습니다. 어시스턴트에게 만들어 달라고 요청하세요.</string>
   <string name="setting_page_scheduled_jobs_hide_args">인수 숨기기</string>
   <string name="setting_page_scheduled_jobs_history_empty">아직 발생 기록이 없습니다.</string>
   <string name="setting_page_scheduled_jobs_how_it_works">예약 작업 작동 방식</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">예약 작업은 시간 기반입니다. 두 가지 타이밍 유형: “once”(단일 절대 시점에 발생)와 “cron”(매 평일 오전 9시 같은 반복 표현식으로 발생).\n\n두 가지 실행 모드: “direct”는 LLM 없이 고정된 도구 호출 목록을 실행합니다(무료, 결정적). “LLM”은 발생 시 어시스턴트에게 프롬프트를 보내 모델이 무엇을 할지 결정하게 합니다.\n\n발생은 앱이 닫혀 있어도 일어납니다 — WorkManager로 예약되며 재부팅 후에도 유지됩니다. HARDLINE 필터는 위험한 셸 명령을 계속 차단합니다. 각 발생은 작업의 기록에 기록됩니다.</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">예약 작업은 시간에 따라 실행됩니다. 타이밍 유형은 두 가지입니다. "once"는 하나의 절대 시각에 실행되고, "cron"은 평일 오전 9시와 같은 반복 표현식에 따라 실행됩니다.\n\n실행 모드도 두 가지입니다. "direct"는 LLM 없이 고정된 도구 호출 목록을 실행하고, "LLM"은 어시스턴트에 프롬프트를 보내 모델이 수행할 작업을 결정하게 합니다.\n\n유연한 타이밍은 WorkManager를 사용해 배터리를 절약하지만 늦게 실행될 수 있습니다. 정확한 타이밍은 요청 시각 근처에 시작해야 하는 사용자 표시 작업에 사용하며 알람 및 리마인더 접근 권한이 필요합니다. 권한이 없으면 안전하게 유연한 타이밍으로 대체됩니다. Android가 앱을 다시 시작하면 일정이 복원됩니다. 시스템의 앱 일시 중지와 일부 제조사의 배터리 제한으로 인해 앱을 열 때까지 작업이 지연될 수 있습니다. HARDLINE 필터는 위험한 셸 명령을 계속 차단하며 각 실행은 작업 기록에 저장됩니다.</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">확인</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">예약 작업 작동 방식</string>
   <string name="setting_page_scheduled_jobs_no_actions">(정의된 작업 없음)</string>
@@ -1523,7 +1522,7 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="setting_page_workflow_detail_delete_confirm_title">워크플로를 삭제할까요?</string>
   <string name="setting_page_workflow_detail_delete_confirm_yes">삭제</string>
   <string name="setting_page_workflow_detail_edit">채팅에서 편집</string>
-  <string name="setting_page_workflow_detail_edit_prefill">&#8220;%1$s&#8221; 이름의 워크플로를 편집합니다.</string>
+  <string name="setting_page_workflow_detail_edit_prefill">“%1$s” 이름의 워크플로를 편집합니다.</string>
   <string name="setting_page_workflow_detail_history_empty">아직 발생 기록이 없습니다.</string>
   <string name="setting_page_workflow_detail_no_conditions">(없음)</string>
   <string name="setting_page_workflow_detail_run_now">지금 실행</string>
@@ -1566,7 +1565,7 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="skill_catalog_installed">설치됨</string>
   <string name="skill_catalog_installing">설치 중…</string>
   <string name="skill_catalog_title">추천 스킬</string>
-  <string name="skill_detail_name_immutable">스킬 이름 변경은 허용되지 않습니다(name 필드는 &#8220;%1$s&#8221; 여야 합니다)</string>
+  <string name="skill_detail_name_immutable">스킬 이름 변경은 허용되지 않습니다(name 필드는 “%1$s” 여야 합니다)</string>
   <string name="skill_detail_save_failed">저장 실패</string>
   <string name="skill_import_empty_file">파일이 비어 있습니다 — 가져올 내용이 없습니다.</string>
   <string name="skill_import_from_file_label">파일에서 가져오기</string>
@@ -1774,4 +1773,11 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="chat_page_delete_folder_generating">이 폴더의 일부 대화가 아직 생성 중입니다. 삭제하기 전에 중지해 주세요.</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 괄호 안 내용 읽지 않기</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">활성화하면 TTS가 괄호 안의 내용을 읽지 않습니다</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">정밀도: 정확</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">정밀도: 유연</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">정확한 실행 시간에 권한 필요</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">알람 및 리마인더 접근을 허용하세요. 허용하기 전까지 정확한 작업은 유연한 일정으로 안전하게 대체됩니다.</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_grant">접근 허용</string>
+  <string name="scheduled_job_execution_notification_title">예약 작업 실행 중</string>
+  <string name="scheduled_job_execution_notification_preparing">예약 작업 준비 중</string>
 </resources>

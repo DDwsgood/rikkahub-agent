@@ -111,17 +111,27 @@ jobs:
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           apksigner=$(find "$sdk_root/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)
           test -n "$apksigner" && test -x "$apksigner"
-          "$apksigner" verify --verbose --print-certs "$apk"
+          "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee apk-artifact-signature.txt
+          aapt=$(find "$sdk_root/build-tools" -type f -name aapt2 -print | sort -V | tail -n 1)
           mkdir -p apk-artifact
           cp "$apk" apk-artifact/rikkahub-agent-debug-with-termux.apk
           (
             cd apk-artifact
             sha256sum rikkahub-agent-debug-with-termux.apk | tee SHA256SUMS
           )
+          # Extract signing cert SHA-256 fingerprint for update-compatibility verification
+          cert_sha256=$(grep -oP 'SHA-256 digest:\s*\K[0-9a-f:]+' apk-artifact-signature.txt | head -1 || echo "unknown")
+          # Extract version info from APK
+          version_code=$("$aapt" dump badging "$apk" 2>/dev/null | grep -oP "versionCode='\K[^']+" || echo "unknown")
+          version_name=$("$aapt" dump badging "$apk" 2>/dev/null | grep -oP "versionName='\K[^']+" || echo "unknown")
           {
             echo "source_commit=$GITHUB_SHA"
+            echo "source_branch=${{ github.ref_name }}"
             echo "bootstrap_run_id=${{ inputs.bootstrap_run_id }}"
             echo "application_id=excp.rikkahub.debug"
+            echo "version_code=$version_code"
+            echo "version_name=$version_name"
+            echo "signing_cert_sha256=$cert_sha256"
             echo "aarch64_sha256=${{ steps.bootstraps.outputs.aarch64_sha }}"
             echo "x86_64_sha256=${{ steps.bootstraps.outputs.x86_64_sha }}"
             echo "completed_at=$(date --utc --iso-8601=seconds)"

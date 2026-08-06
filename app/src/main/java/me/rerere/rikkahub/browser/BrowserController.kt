@@ -63,6 +63,18 @@ object BrowserController {
      */
     @Volatile
     var perToolTimeoutMs: Long = BrowserToolDefaults.DEFAULT_PER_TOOL_TIMEOUT_MS
+
+    /**
+     * Global browser execution mode — controls whether browser tools run in the foreground
+     * (visible Activity) or headless (background WebView). User-configurable via Settings →
+     * Browser; kept in sync by [BrowserPreferences]. Defaults to ALWAYS_FOREGROUND.
+     *
+     * When set to ALWAYS_BACKGROUND, browser tools run headless even for main-app chats,
+     * so the browser Activity doesn't pop up over whatever the user is doing.
+     */
+    @Volatile
+    var backgroundMode: BrowserBackgroundMode = BrowserBackgroundMode.ALWAYS_FOREGROUND
+
     /** Cache subdir for streamed (headless) screenshots — separate from the `browser-shots`
      *  subdir the explicit browser_screenshot tool writes into so the streamer pipe can be
      *  swept independently if it ever grows unbounded. */
@@ -518,14 +530,14 @@ object BrowserController {
                 val canvas = Canvas(bitmap)
                 webView.draw(canvas)
                 val cacheDir = File(context.cacheDir, STREAM_CACHE_SUBDIR).apply { mkdirs() }
-                val out = File(cacheDir, "stream-${System.currentTimeMillis()}.png")
+                val out = File(cacheDir, "stream-${System.currentTimeMillis()}.jpg")
                 // Recycle in a finally block so a FileOutputStream failure doesn't leak
                 // the ~8 MB native backing. Without this, any IO error mid-capture leaves
                 // the bitmap alive until the next GC (the outer runCatching swallows
                 // the exception before the bitmap variable goes out of scope).
                 try {
                     FileOutputStream(out).use { os ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, os)
                     }
                 } finally {
                     bitmap.recycle()

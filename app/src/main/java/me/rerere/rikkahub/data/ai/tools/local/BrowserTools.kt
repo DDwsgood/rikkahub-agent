@@ -22,6 +22,7 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.browser.BrowserBackgroundMode
 import me.rerere.rikkahub.browser.BrowserController
 import me.rerere.rikkahub.browser.BrowserControllerHandle
 import me.rerere.rikkahub.browser.BrowserDiffHelper
@@ -96,6 +97,9 @@ private const val TELEGRAM_HEADLESS_CUE =
 private fun isHeadlessInvocation(ctx: ToolInvocationContext?): Boolean {
     if (ctx == null) return false
     if (ctx.isHeadless) return true
+    // Global preference: ALWAYS_BACKGROUND forces headless for main-app chats too,
+    // so the browser Activity doesn't pop up over whatever the user is doing.
+    if (BrowserController.backgroundMode == BrowserBackgroundMode.ALWAYS_BACKGROUND) return true
     val convId = ctx.callerConversationId ?: return false
     val asUuid = runCatching { Uuid.parse(convId) }.getOrNull() ?: return false
     return HeadlessConversations.isHeadless(asUuid)

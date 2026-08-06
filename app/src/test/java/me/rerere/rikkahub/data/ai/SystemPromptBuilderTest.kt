@@ -19,11 +19,11 @@ class SystemPromptBuilderTest {
         )
 
         assertTrue(prompt.startsWith("Assistant prompt"))
-        assertTrue(prompt.contains("Tool cost guidance: prefer low-cost text tools"))
+        assertTrue(prompt.contains("Tool guidance: prefer low-cost text tools"))
         assertTrue(prompt.endsWith("Surface addendum"))
 
         // Stable-first: assistant + tools precede the volatile memory/recent-chats sections.
-        assertTrue(prompt.indexOf("Assistant prompt") < prompt.indexOf("Tool cost guidance"))
+        assertTrue(prompt.indexOf("Assistant prompt") < prompt.indexOf("Tool guidance"))
         assertTrue(prompt.indexOf("Tool A") < prompt.indexOf("Tool B"))
         assertTrue(prompt.indexOf("Tool B") < prompt.indexOf("**Memories**"))
         assertTrue(prompt.indexOf("**Memories**") < prompt.indexOf("**Recent Chats**"))
@@ -41,7 +41,7 @@ class SystemPromptBuilderTest {
         )
         assertTrue(stable.contains("You are helpful."))
         assertTrue(stable.contains("tool_a docs"))
-        assertTrue(stable.contains("Tool cost guidance"))
+        assertTrue(stable.contains("Tool guidance"))
         assertFalse(stable.contains("Memories"))
         assertTrue(volatile.contains("**Memories** m1"))
         assertTrue(volatile.contains("**Recent Chats** c1"))

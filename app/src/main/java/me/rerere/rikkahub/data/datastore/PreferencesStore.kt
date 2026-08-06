@@ -859,12 +859,11 @@ private fun Model.findModelProviderFromList(providers: List<ProviderSetting>): P
 internal val DEFAULT_ASSISTANT_ID = Uuid.parse("0950e2dc-9bd5-4801-afa3-aa887aa36b4e")
 
 /**
- * Bundled skills shipped enabled-by-default on top of agent-core. The behavioral
- * `autonomous-agent` skill is auto_load (injected every turn); `openclaw-converter` is lazy
- * (loaded on demand). Both are seeded to disk by [SkillManager.seedDefaultSkillsIfNeeded] and
+ * Bundled skills shipped enabled-by-default on top of agent-core. `openclaw-converter` is
+ * lazy (loaded on demand). Seeded to disk by [SkillManager.seedDefaultSkillsIfNeeded] and
  * added to the default assistants' enabledSkills once via [Settings.autoEnabledDefaultSkills].
  */
-internal val DEFAULT_AUTO_ENABLED_SKILLS = setOf("autonomous-agent", "openclaw-converter")
+internal val DEFAULT_AUTO_ENABLED_SKILLS = setOf("openclaw-converter")
 
 internal val DEFAULT_ASSISTANTS = listOf(
     Assistant(

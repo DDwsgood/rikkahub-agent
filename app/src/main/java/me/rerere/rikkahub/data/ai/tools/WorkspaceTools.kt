@@ -65,7 +65,7 @@ private fun createReadFileTool(
 ) = Tool(
     name = "workspace_read_file",
     description = """
-        Read a file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
+        Read a file inside the isolated proot workspace rootfs (a Linux environment separate from the Android filesystem). Paths must be absolute inside Rootfs.
         Use /workspace for the workspace files area.
         Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp).
     """.trimIndent().replace("\n", " "),
@@ -103,7 +103,7 @@ private fun createWriteFileTool(
 ) = Tool(
     name = "workspace_write_file",
     description = """
-        Write a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
+        Write a UTF-8 text file inside the isolated proot workspace rootfs (a Linux environment separate from the Android filesystem). Paths must be absolute inside Rootfs.
         Use /workspace for the workspace files area.
     """.trimIndent().replace("\n", " "),
     parameters = {
@@ -140,7 +140,7 @@ private fun createEditFileTool(
 ) = Tool(
     name = "workspace_edit_file",
     description = """
-        Edit a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
+        Edit a UTF-8 text file inside the isolated proot workspace rootfs (a Linux environment separate from the Android filesystem). Paths must be absolute inside Rootfs.
         Use /workspace for the workspace files area.
         Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence.
         If no exact match is found, whitespace-tolerant line matching is attempted automatically.
@@ -207,7 +207,7 @@ private fun createShellTool(
 ) = Tool(
     name = "workspace_shell",
     description = buildString {
-        append("Run a shell command in the assistant's bound workspace Rootfs. The workspace files area is mounted at /workspace. ")
+        append("Run a shell command inside the isolated proot workspace rootfs (a Linux environment separate from the Android filesystem). The workspace files area is mounted at /workspace. ")
         append("Use cwd for a path relative to the workspace files root. ")
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")

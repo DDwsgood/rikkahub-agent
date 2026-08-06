@@ -192,7 +192,7 @@ fun termuxRunCommandTool(
 ): Tool = Tool(
     name = "termux_run_command",
     description = """
-        Execute a shell command in the embedded Termux environment. By default the command
+        Execute a shell command in the embedded Termux environment (Android host shell, not inside the proot workspace). By default the command
         runs in the background and its stdout / stderr / exit_code are returned to you so
         you can reason on the output (e.g. check if a package is installed, read a file,
         run a script). Pass interactive=true to run in a foreground process; output is still

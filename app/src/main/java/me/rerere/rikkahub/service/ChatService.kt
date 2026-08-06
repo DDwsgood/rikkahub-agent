@@ -117,6 +117,13 @@ internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
     LocalToolOption.WebFetch,
 )
 
+/**
+ * Tools that are always injected into every conversation regardless of the assistant's
+ * enabled tool options. These are nearly free, universally useful, and prevent sub-agents
+ * (which inherit the parent's tool configuration) from resorting to bash workarounds.
+ */
+internal val ESSENTIAL_TOOL_NAMES = setOf("get_time_info", "eval_javascript")
+
 internal const val TERMUX_RUN_COMMAND_TOOL_NAME = "termux_run_command"
 
 internal fun selectDirectLocalToolNames(
@@ -867,7 +874,18 @@ class ChatService(
                     .isHeadless(conversationId),
                 modelCanSeeImages = Modality.IMAGE in model.inputModalities,
             )
-            val allLocalTools = localTools.getTools(assistant.localTools, baseInvocationCtx)
+            val allLocalTools = localTools.getTools(assistant.localTools, baseInvocationCtx).toMutableList()
+
+            // Ensure essential tools are always available, even if the assistant doesn't have them
+            // enabled. Sub-agents inherit the parent's tool configuration, which may omit basic tools
+            // like get_time_info, leading to bash workarounds (e.g. running `date` via workspace_shell).
+            // These are nearly free and universally useful.
+            if (allLocalTools.none { it.name == "get_time_info" }) {
+                allLocalTools.add(localTools.timeTool)
+            }
+            if (allLocalTools.none { it.name == "eval_javascript" }) {
+                allLocalTools.add(localTools.javascriptTool)
+            }
 
             val availableMcpTools = mcpManager.getAllAvailableTools()
             val invalidMcpNames = availableMcpTools
@@ -955,6 +973,11 @@ class ChatService(
                     availableToolNames = discoverableTools.keys,
                 )
                 addAll(allLocalTools.filter { it.name in coreToolNames })
+
+                // Essential tools — always injected regardless of assistant configuration
+                // so sub-agents (which inherit the parent's tool set) don't resort to
+                // bash workarounds for basic needs like getting the current time.
+                addAll(allLocalTools.filter { it.name in ESSENTIAL_TOOL_NAMES })
 
                 // ④ Workspace tools - conditionally injected, unchanged.
                 addAll(

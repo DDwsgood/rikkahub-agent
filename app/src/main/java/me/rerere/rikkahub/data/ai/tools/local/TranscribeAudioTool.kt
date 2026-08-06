@@ -115,7 +115,7 @@ fun transcribeAudioFileTool(context: Context): Tool = Tool(
             TermuxIntegration.State.NOT_INSTALLED ->
                 return@Tool errEnv(
                     "termux_not_installed",
-                    "Termux is not installed. transcribe_audio_file requires Termux + whisper.cpp."
+                    "Embedded Termux bootstrap failed. transcribe_audio_file requires the embedded Termux runtime + whisper.cpp."
                 )
             TermuxIntegration.State.NO_PERMISSION ->
                 return@Tool errEnv(
@@ -312,7 +312,7 @@ fun transcribeAudioFileTool(context: Context): Tool = Tool(
                 errEnv("timeout", "whisper-cli did not complete within 5 minutes. The audio may be very long, or the model is loading for the first time.")
 
             is CaptureResult.Denied ->
-                errEnv("termux_permission_denied", "Termux rejected the whisper-cli command. Ensure allow-external-apps=true in ~/.termux/termux.properties.")
+                errEnv("termux_permission_denied", "The embedded Termux command could not execute the whisper-cli command.")
 
             is CaptureResult.OtherError ->
                 errEnv("termux_error", transcribeResult.message)

@@ -19,6 +19,7 @@ object BrowserToolDefaults {
     const val GET_TEXT = "browser_get_text"
     const val GET_DOM = "browser_get_dom"
     const val GET_LINKS = "browser_get_links"
+    const val GET_COOKIES = "browser_get_cookies"
     const val BACK = "browser_back"
     const val FORWARD = "browser_forward"
     const val WAIT_FOR = "browser_wait_for"
@@ -31,6 +32,8 @@ object BrowserToolDefaults {
     const val SELECT = "browser_select"
     const val PRESS_KEY = "browser_press_key"
     const val EVAL_JS = "browser_eval_js"
+    const val HANDLE_DIALOG = "browser_handle_dialog"
+    const val SET_VIEWPORT = "browser_set_viewport"
     /**
      * Token-cost optimisation pass — composite "click + read" tool. One round trip
      * instead of click → wait → get_text. Default OFF: it's still a write tool, the
@@ -42,19 +45,19 @@ object BrowserToolDefaults {
     const val DONE = "browser_done"
 
     val READ_TOOLS: Set<String> = setOf(
-        OPEN, CURRENT_URL, SCREENSHOT, GET_TEXT, GET_DOM, GET_LINKS, BACK, FORWARD, WAIT_FOR,
+        OPEN, CURRENT_URL, SCREENSHOT, GET_TEXT, GET_DOM, GET_LINKS, GET_COOKIES, BACK, FORWARD, WAIT_FOR,
     )
 
     val WRITE_TOOLS: Set<String> = setOf(
-        CLICK, TYPE, SCROLL, SUBMIT, SELECT, PRESS_KEY, EVAL_JS, CLICK_AND_READ,
+        CLICK, TYPE, SCROLL, SUBMIT, SELECT, PRESS_KEY, EVAL_JS, HANDLE_DIALOG, SET_VIEWPORT, CLICK_AND_READ,
     )
 
     val LOOP_CONTROL_TOOLS: Set<String> = setOf(DONE)
 
     /** Stable display order for the Settings page. Read first, then write, then loop-control. */
     val ALL_TOOLS: List<String> = listOf(
-        OPEN, CURRENT_URL, SCREENSHOT, GET_TEXT, GET_DOM, GET_LINKS, BACK, FORWARD, WAIT_FOR,
-        CLICK, TYPE, SCROLL, SUBMIT, SELECT, PRESS_KEY, EVAL_JS, CLICK_AND_READ,
+        OPEN, CURRENT_URL, SCREENSHOT, GET_TEXT, GET_DOM, GET_LINKS, GET_COOKIES, BACK, FORWARD, WAIT_FOR,
+        CLICK, TYPE, SCROLL, SUBMIT, SELECT, PRESS_KEY, EVAL_JS, HANDLE_DIALOG, SET_VIEWPORT, CLICK_AND_READ,
         DONE,
     )
 

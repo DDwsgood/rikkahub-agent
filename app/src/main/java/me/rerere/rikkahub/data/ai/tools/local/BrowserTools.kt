@@ -893,6 +893,114 @@ fun browserEvalJsTool(): Tool = Tool(
     },
 )
 
+fun browserGetCookiesTool(): Tool = Tool(
+    name = BrowserToolDefaults.GET_COOKIES,
+    description = "Get cookies for the current page URL. Returns a string in the 'name=value; name2=value2' format, or an empty string if no cookies are set.",
+    parameters = {
+        InputSchema.Obj(properties = buildJsonObject {}, required = emptyList())
+    },
+    execute = { _ ->
+        val out = withTimeoutOrNull(toolTimeoutMs) {
+            BrowserControllerHandle.withController {
+                val cookies = android.webkit.CookieManager.getInstance().getCookie(webView.url ?: "")
+                BrowserController.appendAction("Get cookies")
+                buildJsonObject {
+                    put("url", webView.url ?: "")
+                    put("cookies", cookies ?: "")
+                }
+            }
+        } ?: timeoutEnvelope(BrowserToolDefaults.GET_COOKIES)
+        textPart(out)
+    },
+)
+
+fun browserHandleDialogTool(): Tool = Tool(
+    name = BrowserToolDefaults.HANDLE_DIALOG,
+    description = "Override the page's JavaScript dialog functions (alert, confirm, prompt) to auto-accept or auto-dismiss future dialogs. Pass action='accept' to auto-accept, or action='dismiss' to auto-dismiss. The last intercepted dialog (if any) is stored in window.__lastDialog.",
+    parameters = {
+        InputSchema.Obj(properties = buildJsonObject {
+            put("action", buildJsonObject {
+                put("type", "string")
+                put("enum", buildJsonArray { add("accept"); add("dismiss") })
+                put("description", "Whether to accept or dismiss JS dialogs")
+            })
+        }, required = listOf("action"))
+    },
+    execute = { input ->
+        val action = input.jsonObject["action"]?.jsonPrimitive?.contentOrNull ?: "accept"
+        val jsCode = if (action == "accept") {
+            """window.__lastDialog=null;window.alert=function(m){window.__lastDialog={type:'alert',message:m}};window.confirm=function(m){window.__lastDialog={type:'confirm',message:m};return true};window.prompt=function(m,d){window.__lastDialog={type:'prompt',message:m,default:d};return d||''};"""
+        } else {
+            """window.__lastDialog=null;window.alert=function(m){window.__lastDialog={type:'alert',message:m}};window.confirm=function(m){window.__lastDialog={type:'confirm',message:m};return false};window.prompt=function(m,d){window.__lastDialog={type:'prompt',message:m,default:d};return null};"""
+        }
+        val out = withTimeoutOrNull(toolTimeoutMs) {
+            BrowserControllerHandle.withController {
+                webView.evaluateJavascriptAsync(jsCode, toolTimeoutMs - 1_000L)
+                BrowserController.appendAction("Handle dialog: $action")
+                buildJsonObject {
+                    put("action", action)
+                    put("success", true)
+                }
+            }
+        } ?: timeoutEnvelope(BrowserToolDefaults.HANDLE_DIALOG)
+        if (!out.containsKey("error")) {
+            BrowserController.streamScreenshotIfHeadless("Handle dialog: $action")
+        }
+        textPart(out)
+    },
+)
+
+fun browserSetViewportTool(): Tool = Tool(
+    name = BrowserToolDefaults.SET_VIEWPORT,
+    description = "Set the browser viewport dimensions. Useful for testing responsive layouts or capturing screenshots at specific sizes. In headless mode, resizes the WebView. In foreground mode, has no effect (the Activity controls the size).",
+    parameters = {
+        InputSchema.Obj(properties = buildJsonObject {
+            put("width", buildJsonObject {
+                put("type", "integer")
+                put("description", "Viewport width in pixels (320-3840)")
+                put("minimum", 320)
+                put("maximum", 3840)
+            })
+            put("height", buildJsonObject {
+                put("type", "integer")
+                put("description", "Viewport height in pixels (480-3840)")
+                put("minimum", 480)
+                put("maximum", 3840)
+            })
+        }, required = listOf("width", "height"))
+    },
+    execute = { input ->
+        val width = input.jsonObject["width"]?.jsonPrimitive?.intOrNull
+        val height = input.jsonObject["height"]?.jsonPrimitive?.intOrNull
+        if (width == null || height == null) {
+            return@Tool textPart(missingArgEnvelope("dimensions", "width and height are required"))
+        }
+        val out = withTimeoutOrNull(toolTimeoutMs) {
+            BrowserControllerHandle.withController {
+                val params = webView.layoutParams
+                params.width = width
+                params.height = height
+                webView.layoutParams = params
+                webView.measure(
+                    android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+                    android.view.View.MeasureSpec.makeMeasureSpec(height, android.view.View.MeasureSpec.EXACTLY),
+                )
+                webView.layout(0, 0, width, height)
+                BrowserController.appendAction("Set viewport: ${width}x${height}")
+                buildJsonObject {
+                    put("width", width)
+                    put("height", height)
+                    put("success", true)
+                }
+            }
+        } ?: timeoutEnvelope(BrowserToolDefaults.SET_VIEWPORT)
+        if (!out.containsKey("error")) {
+            BrowserController.streamScreenshotIfHeadless("Set viewport: ${width}x${height}")
+        }
+        textPart(out)
+    },
+)
+
 /**
  * Token-cost optimisation pass — composite click+read tool. Cuts the dominant
  * "click → wait → get_text" three-call sequence to one round trip. The trade is
@@ -1368,6 +1476,7 @@ fun createBrowserTool(
     BrowserToolDefaults.GET_TEXT -> browserGetTextTool()
     BrowserToolDefaults.GET_DOM -> browserGetDomTool()
     BrowserToolDefaults.GET_LINKS -> browserGetLinksTool()
+    BrowserToolDefaults.GET_COOKIES -> browserGetCookiesTool()
     BrowserToolDefaults.BACK -> browserBackTool()
     BrowserToolDefaults.FORWARD -> browserForwardTool()
     BrowserToolDefaults.WAIT_FOR -> browserWaitForTool()
@@ -1378,6 +1487,8 @@ fun createBrowserTool(
     BrowserToolDefaults.SELECT -> browserSelectTool()
     BrowserToolDefaults.PRESS_KEY -> browserPressKeyTool()
     BrowserToolDefaults.EVAL_JS -> browserEvalJsTool()
+    BrowserToolDefaults.HANDLE_DIALOG -> browserHandleDialogTool()
+    BrowserToolDefaults.SET_VIEWPORT -> browserSetViewportTool()
     BrowserToolDefaults.CLICK_AND_READ -> browserClickAndReadTool()
     BrowserToolDefaults.DONE -> browserDoneTool(invocationContext)
     else -> null

@@ -430,9 +430,11 @@ class McpManager(
         // 注册当前工具
         tools.forEach { tool ->
             val mcpToolName = "mcp__${serverSlug}_${config.commonOptions.name}__${tool.name}"
+            val effectiveDesc = tool.description?.takeIf { it.isNotBlank() }
+                ?: "MCP tool: ${tool.name} from ${config.commonOptions.name}"
             ToolRegistry.register(ToolRegistry.ToolEntry(
                 name = mcpToolName,
-                description = tool.description ?: "",
+                description = effectiveDesc,
                 category = "mcp",
                 schema = tool.inputSchema,
                 needsApproval = true,

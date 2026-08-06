@@ -894,10 +894,12 @@ class ChatService(
             val mcpToolDefinitions = availableMcpTools.map { (serverId, serverName, tool) ->
                 val serverSlug = serverId.toString().take(8).replace("-", "")
                 val mcpToolName = "mcp__${serverSlug}_${serverName}__${tool.name}"
+                val effectiveDesc = tool.description?.takeIf { it.isNotBlank() }
+                    ?: "MCP tool: ${tool.name} from $serverName"
                 ToolRegistry.register(
                     ToolRegistry.ToolEntry(
                         name = mcpToolName,
-                        description = tool.description ?: "",
+                        description = effectiveDesc,
                         category = "mcp",
                         schema = tool.inputSchema,
                         needsApproval = true,
@@ -906,7 +908,7 @@ class ChatService(
                 )
                 Tool(
                     name = mcpToolName,
-                    description = tool.description ?: "",
+                    description = effectiveDesc,
                     parameters = { tool.inputSchema },
                     needsApproval = { true },
                     execute = { args -> mcpManager.callTool(serverId, tool.name, args.jsonObject) },

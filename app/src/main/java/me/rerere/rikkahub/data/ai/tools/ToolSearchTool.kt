@@ -31,28 +31,36 @@ fun toolSearchTool(
         Returns matching tool names, descriptions, categories, and parameter schemas
         so you can call them immediately.
 
+        Multi-keyword search: separate keywords with spaces. ALL keywords must match
+        (tool name or description). Example: "ssh upload" matches tools with both
+        "ssh" and "upload" in their name or description. If no tool matches all
+        keywords, the search falls back to OR semantics, then to fuzzy matching.
+
+        Category browse: omit query and pass category to list all tools in that
+        category. Example: category="file" lists all file management tools.
+
         Available categories: device, media, phone, camera, screen, app, shell, telegram,
         cron, file, notification, mcp, automation, config, subagent, skill,
         intent, workflow, browser, security, nfc, storage, archive, keyboard,
-        workspace, download, location, sensor, telephony, wallpaper
+        workspace, download, location, sensor, telephony, wallpaper, misc
     """.trimIndent(),
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("query", buildJsonObject {
                     put("type", "string")
-                    put("description", "Search keyword (matches tool name and description)")
+                    put("description", "Search keyword(s). Multiple keywords separated by spaces require ALL to match. Omit to browse by category.")
                 })
                 put("category", buildJsonObject {
                     put("type", "string")
-                    put("description", "Optional: filter by category (e.g. 'shell', 'telegram', 'file')")
+                    put("description", "Optional: filter by category (e.g. 'shell', 'file', 'browser'). Use alone to browse all tools in a category.")
                 })
                 put("limit", buildJsonObject {
                     put("type", "number")
                     put("description", "Max results to return (default 10, max 50)")
                 })
             },
-            required = listOf("query")
+            required = emptyList()
         )
     },
     needsApproval = { false },
@@ -61,9 +69,9 @@ fun toolSearchTool(
         val category = args.jsonObject["category"]?.jsonPrimitive?.contentOrNull
         val limit = (args.jsonObject["limit"]?.jsonPrimitive?.intOrNull ?: 10).coerceIn(1, 50)
 
-        if (query.isBlank()) {
+        if (query.isBlank() && category.isNullOrBlank()) {
             return@Tool listOf(UIMessagePart.Text(
-                """{"error": "query parameter is required and cannot be empty"}"""
+                """{"error": "at least one of query or category is required"}"""
             ))
         }
 

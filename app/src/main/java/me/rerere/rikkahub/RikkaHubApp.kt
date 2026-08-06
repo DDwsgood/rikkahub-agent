@@ -476,6 +476,9 @@ class RikkaHubApp : Application() {
                         putExtra(WebServerService.EXTRA_LOCALHOST_ONLY, settings.webServerLocalhostOnly)
                     }
                     startForegroundService(intent)
+                    // Defense-in-depth: periodic health probe re-starts the service if
+                    // OEM aggressive task-killing or OOM kills it. Mirrors TelegramBotHealthWorker.
+                    me.rerere.rikkahub.service.WebServerHealthWorker.schedule(this@RikkaHubApp)
                 }
             }.onFailure {
                 Log.e(TAG, "startWebServerIfEnabled failed", it)

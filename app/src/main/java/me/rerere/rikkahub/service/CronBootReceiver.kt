@@ -59,6 +59,9 @@ class CronBootReceiver : BroadcastReceiver(), KoinComponent {
                         me.rerere.rikkahub.service.TelegramBotHealthWorker.schedule(context)
                     }
 
+                    // Re-arm the web server health probe on boot.
+                    me.rerere.rikkahub.service.WebServerHealthWorker.schedule(context)
+
                     // Phase 12 — fire any boot-completed workflows. The dispatcher reads the
                     // boot trigger family which has been bound to current matching workflows
                     // by TriggerRegistry.start().

@@ -1,0 +1,162 @@
+name: Build release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap_run_id:
+        description: Successful Build Termux bootstraps workflow run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  build-release:
+    name: Release APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out application source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download validated release aarch64 bootstrap
+        uses: actions/download-artifact@v4
+        with:
+          name: termux-bootstrap-release-aarch64
+          path: bootstrap-artifacts/aarch64
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download validated release x86_64 bootstrap
+        uses: actions/download-artifact@v4
+        with:
+          name: termux-bootstrap-release-x86_64
+          path: bootstrap-artifacts/x86_64
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Revalidate embedded bootstraps (release variant)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash .github/termux-bootstrap/validate-bootstrap.sh \
+            release aarch64 bootstrap-artifacts/aarch64
+          bash .github/termux-bootstrap/validate-bootstrap.sh \
+            release x86_64 bootstrap-artifacts/x86_64
+
+      - name: Prepare embedded bootstrap assets
+        id: bootstraps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Release build uses the main source set, not debug-specific.
+          asset_dir=app/src/main/assets/termux
+          mkdir -p "$asset_dir"
+          aarch64_zip=$(find bootstrap-artifacts -type f -name bootstrap-aarch64.zip -print -quit)
+          x86_64_zip=$(find bootstrap-artifacts -type f -name bootstrap-x86_64.zip -print -quit)
+          test -n "$aarch64_zip" && test -s "$aarch64_zip"
+          test -n "$x86_64_zip" && test -s "$x86_64_zip"
+          cp "$aarch64_zip" "$asset_dir/bootstrap-aarch64.zip"
+          cp "$x86_64_zip" "$asset_dir/bootstrap-x86_64.zip"
+          aarch64_sha=$(sha256sum "$aarch64_zip" | awk '{print $1}')
+          x86_64_sha=$(sha256sum "$x86_64_zip" | awk '{print $1}')
+          echo "aarch64_sha=$aarch64_sha" >> "$GITHUB_OUTPUT"
+          echo "x86_64_sha=$x86_64_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Install Android SDK 37
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          sdkmanager="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" --channel=3 "platforms;android-37.0" "build-tools;36.0.0"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Decode signing keystore
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > rikkahub-release.jks
+          test -s rikkahub-release.jks
+          keytool -list -keystore rikkahub-release.jks \
+            -storepass "${{ secrets.SIGNING_STORE_PASSWORD }}" \
+            -alias "${{ secrets.SIGNING_KEY_ALIAS }}" -v | head -5
+
+      - name: Create local.properties with signing config
+        shell: bash
+        run: |
+          cat > local.properties <<EOF
+          storeFile=${{ github.workspace }}/rikkahub-release.jks
+          storePassword=${{ secrets.SIGNING_STORE_PASSWORD }}
+          keyAlias=${{ secrets.SIGNING_KEY_ALIAS }}
+          keyPassword=${{ secrets.SIGNING_KEY_PASSWORD }}
+          EOF
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ./gradlew :app:assembleRelease \
+            -PtermuxBootstrapAarch64Sha256=${{ steps.bootstraps.outputs.aarch64_sha }} \
+            -PtermuxBootstrapX8664Sha256=${{ steps.bootstraps.outputs.x86_64_sha }}
+
+      - name: Verify and describe release APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          apksigner=$(find "$sdk_root/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)
+          test -n "$apksigner" && test -x "$apksigner"
+          mkdir -p apk-artifact
+          # Copy all APK variants (universal + per-ABI)
+          find app/build/outputs/apk/release -type f -name '*.apk' | while read -r apk; do
+            name=$(basename "$apk")
+            cp "$apk" "apk-artifact/$name"
+            "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee "apk-artifact/${name}.verify.txt"
+          done
+          (
+            cd apk-artifact
+            sha256sum *.apk | tee SHA256SUMS
+          )
+          {
+            echo "source_commit=$GITHUB_SHA"
+            echo "source_branch=${{ github.ref_name }}"
+            echo "bootstrap_run_id=${{ inputs.bootstrap_run_id }}"
+            echo "application_id=excp.rikkahub"
+            echo "version_code=172"
+            echo "version_name=2.5.0"
+            echo "aarch64_sha256=${{ steps.bootstraps.outputs.aarch64_sha }}"
+            echo "x86_64_sha256=${{ steps.bootstraps.outputs.x86_64_sha }}"
+            echo "completed_at=$(date --utc --iso-8601=seconds)"
+          } > apk-artifact/build-info.txt
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-agent-release-apk
+          path: apk-artifact/
+          if-no-files-found: error
+          retention-days: 30

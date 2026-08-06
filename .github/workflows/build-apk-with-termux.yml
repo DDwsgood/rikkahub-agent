@@ -94,6 +94,23 @@ jobs:
         with:
           version: 10
 
+      - name: Decode fixed debug signing keystore
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "${{ secrets.DEBUG_SIGNING_KEYSTORE_BASE64 }}" | base64 -d > debug-signing.jks
+          test -s debug-signing.jks
+
+      - name: Create local.properties with debug signing config
+        shell: bash
+        run: |
+          cat > local.properties <<EOF
+          debugStoreFile=${{ github.workspace }}/debug-signing.jks
+          debugStorePassword=${{ secrets.DEBUG_SIGNING_STORE_PASSWORD }}
+          debugKeyAlias=${{ secrets.DEBUG_SIGNING_KEY_ALIAS }}
+          debugKeyPassword=${{ secrets.DEBUG_SIGNING_KEY_PASSWORD }}
+          EOF
+
       - name: Build debug APK
         shell: bash
         run: |

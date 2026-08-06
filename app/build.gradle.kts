@@ -87,6 +87,29 @@ android {
                 }
             }
         }
+        // Fixed debug signing keystore — when configured via local.properties,
+        // all debug builds use the same signing key across CI runs, enabling
+        // in-place updates without uninstall/reinstall. Falls back to the default
+        // debug keystore when not configured (local development).
+        create("debugFixed") {
+            val debugLocalProperties = Properties()
+            val debugLocalPropertiesFile = rootProject.file("local.properties")
+            if (debugLocalPropertiesFile.exists()) {
+                debugLocalProperties.load(FileInputStream(debugLocalPropertiesFile))
+                val debugStoreFile = debugLocalProperties.getProperty("debugStoreFile")
+                val debugStorePassword = debugLocalProperties.getProperty("debugStorePassword")
+                val debugKeyAlias = debugLocalProperties.getProperty("debugKeyAlias")
+                val debugKeyPassword = debugLocalProperties.getProperty("debugKeyPassword")
+                if (debugStoreFile != null && debugStorePassword != null &&
+                    debugKeyAlias != null && debugKeyPassword != null
+                ) {
+                    storeFile = file(debugStoreFile)
+                    storePassword = debugStorePassword
+                    keyAlias = debugKeyAlias
+                    keyPassword = debugKeyPassword
+                }
+            }
+        }
     }
 
     buildTypes {
@@ -104,6 +127,9 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            // Use fixed debug signing when available (CI), otherwise default debug keystore.
+            signingConfig = signingConfigs.getByName("debugFixed").takeIf { it.storeFile != null }
+                ?: signingConfigs.getByName("debug")
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
             buildConfigField("String", "UPDATE_API_URL", "\"\"")

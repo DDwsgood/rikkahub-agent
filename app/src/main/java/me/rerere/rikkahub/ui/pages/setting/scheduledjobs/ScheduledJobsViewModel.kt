@@ -70,5 +70,7 @@ class ScheduledJobsViewModel(
 
     suspend fun get(id: String): ScheduledJobEntity? = repository.getById(id)
 
+    fun canScheduleExactAlarms(): Boolean = scheduler.canScheduleExactAlarms()
+
     enum class RunNowOutcome { Fired, NotFound, Disabled }
 }

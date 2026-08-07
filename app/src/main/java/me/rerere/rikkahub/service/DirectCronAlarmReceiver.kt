@@ -12,17 +12,21 @@ import androidx.work.WorkManager
 import java.util.concurrent.Executor
 
 /**
- * Turns an AlarmManager.setExactAndAllowWhileIdle wake-up (LLM-mode jobs) into durable
- * WorkManager work.
+ * Turns a direct-mode AlarmManager.setAlarmClock wake-up into **immediate** execution.
  *
- * The receiver deliberately does not execute tools, access Room, or start an agent. It only
- * persists a slot-scoped worker and keeps the broadcast pending until WorkManager has committed
- * the enqueue operation. Exact work is expedited because the user's scheduled job needs to
- * start on time; quota exhaustion gracefully falls back to normal work. LLM-mode jobs are
- * long-running (model inference), so durable/expedited WorkManager is the right execution
- * component — unlike direct-mode jobs which use [DirectCronAlarmReceiver] with setAlarmClock.
+ * setAlarmClock arms a user-visible alarm (shown in the system clock app). When it fires,
+ * this receiver enqueues an **expedited** OneTimeWorkRequest with zero delay — NOT the
+ * regular delayed WorkManager path used by [CronJobScheduler.enqueueFlexible]. The
+ * expedited worker gets foreground promotion via [CronJobWorker] and runs the direct-mode
+ * action sequence through [DirectModeActionRunner].
+ *
+ * The receiver does not execute tools itself (broadcast time limits forbid it). It only
+ * persists the immediate work request and keeps the broadcast pending until WorkManager
+ * has committed the enqueue. This satisfies the contract: "Receiver 触发后不是普通延迟
+ * WorkManager" — the work is expedited, 0-delay, and foreground-promoted, not a delayed
+ * flexible enqueue.
  */
-class ExactCronAlarmReceiver : BroadcastReceiver() {
+class DirectCronAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_FIRE) return
         val jobId = intent.getStringExtra(CronJobWorker.KEY_JOB_ID) ?: return
@@ -43,27 +47,27 @@ class ExactCronAlarmReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         try {
             val operation = WorkManager.getInstance(context).enqueueUniqueWork(
-                CronJobScheduler.exactExecutionWorkName(jobId, scheduledAtMs),
+                CronJobScheduler.directExecutionWorkName(jobId, scheduledAtMs),
                 ExistingWorkPolicy.KEEP,
                 request,
             )
             operation.result.addListener(
                 {
                     runCatching { operation.result.get() }
-                        .onFailure { Log.e(TAG, "Failed to persist exact fire for $jobId", it) }
+                        .onFailure { Log.e(TAG, "Failed to persist direct fire for $jobId", it) }
                     pendingResult.finish()
                 },
                 DIRECT_EXECUTOR,
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "Unable to enqueue exact fire for $jobId", t)
+            Log.e(TAG, "Unable to enqueue direct fire for $jobId", t)
             pendingResult.finish()
         }
     }
 
     companion object {
-        const val ACTION_FIRE = "me.rerere.rikkahub.action.LLM_CRON_FIRE"
-        private const val TAG = "ExactCronReceiver"
+        const val ACTION_FIRE = "me.rerere.rikkahub.action.DIRECT_CRON_FIRE"
+        private const val TAG = "DirectCronReceiver"
         private val DIRECT_EXECUTOR = Executor { command -> command.run() }
     }
 }

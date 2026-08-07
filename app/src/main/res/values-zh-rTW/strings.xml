@@ -1455,7 +1455,7 @@
   <string name="setting_page_scheduled_jobs_hide_args">隱藏參數</string>
   <string name="setting_page_scheduled_jobs_history_empty">尚未記錄任何觸發。</string>
   <string name="setting_page_scheduled_jobs_how_it_works">排程任務的運作方式</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">排程任務基於時間觸發。兩種計時類型：「once」在單一絕對時刻觸發，「cron」按重複運算式觸發，例如每個工作日上午 9 點。\n\n兩種執行模式：「direct」不經過大型語言模型，執行一組固定的工具呼叫；「LLM」向助理傳送提示詞，由模型決定要做什麼。\n\n彈性計時使用 WorkManager，以較省電的方式觸發，但可能延遲。精確計時適用於需要在指定時間附近開始的使用者可見任務，需要「鬧鐘與提醒」權限；權限不可用時會安全降級為彈性計時。當 Android 再次啟動應用程式時會恢復排程。系統暫停應用程式以及部分廠商的電池限制仍可能延遲任務，直到使用者開啟應用程式。HARDLINE 過濾器仍會攔截危險的 shell 指令，每次觸發都會記錄在任務歷史中。</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">排程任務基於時間觸發。兩種計時類型：「once」在單一絕對時刻觸發，「cron」按重複運算式觸發，例如每個工作日上午 9 點。\n\n兩種執行模式：「direct」不經過大型語言模型，執行一組固定的工具呼叫；「LLM」向助理傳送提示詞，由模型決定要做什麼。\n\n排程後端自動選擇：「direct」任務使用鬧鐘精確計時；「LLM」任務使用精確鬧鐘。當精確鬧鐘權限不可用（Android 12+）時，所有任務安全降級為彈性省電計時。授予「鬧鐘與提醒」權限即可啟用精確排程。當 Android 再次啟動應用程式時會恢復排程。HARDLINE 過濾器仍會攔截危險的 shell 指令，每次觸發都會記錄在任務歷史中。</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">知道了</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">排程任務的運作方式</string>
   <string name="setting_page_scheduled_jobs_no_actions">（未定義操作）</string>
@@ -1771,11 +1771,15 @@
   <string name="chat_page_delete_folder_generating">此資料夾中的部分對話仍在生成中。請先停止它們再刪除。</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 不朗讀括號內的內容</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">啟用後，TTS 將不朗讀括號內的內容</string>
-  <string name="setting_page_scheduled_jobs_precision_exact">精確度：精確</string>
-  <string name="setting_page_scheduled_jobs_precision_flexible">精確度：彈性</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_title">精確計時需要權限</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_body">請授予「鬧鐘與提醒」存取權。在此之前，精確任務會安全降級為彈性計時。</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">策略：精確鬧鐘</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">策略：彈性（省電）</string>
+  <string name="setting_page_scheduled_jobs_strategy_direct_alarm_clock">Direct：鬧鐘</string>
+  <string name="setting_page_scheduled_jobs_strategy_llm_exact_alarm">LLM：精確鬧鐘</string>
+  <string name="setting_page_scheduled_jobs_strategy_flexible_fallback">彈性（省電）</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">精確排程需要權限</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">請授予「鬧鐘與提醒」存取權，以便排程任務準時觸發。在此之前，所有任務安全降級為彈性計時。</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">授予權限</string>
   <string name="scheduled_job_execution_notification_title">排程任務正在執行</string>
   <string name="scheduled_job_execution_notification_preparing">正在準備排程任務</string>
 </resources>
+

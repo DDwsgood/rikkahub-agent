@@ -1457,7 +1457,7 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="setting_page_scheduled_jobs_hide_args">인수 숨기기</string>
   <string name="setting_page_scheduled_jobs_history_empty">아직 발생 기록이 없습니다.</string>
   <string name="setting_page_scheduled_jobs_how_it_works">예약 작업 작동 방식</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">예약 작업은 시간에 따라 실행됩니다. 타이밍 유형은 두 가지입니다. "once"는 하나의 절대 시각에 실행되고, "cron"은 평일 오전 9시와 같은 반복 표현식에 따라 실행됩니다.\n\n실행 모드도 두 가지입니다. "direct"는 LLM 없이 고정된 도구 호출 목록을 실행하고, "LLM"은 어시스턴트에 프롬프트를 보내 모델이 수행할 작업을 결정하게 합니다.\n\n유연한 타이밍은 WorkManager를 사용해 배터리를 절약하지만 늦게 실행될 수 있습니다. 정확한 타이밍은 요청 시각 근처에 시작해야 하는 사용자 표시 작업에 사용하며 알람 및 리마인더 접근 권한이 필요합니다. 권한이 없으면 안전하게 유연한 타이밍으로 대체됩니다. Android가 앱을 다시 시작하면 일정이 복원됩니다. 시스템의 앱 일시 중지와 일부 제조사의 배터리 제한으로 인해 앱을 열 때까지 작업이 지연될 수 있습니다. HARDLINE 필터는 위험한 셸 명령을 계속 차단하며 각 실행은 작업 기록에 저장됩니다.</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">예약 작업은 시간에 따라 실행됩니다. 타이밍 유형은 두 가지입니다. "once"는 하나의 절대 시각에 실행되고, "cron"은 평일 오전 9시와 같은 반복 표현식에 따라 실행됩니다.\n\n실행 모드도 두 가지입니다. "direct"는 LLM 없이 고정된 도구 호출 목록을 실행하고, "LLM"은 어시스턴트에 프롬프트를 보내 모델이 수행할 작업을 결정하게 합니다.\n\n스케줄링 백엔드는 자동 선택입니다: "direct" 작업은 알람 시계로 정확하게 실행되고, "LLM" 작업은 정확한 알람을 사용합니다. 정확한 알람 권한이 없으면(Android 12+) 모든 작업이 안전하게 유연한 배터리 절약 타이밍으로 대체됩니다. 알람 및 리마인더 접근을 허용하면 정확한 스케줄링이 활성화됩니다. Android가 앱을 다시 시작하면 일정이 복원됩니다. HARDLINE 필터는 위험한 셸 명령을 계속 차단하며 각 실행은 작업 기록에 저장됩니다.</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">확인</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">예약 작업 작동 방식</string>
   <string name="setting_page_scheduled_jobs_no_actions">(정의된 작업 없음)</string>
@@ -1773,11 +1773,15 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="chat_page_delete_folder_generating">이 폴더의 일부 대화가 아직 생성 중입니다. 삭제하기 전에 중지해 주세요.</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 괄호 안 내용 읽지 않기</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">활성화하면 TTS가 괄호 안의 내용을 읽지 않습니다</string>
-  <string name="setting_page_scheduled_jobs_precision_exact">정밀도: 정확</string>
-  <string name="setting_page_scheduled_jobs_precision_flexible">정밀도: 유연</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_title">정확한 실행 시간에 권한 필요</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_body">알람 및 리마인더 접근을 허용하세요. 허용하기 전까지 정확한 작업은 유연한 일정으로 안전하게 대체됩니다.</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">전략: 정확한 알람</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">전략: 유연 (배터리 절약)</string>
+  <string name="setting_page_scheduled_jobs_strategy_direct_alarm_clock">Direct: 알람 시계</string>
+  <string name="setting_page_scheduled_jobs_strategy_llm_exact_alarm">LLM: 정확한 알람</string>
+  <string name="setting_page_scheduled_jobs_strategy_flexible_fallback">유연 (배터리 절약)</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">정확한 스케줄링에 권한 필요</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">알람 및 리마인더 접근을 허용하세요. 허용하기 전까지 모든 작업은 안전하게 유연한 타이밍으로 대체됩니다.</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">접근 허용</string>
   <string name="scheduled_job_execution_notification_title">예약 작업 실행 중</string>
   <string name="scheduled_job_execution_notification_preparing">예약 작업 준비 중</string>
 </resources>
+

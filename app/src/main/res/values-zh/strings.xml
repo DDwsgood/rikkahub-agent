@@ -1485,7 +1485,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_page_scheduled_jobs_hide_args">隐藏参数</string>
   <string name="setting_page_scheduled_jobs_history_empty">尚未记录任何触发。</string>
   <string name="setting_page_scheduled_jobs_how_it_works">定时任务的运作方式</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">定时任务基于时间触发。两种计时类型：“once”在一个绝对时刻触发，“cron”按重复表达式触发，例如每个工作日上午 9 点。\n\n两种运行模式：“direct”不经过大模型，运行一组固定的工具调用；“LLM”向助手发送提示词，由模型决定要做什么。\n\n灵活定时使用 WorkManager，以更省电的方式触发，但可能延迟。精确定时适用于需要在指定时间附近开始的用户可见任务，需要“闹钟和提醒”权限；权限不可用时会安全降级为灵活定时。当 Android 再次启动应用时会恢复调度。系统暂停应用以及部分厂商的电池限制仍可能延迟任务，直到用户打开应用。HARDLINE 过滤器仍会拦截危险的 shell 命令，每次触发都会记录在任务历史中。</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">定时任务基于时间触发。两种计时类型：“once”在一个绝对时刻触发，“cron”按重复表达式触发，例如每个工作日上午 9 点。\n\n两种运行模式：“direct”不经过大模型，运行一组固定的工具调用；“LLM”向助手发送提示词，由模型决定要做什么。\n\n调度后端自动选择：“direct”任务使用闹钟精确定时；“LLM”任务使用精确闹钟。当精确闹钟权限不可用（Android 12+）时，所有任务安全降级为灵活省电定时。授予“闹钟和提醒”权限即可启用精确调度。当 Android 再次启动应用时会恢复调度。HARDLINE 过滤器仍会拦截危险的 shell 命令，每次触发都会记录在任务历史中。</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">知道了</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">定时任务的运作方式</string>
   <string name="setting_page_scheduled_jobs_no_actions">（未定义操作）</string>
@@ -1776,11 +1776,15 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="chat_page_folder_add">新建</string>
   <string name="chat_page_delete_folder_confirm">删除文件夹 "%1$s"？其中的对话不会被删除，只会从文件夹中移除。</string>
   <string name="chat_page_delete_folder_generating">此文件夹中有对话仍在生成中，请停止后再删除。</string>
-  <string name="setting_page_scheduled_jobs_precision_exact">精度：精确</string>
-  <string name="setting_page_scheduled_jobs_precision_flexible">精度：灵活</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_title">精确定时需要权限</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_body">请授予“闹钟和提醒”访问权限。在此之前，精确任务会安全降级为灵活定时。</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">策略：精确闹钟</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">策略：灵活（省电）</string>
+  <string name="setting_page_scheduled_jobs_strategy_direct_alarm_clock">Direct：闹钟</string>
+  <string name="setting_page_scheduled_jobs_strategy_llm_exact_alarm">LLM：精确闹钟</string>
+  <string name="setting_page_scheduled_jobs_strategy_flexible_fallback">灵活（省电）</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">精确调度需要权限</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">请授予“闹钟和提醒”访问权限，以便定时任务准时触发。在此之前，所有任务安全降级为灵活定时。</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">授予权限</string>
   <string name="scheduled_job_execution_notification_title">定时任务正在运行</string>
   <string name="scheduled_job_execution_notification_preparing">正在准备定时任务</string>
 </resources>
+

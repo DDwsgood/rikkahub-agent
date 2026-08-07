@@ -1,7 +1,9 @@
 package me.rerere.rikkahub.ui.pages.setting.scheduledjobs
 
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
+import me.rerere.rikkahub.service.CronJobScheduler
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -98,5 +100,24 @@ class ScheduledJobSummariesTest {
         assertEquals("LLM-driven", modeLabel(job("once", mode = "llm")))
         assertEquals("direct (no LLM)", modeLabel(job("once", mode = "direct")))
         assertEquals("future-mode", modeLabel(job("once", mode = "future-mode")))
+    }
+
+    @Test fun `selectBackendLabel mirrors scheduler mode-to-backend mapping`() {
+        assertEquals(
+            CronJobScheduler.Backend.ALARM_CLOCK_DIRECT,
+            selectBackendLabel("direct", exactAlarmGranted = true),
+        )
+        assertEquals(
+            CronJobScheduler.Backend.EXACT_ALARM_LLM,
+            selectBackendLabel("llm", exactAlarmGranted = true),
+        )
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            selectBackendLabel("direct", exactAlarmGranted = false),
+        )
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            selectBackendLabel("llm", exactAlarmGranted = false),
+        )
     }
 }

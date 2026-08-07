@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.pages.setting.scheduledjobs
 
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
+import me.rerere.rikkahub.service.CronJobScheduler
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -116,6 +117,14 @@ fun modeLabel(job: ScheduledJobEntity): String = when (job.mode) {
     "direct" -> "direct (no LLM)"
     else -> job.mode
 }
+
+/**
+ * Pure function that maps (mode, exactAlarmGranted) to a backend enum, mirroring
+ * [CronJobScheduler.selectBackend]. Used by the UI to render the strategy line without
+ * needing a Context/AlarmManager.
+ */
+fun selectBackendLabel(mode: String, exactAlarmGranted: Boolean): CronJobScheduler.Backend =
+    CronJobScheduler.selectBackend(mode, exactAlarmGranted)
 
 fun formatAbsoluteForDetail(ms: Long): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(ms))

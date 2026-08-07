@@ -29,9 +29,10 @@ import me.rerere.ai.core.Tool
  *    that read like "I looked at it" - the root cause of confabulated image descriptions.
  *    Defaults to `true`: the no-knowledge fallback preserves the pre-fix behaviour, and
  *    ChatService (the only LLM-driven dispatch path) always sets it explicitly.
- *  - [dynamicToolsProvider]: returns tools discovered through `search_tools`. The generation
- *    loop invokes it before every provider request, so newly discovered tools are declared in
- *    the next request instead of relying on providers to call undeclared functions.
+ *  - [dynamicToolsProvider]: returns the tools the assistant may use for this generation.
+ *    The generation loop invokes it before every provider request so every usable tool is
+ *    declared and resolvable at each step. Availability is independent of `search_tools`:
+ *    search is only a capability-discovery aid and never gates declaration or execution.
  */
 data class ToolInvocationContext(
     val callerAssistantId: String? = null,

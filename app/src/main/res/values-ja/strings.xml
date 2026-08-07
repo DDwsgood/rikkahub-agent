@@ -1457,7 +1457,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_page_scheduled_jobs_hide_args">引数を隠す</string>
   <string name="setting_page_scheduled_jobs_history_empty">まだ発火の記録はありません。</string>
   <string name="setting_page_scheduled_jobs_how_it_works">スケジュールジョブの仕組み</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">スケジュールジョブは時刻に基づいて実行されます。タイミングは 2 種類あり、「once」は 1 つの絶対時刻に実行され、「cron」は平日の午前 9 時などの繰り返し式で実行されます。\n\n実行モードも 2 種類あります。「direct」は LLM を使わず固定されたツール呼び出しを実行し、「LLM」はアシスタントにプロンプトを送ってモデルに処理内容を判断させます。\n\n柔軟なタイミングは WorkManager を使用して省電力で実行しますが、遅れることがあります。正確なタイミングは指定時刻の近くに開始する必要があるユーザー向けジョブに使用し、「アラームとリマインダー」へのアクセスが必要です。権限がない場合は安全に柔軟なタイミングへ切り替わります。Android が再びアプリを起動するとスケジュールが復元されます。システムによるアプリの休止や一部メーカーのバッテリー制限により、アプリを開くまで処理が遅れる場合があります。HARDLINE フィルターは危険なシェルコマンドを引き続きブロックし、各実行はジョブ履歴に記録されます。</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">スケジュールジョブは時刻に基づいて実行されます。タイミングは 2 種類あり、「once」は 1 つの絶対時刻に実行され、「cron」は平日の午前 9 時などの繰り返し式で実行されます。\n\n実行モードも 2 種類あります。「direct」は LLM を使わず固定されたツール呼び出しを実行し、「LLM」はアシスタントにプロンプトを送ってモデルに処理内容を判断させます。\n\nスケジュールバックエンドは自動選択です：「direct」ジョブはアラームクロックで精確に配信し、「LLM」ジョブは正確なアラームを使用します。正確なアラーム権限が利用できない場合（Android 12+）、すべてのジョブは安全に柔軟な省電力タイミングにフォールバックします。「アラームとリマインダー」へのアクセスを許可すると精確なスケジューリングが有効になります。Android が再びアプリを起動するとスケジュールが復元されます。HARDLINE フィルターは危険なシェルコマンドを引き続きブロックし、各実行はジョブ履歴に記録されます。</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">了解</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">スケジュールジョブの仕組み</string>
   <string name="setting_page_scheduled_jobs_no_actions">（アクションが定義されていません）</string>
@@ -1773,11 +1773,15 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="chat_page_delete_folder_generating">フォルダ内の一部の会話がまだ生成中です。削除する前にそれらを停止してください。</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 括弧内を読み上げない</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">有効にすると、TTS は括弧内の内容を読み上げません</string>
-  <string name="setting_page_scheduled_jobs_precision_exact">精度：厳密</string>
-  <string name="setting_page_scheduled_jobs_precision_flexible">精度：柔軟</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_title">正確なタイミングには権限が必要です</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_body">「アラームとリマインダー」へのアクセスを許可してください。それまでは、正確なジョブは柔軟なタイミングで安全に実行されます。</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">戦略：正確なアラーム</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">戦略：柔軟（省電力）</string>
+  <string name="setting_page_scheduled_jobs_strategy_direct_alarm_clock">Direct：アラームクロック</string>
+  <string name="setting_page_scheduled_jobs_strategy_llm_exact_alarm">LLM：正確なアラーム</string>
+  <string name="setting_page_scheduled_jobs_strategy_flexible_fallback">柔軟（省電力）</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">精確なスケジューリングには権限が必要です</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">「アラームとリマインダー」へのアクセスを許可してください。それまでは、すべてのジョブは安全に柔軟なタイミングで実行されます。</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">アクセスを許可</string>
   <string name="scheduled_job_execution_notification_title">スケジュールジョブを実行中</string>
   <string name="scheduled_job_execution_notification_preparing">スケジュールジョブを準備中</string>
 </resources>
+

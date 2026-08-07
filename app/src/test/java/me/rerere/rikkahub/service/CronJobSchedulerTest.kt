@@ -21,12 +21,13 @@ class CronJobSchedulerTest {
         runsSoFar: Int = 0,
         lastRun: Long? = null,
         enabled: Boolean = true,
+        precision: String = "flexible",
     ) = ScheduledJobEntity(
         id = "j", name = "n", prompt = "p", assistantId = "a",
         scheduleType = scheduleType, atUnixMs = atMs, cronExpression = cron,
         timezone = timezone, startAtUnixMs = startAt, endAtUnixMs = endAt,
         maxRuns = maxRuns, runsSoFar = runsSoFar, lastRunAtMs = lastRun,
-        enabled = enabled, createdAtMs = 0L,
+        enabled = enabled, createdAtMs = 0L, schedulePrecision = precision,
     )
 
     @Test
@@ -77,30 +78,62 @@ class CronJobSchedulerTest {
     }
 
     @Test
-    fun `flexible precision always selects WorkManager`() {
+    fun `backend selection - direct mode with permission uses alarm clock`() {
         assertEquals(
-            CronJobScheduler.Backend.WORK_MANAGER,
-            CronJobScheduler.selectBackend(
-                CronJobScheduler.PRECISION_FLEXIBLE,
-                exactAlarmGranted = true,
-            ),
+            CronJobScheduler.Backend.ALARM_CLOCK_DIRECT,
+            CronJobScheduler.selectBackend("direct", exactAlarmGranted = true),
         )
     }
 
     @Test
-    fun `exact precision selects alarm only while access is granted`() {
+    fun `backend selection - llm mode with permission uses exact alarm`() {
         assertEquals(
-            CronJobScheduler.Backend.EXACT_ALARM,
-            CronJobScheduler.selectBackend(
-                CronJobScheduler.PRECISION_EXACT,
-                exactAlarmGranted = true,
-            ),
+            CronJobScheduler.Backend.EXACT_ALARM_LLM,
+            CronJobScheduler.selectBackend("llm", exactAlarmGranted = true),
+        )
+    }
+
+    @Test
+    fun `backend selection - no permission falls back to WorkManager for both modes`() {
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            CronJobScheduler.selectBackend("direct", exactAlarmGranted = false),
         )
         assertEquals(
             CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
-            CronJobScheduler.selectBackend(
-                CronJobScheduler.PRECISION_EXACT,
-                exactAlarmGranted = false,
+            CronJobScheduler.selectBackend("llm", exactAlarmGranted = false),
+        )
+    }
+
+    @Test
+    fun `backend selection - unknown mode falls back to WorkManager even with permission`() {
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            CronJobScheduler.selectBackend("unknown", exactAlarmGranted = true),
+        )
+    }
+
+    @Test
+    fun `legacy precision does not influence backend selection`() {
+        // The schedulePrecision column still exists (no Room migration) but mode drives
+        // the backend, not precision. A legacy 'exact' row with mode='llm' still gets
+        // EXACT_ALARM_LLM when permission is granted.
+        assertEquals(
+            CronJobScheduler.Backend.EXACT_ALARM_LLM,
+            CronJobScheduler.selectBackend("llm", exactAlarmGranted = true),
+        )
+    }
+
+    @Test
+    fun `legacy exact rows still compute a next run`() {
+        // Historical rows persisted with schedulePrecision='exact' must keep scheduling —
+        // precision no longer affects backend choice, only the fire time matters.
+        val at = 1_800_000_000_000L
+        assertEquals(
+            at,
+            CronJobScheduler.nextRunMs(
+                job(scheduleType = "once", atMs = at, precision = CronJobScheduler.PRECISION_EXACT),
+                nowMs = 0L,
             ),
         )
     }
@@ -111,6 +144,82 @@ class CronJobSchedulerTest {
         assertEquals(first, CronJobScheduler.exactExecutionWorkName("job-1", 1_000L))
         assertTrue(first != CronJobScheduler.exactExecutionWorkName("job-1", 2_000L))
         assertTrue(first != CronJobScheduler.exactExecutionWorkName("job-2", 1_000L))
+    }
+
+    @Test
+    fun `direct execution work identity is stable per job slot`() {
+        val first = CronJobScheduler.directExecutionWorkName("job-1", 1_000L)
+        assertEquals(first, CronJobScheduler.directExecutionWorkName("job-1", 1_000L))
+        assertTrue(first != CronJobScheduler.directExecutionWorkName("job-1", 2_000L))
+        assertTrue(first != CronJobScheduler.directExecutionWorkName("job-2", 1_000L))
+    }
+
+    @Test
+    fun `direct and llm work names do not collide`() {
+        val direct = CronJobScheduler.directExecutionWorkName("job-1", 1_000L)
+        val llm = CronJobScheduler.exactExecutionWorkName("job-1", 1_000L)
+        assertTrue("direct and llm work names must differ", direct != llm)
+    }
+
+    @Test
+    fun `resolveBackendAfterArm returns desired backend on successful arm`() {
+        assertEquals(
+            CronJobScheduler.Backend.ALARM_CLOCK_DIRECT,
+            CronJobScheduler.resolveBackendAfterArm(
+                CronJobScheduler.Backend.ALARM_CLOCK_DIRECT, armSucceeded = true,
+            ),
+        )
+        assertEquals(
+            CronJobScheduler.Backend.EXACT_ALARM_LLM,
+            CronJobScheduler.resolveBackendAfterArm(
+                CronJobScheduler.Backend.EXACT_ALARM_LLM, armSucceeded = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `resolveBackendAfterArm falls back to WORK_MANAGER_FALLBACK on SecurityException`() {
+        // Simulates the race where SCHEDULE_EXACT_ALARM is revoked between
+        // canScheduleExactAlarms() and setAlarmClock/setExactAndAllowWhileIdle.
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            CronJobScheduler.resolveBackendAfterArm(
+                CronJobScheduler.Backend.ALARM_CLOCK_DIRECT, armSucceeded = false,
+            ),
+        )
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            CronJobScheduler.resolveBackendAfterArm(
+                CronJobScheduler.Backend.EXACT_ALARM_LLM, armSucceeded = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `resolveBackendAfterArm for fallback and none backends passes through`() {
+        // Non-exact backends never go through tryArmExactAlarm, so armSucceeded is
+        // irrelevant — but resolveBackendAfterArm should still behave sanely.
+        assertEquals(
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            CronJobScheduler.resolveBackendAfterArm(
+                CronJobScheduler.Backend.WORK_MANAGER_FALLBACK, armSucceeded = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `showIntent request code is a stable constant`() {
+        // showIntent uses requestCode=0 (not jobId.hashCode()) to avoid PendingIntent
+        // identity collisions. All jobs share one showIntent PendingIntent instance
+        // (same Activity + action), which is correct since they all just open the app.
+        assertEquals(0, CronJobScheduler.SHOW_INTENT_REQUEST_CODE)
+    }
+
+    @Test
+    fun `work tag is stable per job`() {
+        val first = CronJobScheduler.workTagFor("job-1")
+        assertEquals(first, CronJobScheduler.workTagFor("job-1"))
+        assertTrue(first != CronJobScheduler.workTagFor("job-2"))
     }
 
     @Test

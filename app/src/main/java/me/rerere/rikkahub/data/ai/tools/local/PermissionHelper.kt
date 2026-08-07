@@ -54,6 +54,7 @@ object PermissionHelper {
     fun batteryOptimizationsListIntent(): Intent =
         Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
 
+    /** True iff the app can schedule exact alarms (Android 12+ SCHEDULE_EXACT_ALARM). */
     fun canScheduleExactAlarms(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             ctx.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()

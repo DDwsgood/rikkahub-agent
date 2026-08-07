@@ -16,18 +16,18 @@ import me.rerere.rikkahub.utils.JsonInstant
 /**
  * search_tools meta-tool。
  *
- * 默认注入到每个 LLM 请求中。LLM 调用它来搜索
- * 未默认注入的工具（非核心工具、MCP 工具等）。
- * 返回匹配工具的完整 schema，LLM 可以立即调用。
+ * 默认注入到每个 LLM 请求中。LLM 调用它来发现不知道名字的能力
+ * （按关键字或类别搜索，返回匹配工具的完整 schema）。
+ * 这只是能力发现：所有已启用工具在每个步骤都已声明、可直接调用，
+ * 调用本工具与否不会影响任何工具的声明或执行。
  */
 fun toolSearchTool(
     availableToolNames: Set<String>? = null,
-    onToolsDiscovered: (List<String>) -> Unit = {},
 ) = Tool(
     name = "search_tools",
     description = """
         Search for available tools by keyword or category.
-        Use this when you need a capability that is not in your current tool list.
+        Use this when you need a capability but don't know which tool provides it.
         Returns matching tool names, descriptions, categories, and parameter schemas
         so you can call them immediately.
 
@@ -78,7 +78,6 @@ fun toolSearchTool(
         val matches = ToolRegistry.search(query, category)
             .filter { availableToolNames == null || it.name in availableToolNames }
             .take(limit)
-        onToolsDiscovered(matches.map { it.name })
 
         val result = buildJsonObject {
             put("count", matches.size)

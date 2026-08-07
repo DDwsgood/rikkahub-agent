@@ -1438,7 +1438,7 @@
   <string name="setting_page_scheduled_jobs_empty">No scheduled jobs yet. Ask your assistant to create one.</string>
   <string name="setting_page_scheduled_jobs_how_it_works">How scheduled jobs work</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">How scheduled jobs work</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">Scheduled jobs are time-based. Two timing types: "once" fires at one absolute moment, while "cron" uses a recurring expression such as every weekday at 9 a.m.\n\nTwo run modes are available: "direct" runs a fixed list of tool calls without an LLM; "LLM" sends a prompt to the assistant and lets the model decide what to do.\n\nFlexible timing uses WorkManager for battery-friendly delivery and may run late. Exact timing uses Alarms &amp; reminders access for user-visible jobs that need to start near the requested time, and safely falls back to flexible timing when access is unavailable. Schedules are restored when Android starts the app again. System app suspension and some manufacturer battery restrictions can delay work until the app is opened. The HARDLINE filter still blocks dangerous shell commands, and every fire is recorded in the job history.</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">Scheduled jobs are time-based. Two timing types: "once" fires at one absolute moment, while "cron" uses a recurring expression such as every weekday at 9 a.m.\n\nTwo run modes are available: "direct" runs a fixed list of tool calls without an LLM; "LLM" sends a prompt to the assistant and lets the model decide what to do.\n\nScheduling is automatic: "direct" jobs use alarm-clock delivery for precise, user-visible timing; "LLM" jobs use exact alarms. When exact-alarm permission is unavailable (Android 12+), all jobs safely fall back to flexible, battery-friendly timing. Grant Alarms &amp; reminders access to enable precise scheduling. Schedules are restored when Android starts the app again. The HARDLINE filter still blocks dangerous shell commands, and every fire is recorded in the job history.</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">Got it</string>
   <string name="setting_page_scheduled_jobs_subtitle_when">When: %1$s</string>
   <string name="setting_page_scheduled_jobs_subtitle_never_run">Never fired</string>
@@ -1878,11 +1878,15 @@
   <string name="chat_page_folder_add">New</string>
   <string name="chat_page_delete_folder_confirm">Delete folder "%1$s"? Conversations inside will not be deleted, only removed from the folder.</string>
   <string name="chat_page_delete_folder_generating">Some conversations in this folder are still generating. Please stop them before deleting.</string>
-  <string name="setting_page_scheduled_jobs_precision_exact">Precision: exact</string>
-  <string name="setting_page_scheduled_jobs_precision_flexible">Precision: flexible</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_title">Exact timing needs permission</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_body">Grant Alarms &amp; reminders access. Until then, exact jobs safely fall back to flexible timing.</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">Strategy: exact alarm</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">Strategy: flexible (battery-friendly)</string>
+  <string name="setting_page_scheduled_jobs_strategy_direct_alarm_clock">Direct: Alarm Clock</string>
+  <string name="setting_page_scheduled_jobs_strategy_llm_exact_alarm">LLM: Exact alarm</string>
+  <string name="setting_page_scheduled_jobs_strategy_flexible_fallback">Flexible (battery-friendly)</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">Precise scheduling needs permission</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">Grant Alarms &amp; reminders access so scheduled jobs fire on time. Without it, all jobs safely fall back to flexible timing.</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">Grant access</string>
   <string name="scheduled_job_execution_notification_title">Scheduled job running</string>
   <string name="scheduled_job_execution_notification_preparing">Preparing scheduled job</string>
 </resources>
+

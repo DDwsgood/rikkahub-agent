@@ -1457,7 +1457,7 @@
   <string name="setting_page_scheduled_jobs_hide_args">скрыть аргументы</string>
   <string name="setting_page_scheduled_jobs_history_empty">Срабатываний пока не записано.</string>
   <string name="setting_page_scheduled_jobs_how_it_works">Как работают запланированные задачи</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">Запланированные задания выполняются по времени. Есть два типа расписания: «once» запускается в один заданный момент, а «cron» использует повторяющееся выражение, например каждый будний день в 9 утра.\n\nДоступны два режима: «direct» выполняет фиксированный список вызовов инструментов без LLM, а «LLM» отправляет запрос ассистенту и позволяет модели решить, что делать.\n\nГибкий режим использует WorkManager для экономии заряда и может запускаться с задержкой. Точный режим предназначен для видимых пользователю заданий, которые должны начаться около заданного времени, и требует доступа к будильникам и напоминаниям. Без доступа он безопасно переключается на гибкий режим. Расписания восстанавливаются, когда Android снова запускает приложение. Приостановка приложения системой и ограничения батареи некоторых производителей могут задержать работу до открытия приложения. Фильтр HARDLINE по-прежнему блокирует опасные команды оболочки, а каждый запуск записывается в историю задания.</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">Запланированные задания выполняются по времени. Есть два типа расписания: «once» запускается в один заданный момент, а «cron» использует повторяющееся выражение, например каждый будний день в 9 утра.\n\nДоступны два режима: «direct» выполняет фиксированный список вызовов инструментов без LLM, а «LLM» отправляет запрос ассистенту и позволяет модели решить, что делать.\n\nБэкенд расписания выбирается автоматически: задания «direct» используют точные будильники, а «LLM» — точные сигналы. Без разрешения на точные будильники (Android 12+) все задания безопасно переключаются на гибкий энергосберегающий режим. Разрешите доступ к будильникам и напоминаниям для точного расписания. Расписания восстанавливаются, когда Android снова запускает приложение. Фильтр HARDLINE по-прежнему блокирует опасные команды оболочки, а каждый запуск записывается в историю задания.</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">Понятно</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">Как работают запланированные задачи</string>
   <string name="setting_page_scheduled_jobs_no_actions">(действия не определены)</string>
@@ -1773,11 +1773,15 @@
   <string name="chat_page_delete_folder_generating">Некоторые беседы в этой папке все еще генерируются. Пожалуйста, остановите их перед удалением.</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS не читает текст в скобках</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">Если включено, TTS не будет читать содержимое в скобках</string>
-  <string name="setting_page_scheduled_jobs_precision_exact">Точность: точная</string>
-  <string name="setting_page_scheduled_jobs_precision_flexible">Точность: гибкая</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_title">Для точного времени нужно разрешение</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_body">Разрешите доступ к будильникам и напоминаниям. До этого задания с точным временем будут безопасно выполняться в гибком режиме.</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">Стратегия: точный будильник</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">Стратегия: гибкий (экономия заряда)</string>
+  <string name="setting_page_scheduled_jobs_strategy_direct_alarm_clock">Direct: Будильник</string>
+  <string name="setting_page_scheduled_jobs_strategy_llm_exact_alarm">LLM: Точный будильник</string>
+  <string name="setting_page_scheduled_jobs_strategy_flexible_fallback">Гибкий (экономия заряда)</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">Точное расписание требует разрешения</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">Разрешите доступ к будильникам и напоминаниям, чтобы задания запускались вовремя. Без разрешения все задания безопасно выполняются в гибком режиме.</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">Предоставить доступ</string>
   <string name="scheduled_job_execution_notification_title">Выполняется запланированное задание</string>
   <string name="scheduled_job_execution_notification_preparing">Подготовка запланированного задания</string>
 </resources>
+

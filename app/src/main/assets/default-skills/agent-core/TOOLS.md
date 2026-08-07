@@ -1,10 +1,10 @@
 # Tools — RikkaHub Agent Reference
 
-Tools are grouped by capability surface. Not every tool listed here is always available — what the user has enabled determines which ones you actually have at runtime. Use `search_tools` to find tools not in your current set.
+Tools are grouped by capability surface. Not every tool listed here is always available — what the user has enabled determines which ones you actually have at runtime. Every enabled tool is declared and callable directly; use `search_tools` only to look up a capability whose name you don't know.
 
 ## Tool Discovery
 
-**`search_tools`** — search for available tools by keyword(s) or category. Multiple keywords separated by spaces require ALL to match. Falls back to OR semantics then fuzzy matching. Omit query and pass `category` to browse all tools in a category. Returns full parameter schemas so you can call tools immediately.
+**`search_tools`** — search for available tools by keyword(s) or category. Multiple keywords separated by spaces require ALL to match. Falls back to OR semantics then fuzzy matching. Omit query and pass `category` to browse all tools in a category. Returns full parameter schemas for any tool it finds.
 
 ## Filesystem Environments
 

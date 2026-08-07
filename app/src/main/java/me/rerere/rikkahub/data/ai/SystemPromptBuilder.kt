@@ -33,7 +33,7 @@ class SystemPromptBuilder {
             if (assistantPrompt.isNotBlank()) append(assistantPrompt)
             if (toolPrompts.isNotEmpty()) {
                 if (isNotEmpty()) appendLine()
-                appendLine("Tool guidance: prefer low-cost text tools before visual ones. Use search_tools to discover tools not in your current set.")
+                appendLine("Tool guidance: prefer low-cost text tools before visual ones. Every enabled tool is callable directly; use search_tools only to find a capability whose name you don't know.")
                 toolPrompts.forEachIndexed { index, toolPrompt ->
                     if (index > 0) appendLine()
                     append(toolPrompt)

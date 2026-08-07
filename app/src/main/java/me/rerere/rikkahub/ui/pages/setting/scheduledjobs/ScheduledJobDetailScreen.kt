@@ -41,8 +41,10 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
 import me.rerere.rikkahub.data.db.entity.ScheduledJobRunEntity
+import me.rerere.rikkahub.service.CronJobScheduler
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -197,15 +199,25 @@ fun ScheduledJobDetailScreen(
             item {
                 SectionHeader(stringResource(R.string.setting_page_scheduled_jobs_section_schedule))
                 Text(summariseSchedule(current))
+                val exactAlarmGranted = remember { PermissionHelper.canScheduleExactAlarms(ctx) }
                 Text(
-                    if (current.schedulePrecision == me.rerere.rikkahub.service.CronJobScheduler.PRECISION_EXACT) {
-                        stringResource(R.string.setting_page_scheduled_jobs_precision_exact)
-                    } else {
-                        stringResource(R.string.setting_page_scheduled_jobs_precision_flexible)
-                    },
+                    backendStrategyText(current.mode, exactAlarmGranted),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (!exactAlarmGranted) {
+                    TextButton(
+                        onClick = {
+                            ctx.startActivity(PermissionHelper.exactAlarmAccessIntent(ctx))
+                        },
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            stringResource(R.string.setting_page_scheduled_jobs_exact_permission_grant),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
                 current.timezone?.takeIf { it.isNotBlank() }?.let {
                     Text(
                         stringResource(R.string.setting_page_scheduled_jobs_schedule_tz, it),

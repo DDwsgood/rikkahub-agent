@@ -31,6 +31,23 @@ class SystemPromptBuilderTest {
     }
 
     @Test
+    fun `tool guidance treats search_tools as discovery-only, not a gate`() {
+        val prompt = builder.build(
+            assistantPrompt = "Assistant prompt",
+            toolPrompts = listOf("Tool A"),
+        )
+        // Every enabled tool is declared every turn: guidance must not tell the model
+        // tools are outside "the current set" or that search_tools must run first.
+        assertTrue(
+            prompt.contains(
+                "use search_tools only to find a capability whose name you don't know"
+            )
+        )
+        assertFalse(prompt.contains("current set"))
+        assertFalse(prompt.contains("not in your current"))
+    }
+
+    @Test
     fun `buildSections puts assistant+tools in stable and memory+chats+addendum in volatile`() {
         val (stable, volatile) = builder.buildSections(
             assistantPrompt = "You are helpful.",

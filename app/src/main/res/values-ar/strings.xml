@@ -1261,7 +1261,7 @@
   <string name="setting_page_scheduled_jobs_empty">لا توجد مهام مجدوَلة بعد. اطلب من مساعدك إنشاء واحدة.</string>
   <string name="setting_page_scheduled_jobs_how_it_works">كيف تعمل المهام المجدوَلة</string>
   <string name="setting_page_scheduled_jobs_how_it_works_title">كيف تعمل المهام المجدوَلة</string>
-  <string name="setting_page_scheduled_jobs_how_it_works_body">المهام المجدوَلة تعمل وفق الوقت. يوجد نوعان للتوقيت: «once» يعمل في لحظة مطلقة واحدة، و«cron» يستخدم تعبيرًا متكررًا مثل كل يوم عمل في الساعة 9 صباحًا.\n\nيوجد وضعان للتشغيل: «direct» ينفذ قائمة ثابتة من استدعاءات الأدوات بلا نموذج لغوي، و«LLM» يرسل توجيهًا إلى المساعد ويترك للنموذج تحديد ما يجب فعله.\n\nيستخدم التوقيت المرن WorkManager لتقليل استهلاك البطارية وقد يتأخر. أما التوقيت الدقيق فهو للمهام الظاهرة للمستخدم التي يجب أن تبدأ قرب الوقت المطلوب، ويتطلب إذن الوصول إلى المنبّهات والتذكيرات. وعند غياب الإذن يعود بأمان إلى التوقيت المرن. تُستعاد الجداول عندما يشغّل Android التطبيق مرة أخرى. قد يؤدي تعليق التطبيق من النظام وبعض قيود البطارية من الشركات المصنّعة إلى تأخير العمل حتى فتح التطبيق. يظل مرشح HARDLINE يحظر أوامر الصدفة الخطيرة، ويُسجَّل كل تشغيل في سجل المهمة.</string>
+  <string name="setting_page_scheduled_jobs_how_it_works_body">المهام المجدوَلة تعمل وفق الوقت. يوجد نوعان للتوقيت: «once» يعمل في لحظة مطلقة واحدة، و«cron» يستخدم تعبيرًا متكررًا مثل كل يوم عمل في الساعة 9 صباحًا.\n\nيوجد وضعان للتشغيل: «direct» ينفذ قائمة ثابتة من استدعاءات الأدوات بلا نموذج لغوي، و«LLM» يرسل توجيهًا إلى المساعد ويترك للنموذج تحديد ما يجب فعله.\n\nيتم اختيار خلفية الجدولة تلقائيًا: مهام «direct» تستخدم منبّه الساعة للتوقيت الدقيق، ومهام «LLM» تستخدم منبّهات دقيقة. عند عدم توفّر إذن المنبّهات الدقيقة (Android 12+)، تعود جميع المهام بأمان إلى توقيت مرن موفر للبطارية. امنح إذن الوصول إلى المنبّهات والتذكيرات لتفعيل الجدولة الدقيقة. تُستعاد الجداول عندما يشغّل Android التطبيق مرة أخرى. يظل مرشح HARDLINE يحظر أوامر الصدفة الخطيرة، ويُسجَّل كل تشغيل في سجل المهمة.</string>
   <string name="setting_page_scheduled_jobs_how_it_works_dismiss">فهمت</string>
   <string name="setting_page_scheduled_jobs_subtitle_when">متى: %1$s</string>
   <string name="setting_page_scheduled_jobs_subtitle_never_run">لم تنطلق مطلقًا</string>
@@ -1492,9 +1492,13 @@
   <string name="chat_stop_generation_before_delete">من فضلك أوقف التوليد قبل حذف الرسائل</string>
   <string name="scheduled_job_execution_notification_title">مهمة مجدوَلة قيد التشغيل</string>
   <string name="scheduled_job_execution_notification_preparing">جارٍ إعداد المهمة المجدوَلة</string>
-  <string name="setting_page_scheduled_jobs_precision_exact">الدقة: تامة</string>
-  <string name="setting_page_scheduled_jobs_precision_flexible">الدقة: مرنة</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_title">يتطلب التوقيت الدقيق إذنًا</string>
-  <string name="setting_page_scheduled_jobs_exact_permission_body">امنح إذن الوصول إلى المنبّهات والتذكيرات. وحتى ذلك الحين، ستعود المهام الدقيقة بأمان إلى التوقيت المرن.</string>
+  <string name="setting_page_scheduled_jobs_precision_exact">الاستراتيجية: منبّه دقيق</string>
+  <string name="setting_page_scheduled_jobs_precision_flexible">الاستراتيجية: مرن (موفر للبطارية)</string>
+  <string name="setting_page_scheduled_jobs_strategy_direct_alarm_clock">Direct: منبّه الساعة</string>
+  <string name="setting_page_scheduled_jobs_strategy_llm_exact_alarm">LLM: منبّه دقيق</string>
+  <string name="setting_page_scheduled_jobs_strategy_flexible_fallback">مرن (موفر للبطارية)</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_title">الجدولة الدقيقة تتطلب إذنًا</string>
+  <string name="setting_page_scheduled_jobs_exact_permission_body">امنح إذن الوصول إلى المنبّهات والتذكيرات لكي تعمل المهام في وقتها. بدون ذلك، تعود جميع المهام بأمان إلى التوقيت المرن.</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">منح الإذن</string>
 </resources>
+

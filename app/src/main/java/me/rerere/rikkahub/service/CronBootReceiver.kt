@@ -3,7 +3,6 @@ package me.rerere.rikkahub.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.app.AlarmManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,16 +33,23 @@ class CronBootReceiver : BroadcastReceiver(), KoinComponent {
             action == "android.intent.action.QUICKBOOT_POWERON"
         val isClockChange = action == Intent.ACTION_TIME_CHANGED ||
             action == Intent.ACTION_TIMEZONE_CHANGED
-        val isExactAlarmGrant = action == AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED
-        if (!isBootLike && !isClockChange && !isExactAlarmGrant) return
+        val isPermissionChange =
+            action == "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"
+        if (!isBootLike && !isClockChange && !isPermissionChange) return
         val pending = goAsync()
         scope.launch {
             try {
                 if (isBootLike) sweepStrandedRunRows(context)
-                if (isClockChange || isExactAlarmGrant) {
+                if (isPermissionChange) {
+                    // Exact-alarm permission was granted or revoked. Re-schedule all enabled
+                    // jobs so they auto-promote to exact backend (or demote to fallback).
+                    // This is the auto-promotion path: after the user grants Alarms &
+                    // reminders access, every job switches from flexible WorkManager to
+                    // setAlarmClock (direct) or setExactAndAllowWhileIdle (llm).
+                    scheduler.scheduleAllEnabled()
+                } else if (isClockChange) {
                     // Wall-clock schedules must be recomputed after timezone/manual clock
-                    // changes. Permission grants promote exact jobs from their safe
-                    // WorkManager fallback to AlarmManager immediately.
+                    // changes. scheduleAllEnabled re-selects the backend per mode.
                     scheduler.scheduleAllEnabled()
                 } else {
                     scheduler.reconcileAllEnabled()

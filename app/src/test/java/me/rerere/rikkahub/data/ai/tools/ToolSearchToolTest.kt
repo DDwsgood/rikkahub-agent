@@ -27,16 +27,14 @@ class ToolSearchToolTest {
     }
 
     @Test
-    fun `search only returns and enables tools available to current assistant`() = runBlocking {
+    fun `search only returns tools available to current assistant`() = runBlocking {
         val allowed = "test_search_allowed"
         val stale = "test_search_stale"
         ToolRegistry.register(entry(allowed))
         ToolRegistry.register(entry(stale))
         try {
-            val discovered = mutableListOf<String>()
             val tool = toolSearchTool(
                 availableToolNames = setOf(allowed),
-                onToolsDiscovered = discovered::addAll,
             )
 
             val output = tool.execute(Json.parseToJsonElement("""{"query":"test_search"}"""))
@@ -46,9 +44,7 @@ class ToolSearchToolTest {
             }
 
             assertEquals(listOf(allowed), names)
-            assertEquals(listOf(allowed), discovered)
-            assertTrue(allowed in discovered)
-            assertFalse(stale in discovered)
+            assertFalse(stale in names)
         } finally {
             ToolRegistry.unregister(allowed)
             ToolRegistry.unregister(stale)

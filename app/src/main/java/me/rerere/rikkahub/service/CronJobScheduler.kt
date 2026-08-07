@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.util.Log
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -24,12 +23,23 @@ import kotlin.math.max
 import kotlin.uuid.Uuid
 
 /**
- * Schedules cron jobs through battery-friendly WorkManager or opt-in exact AlarmManager
- * delivery. Each job has stable alarm/work identities so pending runs can be replaced,
- * reconciled, or cancelled deterministically.
+ * Schedules cron jobs using an automatically-selected backend based on job.mode:
  *
- * Recurring jobs re-schedule themselves at the end of CronJobWorker.doWork(). Boot
- * recovery happens through [CronBootReceiver] and visible app-launch reconciliation.
+ * - mode='direct' → AlarmManager.setAlarmClock (user-visible alarm, precise) +
+ *   DirectCronAlarmReceiver → immediate expedited worker.
+ * - mode='llm' → AlarmManager.setExactAndAllowWhileIdle + ExactCronAlarmReceiver →
+ *   expedited worker (durable, for long-running LLM turns).
+ *
+ * When exact-alarm permission is unavailable (Android 12+ without SCHEDULE_EXACT_ALARM
+ * granted), both modes safely fall back to battery-friendly WorkManager with flexible
+ * timing. Granting the permission (see SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED
+ * handling in CronBootReceiver) auto-promotes all jobs to their correct exact backend.
+ *
+ * Each job has a stable work/alarm identity so pending runs can be replaced, reconciled,
+ * or cancelled deterministically. Mode-specific PendingIntents (direct vs llm) ensure
+ * that switching modes or cancelling a job never leaves a stale alarm from the other
+ * path. Recurring jobs re-schedule themselves at the end of CronJobWorker.doWork().
+ * Boot recovery happens through [CronBootReceiver] and visible app-launch reconciliation.
  */
 class CronJobScheduler(
     private val context: Context,
@@ -39,7 +49,13 @@ class CronJobScheduler(
     private val wm get() = WorkManager.getInstance(context)
     private val alarmManager get() = context.getSystemService(AlarmManager::class.java)
 
-    enum class Backend { NONE, WORK_MANAGER, EXACT_ALARM, WORK_MANAGER_FALLBACK }
+    enum class Backend {
+        NONE,
+        WORK_MANAGER,
+        ALARM_CLOCK_DIRECT,
+        EXACT_ALARM_LLM,
+        WORK_MANAGER_FALLBACK,
+    }
 
     data class ScheduleResult(
         val backend: Backend,
@@ -55,26 +71,42 @@ class CronJobScheduler(
             return ScheduleResult(Backend.NONE, null)
         }
 
-        val exactAlarmGranted = job.schedulePrecision == PRECISION_EXACT && canScheduleExactAlarms()
-        val selectedBackend = selectBackend(job.schedulePrecision, exactAlarmGranted)
-        return if (selectedBackend == Backend.EXACT_ALARM) {
-            try {
-                scheduleExact(job.id, nextRun)
-                // If this job previously used the flexible backend, remove only that pending
-                // regular schedule. Exact fires use slot-scoped work names, so this never
-                // cancels a currently executing exact worker.
-                wm.cancelUniqueWork(workNameFor(job.id))
-                ScheduleResult(Backend.EXACT_ALARM, nextRun)
-            } catch (_: SecurityException) {
-                cancelExact(job.id)
-                enqueueFlexible(job.id, nextRun, nowMs)
-                ScheduleResult(Backend.WORK_MANAGER_FALLBACK, nextRun)
+        val exactAlarmGranted = canScheduleExactAlarms()
+        val desiredBackend = selectBackend(job.mode, exactAlarmGranted)
+
+        // Clear any alarms armed by a previous backend/mode. This is critical when mode
+        // changes (direct↔llm) or when permission state changes (exact→fallback). Both
+        // mode-specific PendingIntents are cancelled so no stale alarm survives.
+        cancelAllAlarms(job.id)
+
+        val effectiveBackend = when (desiredBackend) {
+            Backend.ALARM_CLOCK_DIRECT, Backend.EXACT_ALARM_LLM -> {
+                // Arm the exact alarm. A SecurityException race is possible: the user can
+                // revoke SCHEDULE_EXACT_ALARM between canScheduleExactAlarms() and the
+                // actual set call. tryArmExactAlarm catches it and returns false; we then
+                // fall back to flexible WorkManager and report WORK_MANAGER_FALLBACK.
+                val armed = tryArmExactAlarm(job.id, nextRun, desiredBackend)
+                val resolved = resolveBackendAfterArm(desiredBackend, armed)
+                if (armed) {
+                    // Cancel any existing WorkManager fallback so the exact alarm and WM
+                    // don't both fire (double-trigger after permission grant / reconcile).
+                    wm.cancelUniqueWork(workNameFor(job.id))
+                } else {
+                    // SecurityException — fall back to flexible WorkManager.
+                    enqueueFlexible(job.id, nextRun, nowMs)
+                }
+                resolved
             }
-        } else {
-            cancelExact(job.id)
-            enqueueFlexible(job.id, nextRun, nowMs)
-            ScheduleResult(selectedBackend, nextRun)
+            Backend.WORK_MANAGER_FALLBACK, Backend.WORK_MANAGER -> {
+                // No exact-alarm permission (Android 12+) or unknown mode — fall back to
+                // battery-friendly WorkManager with flexible timing.
+                enqueueFlexible(job.id, nextRun, nowMs)
+                desiredBackend
+            }
+            Backend.NONE -> desiredBackend // handled above, but exhaustiveness
         }
+
+        return ScheduleResult(effectiveBackend, nextRun)
     }
 
     private fun enqueueFlexible(jobId: String, scheduledAtMs: Long, nowMs: Long) {
@@ -112,7 +144,7 @@ class CronJobScheduler(
         wm.cancelUniqueWork(manualWorkNameFor(jobId))
         wm.cancelUniqueWork(catchupWorkNameFor(jobId))
         wm.cancelAllWorkByTag(workTagFor(jobId))
-        cancelExact(jobId)
+        cancelAllAlarms(jobId)
     }
 
     suspend fun scheduleAllEnabled() {
@@ -151,23 +183,35 @@ class CronJobScheduler(
         scheduledAtMs: Long,
         nowMs: Long,
     ) {
-        if (job.schedulePrecision == PRECISION_EXACT && canScheduleExactAlarms()) {
-            try {
-                scheduleExact(job.id, scheduledAtMs)
+        // Sweep stale alarms from any previous backend/mode before re-arming.
+        cancelAllAlarms(job.id)
+        val exactAlarmGranted = canScheduleExactAlarms()
+        val desiredBackend = selectBackend(job.mode, exactAlarmGranted)
+        when (desiredBackend) {
+            Backend.ALARM_CLOCK_DIRECT, Backend.EXACT_ALARM_LLM -> {
+                // Cancel any existing WorkManager fallback to prevent double-trigger after
+                // boot/reconcile: if the job was previously in fallback mode (WM armed) and
+                // is now promoted to exact, the old WM work would still fire alongside the
+                // new alarm. Cancelling here ensures only the exact alarm is active.
                 wm.cancelUniqueWork(workNameFor(job.id))
-                return
-            } catch (_: SecurityException) {
-                // Fall through to the persisted WorkManager fallback.
+                if (!tryArmExactAlarm(job.id, scheduledAtMs, desiredBackend)) {
+                    // SecurityException — permission revoked between canScheduleExactAlarms
+                    // and the actual set call. Re-enqueue flexible fallback. The WM work
+                    // was just cancelled above, so enqueueing is safe (no duplicate).
+                    enqueueFlexible(job.id, scheduledAtMs, nowMs)
+                }
+            }
+            else -> {
+                // Fallback path: only enqueue if WorkManager isn't already active for this
+                // job (avoids replacing a healthy running work with a duplicate).
+                val active = wm.getWorkInfosForUniqueWorkFlow(workNameFor(job.id))
+                    .first()
+                    .any { it.state == WorkInfo.State.ENQUEUED ||
+                        it.state == WorkInfo.State.BLOCKED ||
+                        it.state == WorkInfo.State.RUNNING }
+                if (!active) enqueueFlexible(job.id, scheduledAtMs, nowMs)
             }
         }
-
-        cancelExact(job.id)
-        val active = wm.getWorkInfosForUniqueWorkFlow(workNameFor(job.id))
-            .first()
-            .any { it.state == WorkInfo.State.ENQUEUED ||
-                it.state == WorkInfo.State.BLOCKED ||
-                it.state == WorkInfo.State.RUNNING }
-        if (!active) enqueueFlexible(job.id, scheduledAtMs, nowMs)
     }
 
     private fun enqueueCatchupChain(job: ScheduledJobEntity, plan: CatchupPlanner.CatchupPlan) {
@@ -215,39 +259,67 @@ class CronJobScheduler(
         if (plan.skippedCatchupCount > 0) runRepo.trim(job.id, keep = 100)
     }
 
-    fun canScheduleExactAlarms(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+    fun canScheduleExactAlarms(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return alarmManager.canScheduleExactAlarms()
+    }
 
-    private fun scheduleExact(jobId: String, scheduledAtMs: Long) {
-        try {
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                scheduledAtMs,
-                exactAlarmPendingIntent(jobId, scheduledAtMs),
-            )
-        } catch (e: SecurityException) {
-            // Permission can be revoked between canScheduleExactAlarms() and this call.
-            // The caller's fallback path is selected on the next reconciliation; log the
-            // race rather than crashing the scheduling tool or worker.
-            Log.w(TAG, "Exact alarm permission disappeared while scheduling $jobId", e)
-            throw e
+    /**
+     * Attempts to arm an exact alarm for the given [backend]. Returns true on success,
+     * false if a [SecurityException] was caught — this happens when the user revokes
+     * SCHEDULE_EXACT_ALARM between [canScheduleExactAlarms] and the actual set call.
+     * On failure, any partially-armed alarm is cleaned up via [cancelAllAlarms].
+     *
+     * Structured so the SecurityException-prone Android calls are isolated in one place;
+     * the fallback decision is delegated to the pure [resolveBackendAfterArm] which is
+     * JVM-testable without an AlarmManager.
+     */
+    private fun tryArmExactAlarm(jobId: String, scheduledAtMs: Long, backend: Backend): Boolean {
+        return try {
+            when (backend) {
+                Backend.ALARM_CLOCK_DIRECT -> scheduleAlarmClockDirect(jobId, scheduledAtMs)
+                Backend.EXACT_ALARM_LLM -> scheduleExactAlarmLlm(jobId, scheduledAtMs)
+                else -> return false
+            }
+            true
+        } catch (_: SecurityException) {
+            // Permission revoked in the race window. Clean up any partially-armed alarm
+            // so it doesn't fire unexpectedly later.
+            cancelAllAlarms(jobId)
+            false
         }
     }
 
-    private fun cancelExact(jobId: String) {
-        val pendingIntent = exactAlarmPendingIntent(jobId, scheduledAtMs = null)
-        alarmManager.cancel(pendingIntent)
-        pendingIntent.cancel()
+    // ---- Direct mode: setAlarmClock (user-visible alarm) ----
+
+    private fun scheduleAlarmClockDirect(jobId: String, scheduledAtMs: Long) {
+        // showIntent uses a constant requestCode (0) because every job's showIntent is
+        // identical — it just opens the app launcher. Using jobId.hashCode() as the
+        // requestCode risked PendingIntent identity collisions (String.hashCode can collide
+        // for distinct UUIDs), which would cause FLAG_UPDATE_CURRENT to replace one job's
+        // showIntent with another's. Since all showIntents are the same Activity + action,
+        // sharing one PendingIntent instance is correct and avoids the collision entirely.
+        val showIntent = PendingIntent.getActivity(
+            context,
+            SHOW_INTENT_REQUEST_CODE,
+            Intent(context, me.rerere.rikkahub.RouteActivity::class.java)
+                .setAction(Intent.ACTION_MAIN)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val triggerPI = directAlarmPendingIntent(jobId, scheduledAtMs)
+        alarmManager.setAlarmClock(
+            AlarmManager.AlarmClockInfo(scheduledAtMs, showIntent),
+            triggerPI,
+        )
     }
 
-    private fun exactAlarmPendingIntent(jobId: String, scheduledAtMs: Long?): PendingIntent {
-        val intent = Intent(context, ExactCronAlarmReceiver::class.java)
-            .setAction(ExactCronAlarmReceiver.ACTION_FIRE)
-            .setData(Uri.parse("rikkahub://scheduled-job/$jobId"))
+    private fun directAlarmPendingIntent(jobId: String, scheduledAtMs: Long): PendingIntent {
+        val intent = Intent(context, DirectCronAlarmReceiver::class.java)
+            .setAction(DirectCronAlarmReceiver.ACTION_FIRE)
+            .setData(Uri.parse("rikkahub://cron-direct/$jobId"))
             .putExtra(CronJobWorker.KEY_JOB_ID, jobId)
-        if (scheduledAtMs != null) {
-            intent.putExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
-        }
+            .putExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
         return PendingIntent.getBroadcast(
             context,
             0,
@@ -256,25 +328,98 @@ class CronJobScheduler(
         )
     }
 
+    // ---- LLM mode: setExactAndAllowWhileIdle ----
+
+    private fun scheduleExactAlarmLlm(jobId: String, scheduledAtMs: Long) {
+        alarmManager.setExactAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            scheduledAtMs,
+            llmAlarmPendingIntent(jobId, scheduledAtMs),
+        )
+    }
+
+    private fun llmAlarmPendingIntent(jobId: String, scheduledAtMs: Long): PendingIntent {
+        val intent = Intent(context, ExactCronAlarmReceiver::class.java)
+            .setAction(ExactCronAlarmReceiver.ACTION_FIRE)
+            .setData(Uri.parse("rikkahub://cron-llm/$jobId"))
+            .putExtra(CronJobWorker.KEY_JOB_ID, jobId)
+            .putExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
+        return PendingIntent.getBroadcast(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /** Cancel both mode-specific alarms. Called on schedule/cancel/mode-change. */
+    private fun cancelAllAlarms(jobId: String) {
+        val directPI = directAlarmPendingIntent(jobId, 0L)
+        alarmManager.cancel(directPI)
+        directPI.cancel()
+        val llmPI = llmAlarmPendingIntent(jobId, 0L)
+        alarmManager.cancel(llmPI)
+        llmPI.cancel()
+    }
+
     private fun workNameFor(jobId: String) = "cron_job_$jobId"
     private fun manualWorkNameFor(jobId: String) = "cron_job_${jobId}_manual"
     private fun catchupWorkNameFor(jobId: String) = "cron_job_${jobId}_catchup"
 
     companion object {
-        private const val TAG = "CronJobScheduler"
+        // Retained for compatibility with legacy rows and external references. The
+        // schedulePrecision column still exists (no Room migration), but it no longer
+        // selects a backend — job.mode does.
         const val PRECISION_FLEXIBLE = "flexible"
         const val PRECISION_EXACT = "exact"
 
         internal fun workTagFor(jobId: String) = "cron_job_tag_$jobId"
+
+        // Still used by the legacy ExactCronAlarmReceiver path so a stale alarm armed by a
+        // previous app version degrades into durable WorkManager work instead of being lost.
         internal fun exactExecutionWorkName(jobId: String, scheduledAtMs: Long) =
             "cron_job_${jobId}_exact_$scheduledAtMs"
 
-        internal fun selectBackend(schedulePrecision: String, exactAlarmGranted: Boolean): Backend =
-            when {
-                schedulePrecision != PRECISION_EXACT -> Backend.WORK_MANAGER
-                exactAlarmGranted -> Backend.EXACT_ALARM
+        internal fun directExecutionWorkName(jobId: String, scheduledAtMs: Long) =
+            "cron_job_${jobId}_direct_$scheduledAtMs"
+
+        /** Constant requestCode for all setAlarmClock showIntents (all identical — open app). */
+        internal const val SHOW_INTENT_REQUEST_CODE = 0
+
+        /**
+         * Pure function: given the desired backend and whether the exact alarm arm
+         * succeeded, returns the effective backend. Used by [schedule] after
+         * [tryArmExactAlarm] to decide the final backend. Extracted as a companion
+         * pure function so JVM unit tests can verify the fallback decision without
+         * needing an Android AlarmManager instance.
+         */
+        internal fun resolveBackendAfterArm(
+            desiredBackend: Backend,
+            armSucceeded: Boolean,
+        ): Backend = if (armSucceeded) desiredBackend else Backend.WORK_MANAGER_FALLBACK
+
+        /**
+         * Auto-selects the scheduling backend based on [mode] and the exact-alarm permission
+         * state. User precision selection is NOT exposed — the backend is automatic:
+         *
+         * - "direct" + permission → [Backend.ALARM_CLOCK_DIRECT] (setAlarmClock, user-visible)
+         * - "llm" + permission → [Backend.EXACT_ALARM_LLM] (setExactAndAllowWhileIdle)
+         * - no permission (Android 12+) → [Backend.WORK_MANAGER_FALLBACK] (flexible)
+         *
+         * Legacy [schedulePrecision] values are ignored — the column remains for DB
+         * compatibility but never influences backend choice.
+         */
+        internal fun selectBackend(
+            mode: String,
+            exactAlarmGranted: Boolean,
+        ): Backend {
+            if (!exactAlarmGranted) return Backend.WORK_MANAGER_FALLBACK
+            return when (mode) {
+                "direct" -> Backend.ALARM_CLOCK_DIRECT
+                "llm" -> Backend.EXACT_ALARM_LLM
                 else -> Backend.WORK_MANAGER_FALLBACK
             }
+        }
 
         /**
          * Compute the next fire time given [nowMs]. Returns null if the job will never

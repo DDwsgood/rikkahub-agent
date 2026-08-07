@@ -164,20 +164,19 @@ enum class ChatErrorSolution {
 }
 
 /**
- * Reconstruct tools discovered earlier in the current user turn. Approval pauses end the
- * generation call, so the in-memory discovery set must be rebuilt when execution resumes.
+ * The tools the assistant may actually use for one generation, keyed by name: every
+ * enabled local tool (with essentials injected) plus the currently available MCP tools.
+ *
+ * This map is the single source of truth for the dynamic tools provider. It derives only
+ * from the assistant's configuration and MCP availability — never from message history —
+ * so every usable tool stays declared and resolvable across user turns and regardless of
+ * whether search_tools was ever called. search_tools is a discovery aid only; it never
+ * gates declaration or execution.
  */
-internal fun rehydrateDiscoveredToolNames(
-    messages: List<UIMessage>,
-    discoverableToolNames: Set<String>,
-): Set<String> {
-    val turnStart = messages.indexOfLast { it.role == MessageRole.USER }
-    return messages
-        .drop((turnStart + 1).coerceAtLeast(0))
-        .flatMap(UIMessage::getTools)
-        .map(UIMessagePart.Tool::toolName)
-        .filterTo(linkedSetOf()) { it in discoverableToolNames }
-}
+internal fun buildDiscoverableToolMap(
+    localTools: List<Tool>,
+    mcpTools: List<Tool>,
+): Map<String, Tool> = (localTools + mcpTools).associateBy { it.name }
 
 private val inputTransformers by lazy {
     listOf(
@@ -933,27 +932,29 @@ class ChatService(
                 )
             }
 
-            // Keep discovery state local to this generation. A process-global discovered set
-            // would leak one assistant's enabled tools into another assistant.
-            val discoverableTools = (allLocalTools + mcpToolDefinitions).associateBy { it.name }
-            val discoveredToolNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-            discoveredToolNames.addAll(
-                rehydrateDiscoveredToolNames(generationMessages, discoverableTools.keys)
-            )
+            // Every tool the assistant may use (enabled local tools + always-injected
+            // essentials + currently available MCP tools) is always declared and resolvable
+            // at every provider step, with or without search_tools. The set is already
+            // filtered by the assistant's config above, so disabled or nonexistent tools
+            // never appear here. search_tools remains available purely for capability
+            // discovery — it no longer controls what can be executed.
+            val discoverableTools = buildDiscoverableToolMap(allLocalTools, mcpToolDefinitions)
             val invocationCtx = baseInvocationCtx.copy(
                 dynamicToolsProvider = {
-                    discoveredToolNames.mapNotNull(discoverableTools::get)
+                    discoverableTools.values.toList()
                 },
             )
 
-            // Build the tools list: only core tools + search_tools meta-tool are
-            // injected. Non-core tools and MCP tools live in ToolRegistry only.
+            // Static tools injected up front (search_tools meta-tool + web search + direct
+            // core tools + essentials + workspace + skills). Everything else the assistant
+            // may use — non-core local tools and MCP tools — is exposed every step through
+            // dynamicToolsProvider, so the model can call any of them without having run
+            // search_tools first. Overlapping names are deduplicated by GenerationHandler.
             val tools = buildList {
                 // ① Always inject the search_tools meta-tool first.
                 add(
                     toolSearchTool(
                         availableToolNames = discoverableTools.keys,
-                        onToolsDiscovered = discoveredToolNames::addAll,
                     )
                 )
 

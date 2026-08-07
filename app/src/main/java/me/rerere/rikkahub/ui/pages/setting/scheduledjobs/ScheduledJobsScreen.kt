@@ -120,10 +120,7 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
                 contentPadding = innerPadding + PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                if (!exactAlarmGranted && jobs.any {
-                        it.enabled && it.schedulePrecision == CronJobScheduler.PRECISION_EXACT
-                    }
-                ) {
+                if (!exactAlarmGranted && jobs.any { it.enabled }) {
                     item {
                         ListItem(
                             headlineContent = {
@@ -146,6 +143,7 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
                 items(jobs, key = { it.id }) { job ->
                     ScheduledJobRow(
                         job = job,
+                        exactAlarmGranted = exactAlarmGranted,
                         onToggle = { enabled -> vm.setEnabled(job.id, enabled) },
                         onTap = { nav.navigate(Screen.ScheduledJobDetail(job.id)) },
                     )
@@ -166,6 +164,7 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
 @Composable
 private fun ScheduledJobRow(
     job: ScheduledJobEntity,
+    exactAlarmGranted: Boolean,
     onToggle: (Boolean) -> Unit,
     onTap: () -> Unit,
 ) {
@@ -174,11 +173,7 @@ private fun ScheduledJobRow(
     val schedule = remember(job.scheduleType, job.atUnixMs, job.cronExpression) {
         summariseSchedule(job)
     }
-    val precision = if (job.schedulePrecision == CronJobScheduler.PRECISION_EXACT) {
-        stringResource(R.string.setting_page_scheduled_jobs_precision_exact)
-    } else {
-        stringResource(R.string.setting_page_scheduled_jobs_precision_flexible)
-    }
+    val strategy = backendStrategyText(job.mode, exactAlarmGranted)
     val statusLine: String = when (job.lastRunAtMs) {
         null -> stringResource(R.string.setting_page_scheduled_jobs_subtitle_never_run)
         else -> {
@@ -194,7 +189,7 @@ private fun ScheduledJobRow(
         headlineContent = { Text(job.name) },
         supportingContent = {
             Text(
-                text = "${stringResource(R.string.setting_page_scheduled_jobs_subtitle_when, schedule)}\n$precision · $statusLine",
+                text = "${stringResource(R.string.setting_page_scheduled_jobs_subtitle_when, schedule)}\n$strategy · $statusLine",
                 maxLines = 3,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -214,6 +209,31 @@ internal fun relativeStrings(): RelativeTimeStrings = RelativeTimeStrings(
     hoursAgo = stringResource(R.string.relative_time_hours_ago),
     daysAgo = stringResource(R.string.relative_time_days_ago),
 )
+
+/**
+ * Maps (mode, exactAlarmGranted) to a human-readable strategy label. Uses the same
+ * selectBackend pure function as the scheduler so the UI always matches the actual
+ * backend. Does NOT expose precision selection — the strategy is automatic.
+ *
+ * Distinct labels per backend so the user can tell Direct (alarm clock) from LLM (exact
+ * alarm) from fallback (flexible WorkManager).
+ */
+@Composable
+internal fun backendStrategyText(mode: String, exactAlarmGranted: Boolean): String {
+    val backend = selectBackendLabel(mode, exactAlarmGranted)
+    return when (backend) {
+        CronJobScheduler.Backend.ALARM_CLOCK_DIRECT ->
+            stringResource(R.string.setting_page_scheduled_jobs_strategy_direct_alarm_clock)
+        CronJobScheduler.Backend.EXACT_ALARM_LLM ->
+            stringResource(R.string.setting_page_scheduled_jobs_strategy_llm_exact_alarm)
+        CronJobScheduler.Backend.WORK_MANAGER_FALLBACK ->
+            stringResource(R.string.setting_page_scheduled_jobs_strategy_flexible_fallback)
+        CronJobScheduler.Backend.WORK_MANAGER ->
+            stringResource(R.string.setting_page_scheduled_jobs_strategy_flexible_fallback)
+        CronJobScheduler.Backend.NONE ->
+            stringResource(R.string.setting_page_scheduled_jobs_strategy_flexible_fallback)
+    }
+}
 
 @Composable
 internal fun rememberTickingNowMs(): State<Long> {

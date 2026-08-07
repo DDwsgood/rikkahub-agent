@@ -62,9 +62,11 @@
       tools:ignore="ScopedStorage" />
   <uses-permission android:name="android.permission.USE_BIOMETRIC" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-  <!-- User-granted special access for opt-in, user-visible precise scheduled jobs.
-       USE_EXACT_ALARM is intentionally not used because this app is not primarily an
-       alarm-clock/calendar app and that permission is Play-policy restricted. -->
+  <!-- Auto-granted on Android < 12. On Android 12+ the user must grant Alarms & reminders
+       access; without it, scheduled jobs safely fall back to flexible WorkManager. The
+       permission is used for mode-based exact scheduling: direct→setAlarmClock,
+       llm→setExactAndAllowWhileIdle. USE_EXACT_ALARM is intentionally not used (Play-policy
+       restricted; this app is not primarily an alarm-clock/calendar app). -->
   <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
   <uses-permission
       android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
@@ -352,10 +354,19 @@
       </intent-filter>
     </receiver>
 
-    <!-- Explicit PendingIntent target for exact scheduled jobs. It only persists the
-         trigger into WorkManager; agent execution never happens inside the receiver. -->
+    <!-- Explicit PendingIntent target for LLM-mode exact scheduled jobs (setExactAndAllowWhileIdle).
+         It only persists the trigger into expedited WorkManager work; agent execution never
+         happens inside the receiver. -->
     <receiver
       android:name=".service.ExactCronAlarmReceiver"
+      android:enabled="true"
+      android:exported="false" />
+
+    <!-- Explicit PendingIntent target for direct-mode exact scheduled jobs (setAlarmClock).
+         Enqueues an expedited (0-delay, foreground-promoted) worker — NOT the regular delayed
+         WorkManager path. Direct-mode actions are short tool calls that need on-time delivery. -->
+    <receiver
+      android:name=".service.DirectCronAlarmReceiver"
       android:enabled="true"
       android:exported="false" />
 

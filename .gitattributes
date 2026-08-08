@@ -5,3 +5,51 @@ app/src/release/generated/baselineProfiles/*.txt text eol=lf
 .github/termux-bootstrap/*.patch text eol=lf -whitespace
 .github/termux-bootstrap/*.sh text eol=lf
 .github/workflows/*.yml text eol=lf
+
+# --- Global LF enforcement: eliminate CRLF noise on Windows checkouts ---
+# All text files use LF in the repo. Git's autocrlf handles local checkout conversion.
+* text=auto eol=lf
+
+# Binary files — never normalize line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.bmp binary
+*.svg binary
+*.heic binary
+*.heif binary
+*.avif binary
+*.apk binary
+*.aab binary
+*.jar binary
+*.aar binary
+*.so binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.keystore binary
+*.jks binary
+*.der binary
+*.p12 binary
+*.pem binary
+*.zip binary
+*.tar.gz binary
+*.tgz binary
+*.gz binary
+*.7z binary
+*.rar binary
+*.mp3 binary
+*.mp4 binary
+*.wav binary
+*.ogg binary
+*.webm binary
+*.litertlm binary
+*.gguf binary
+*.mmdb binary
+*.proto binary
+*.bin binary
+*.dat binary

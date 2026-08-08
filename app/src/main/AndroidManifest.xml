@@ -391,6 +391,20 @@
         android:value="local web server for LLM chat UI" />
     </service>
 
+    <!-- CronJobWorker promotes itself only while a scheduled agent task is executing.
+         Declaring WorkManager's foreground service type is required on Android 12+:
+         the runtime SPECIAL_USE request must be a subset of the manifest attribute,
+         otherwise SystemForegroundService crashes with
+         "foregroundServiceType 0x40000000 is not a subset of ... 0x00000000". -->
+    <service
+      android:name="androidx.work.impl.foreground.SystemForegroundService"
+      android:foregroundServiceType="specialUse"
+      tools:node="merge">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="user-requested scheduled agent task execution" />
+    </service>
+
     <provider
       android:name="androidx.core.content.FileProvider"
       android:authorities="${applicationId}.fileprovider"

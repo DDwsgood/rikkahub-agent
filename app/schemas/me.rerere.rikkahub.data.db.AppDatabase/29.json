@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "database": {
-    "version": 28,
-    "identityHash": "f16c87ce1946b4661c2090b38ed74fb8",
+    "version": 29,
+    "identityHash": "4f2a27984505a039513c980e9db73c4b",
     "entities": [
       {
         "tableName": "ConversationEntity",
@@ -100,7 +100,30 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [
+          {
+            "name": "index_ConversationEntity_assistant_id_is_pinned_update_at",
+            "unique": false,
+            "columnNames": [
+              "assistant_id",
+              "is_pinned",
+              "update_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_ConversationEntity_assistant_id_is_pinned_update_at` ON `${TABLE_NAME}` (`assistant_id`, `is_pinned`, `update_at`)"
+          },
+          {
+            "name": "index_ConversationEntity_is_pinned_update_at",
+            "unique": false,
+            "columnNames": [
+              "is_pinned",
+              "update_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_ConversationEntity_is_pinned_update_at` ON `${TABLE_NAME}` (`is_pinned`, `update_at`)"
+          }
+        ]
       },
       {
         "tableName": "MemoryEntity",
@@ -130,7 +153,18 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [
+          {
+            "name": "index_MemoryEntity_assistant_id",
+            "unique": false,
+            "columnNames": [
+              "assistant_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_MemoryEntity_assistant_id` ON `${TABLE_NAME}` (`assistant_id`)"
+          }
+        ]
       },
       {
         "tableName": "GenMediaEntity",
@@ -559,7 +593,18 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [
+          {
+            "name": "index_scheduled_jobs_enabled",
+            "unique": false,
+            "columnNames": [
+              "enabled"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_scheduled_jobs_enabled` ON `${TABLE_NAME}` (`enabled`)"
+          }
+        ]
       },
       {
         "tableName": "scheduled_job_runs",
@@ -622,7 +667,29 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [
+          {
+            "name": "index_scheduled_job_runs_jobId_startedAtMs",
+            "unique": false,
+            "columnNames": [
+              "jobId",
+              "startedAtMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_scheduled_job_runs_jobId_startedAtMs` ON `${TABLE_NAME}` (`jobId`, `startedAtMs`)"
+          },
+          {
+            "name": "index_scheduled_job_runs_jobId_outcome",
+            "unique": false,
+            "columnNames": [
+              "jobId",
+              "outcome"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_scheduled_job_runs_jobId_outcome` ON `${TABLE_NAME}` (`jobId`, `outcome`)"
+          }
+        ]
       },
       {
         "tableName": "ssh_hosts",
@@ -1108,7 +1175,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f16c87ce1946b4661c2090b38ed74fb8')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4f2a27984505a039513c980e9db73c4b')"
     ]
   }
 }

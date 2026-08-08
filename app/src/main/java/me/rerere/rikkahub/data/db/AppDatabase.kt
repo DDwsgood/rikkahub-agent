@@ -61,7 +61,7 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         WorkspaceEntity::class,
         FolderEntity::class,
     ],
-    version = 28,
+    version = 29,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -98,6 +98,13 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         //     and per-job run history were all full table scans. Room generates the CREATE INDEX
         //     statements itself.
         AutoMigration(from = 27, to = 28),
+        // v29: the fork↔upstream 2.4.5 merge folded the upstream's v28 indices (conversation
+        // listing, memory lookup, enabled-job scan, run history) into the fork's own v28
+        // (schedulePrecision column). Both sides were already stamped v28 with DIFFERENT
+        // schemas, so the merged build must bump to v29 so Room runs a migration for existing
+        // users: the fork's v28 schema (no indices) → v29 (indices added). 28.json stays the
+        // fork's original schema so the auto-generated diff is exactly the CREATE INDEX set.
+        AutoMigration(from = 28, to = 29),
     ]
 )
 @TypeConverters(TokenUsageConverter::class)

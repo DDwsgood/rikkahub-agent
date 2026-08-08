@@ -12,21 +12,20 @@ class CoreToolExposureTest {
             setOf(
                 LocalToolOption.AskUser,
                 LocalToolOption.Files,
-                LocalToolOption.WebFetch,
             ),
             DIRECT_LOCAL_TOOL_OPTIONS,
         )
         assertFalse(LocalToolOption.Battery in DIRECT_LOCAL_TOOL_OPTIONS)
         assertFalse(LocalToolOption.SmsSend in DIRECT_LOCAL_TOOL_OPTIONS)
+        assertFalse(LocalToolOption.WebFetch in DIRECT_LOCAL_TOOL_OPTIONS)
     }
 
     @Test
-    fun `only command execution is directly exposed from Termux`() {
-        assertEquals("termux_run_command", TERMUX_RUN_COMMAND_TOOL_NAME)
+    fun `only direct options are exposed via selectDirectLocalToolNames`() {
         assertFalse(LocalToolOption.Termux in DIRECT_LOCAL_TOOL_OPTIONS)
 
         assertEquals(
-            setOf("ask_user", "read_file", "web_fetch", "termux_run_command"),
+            setOf("ask_user", "read_file"),
             selectDirectLocalToolNames(
                 enabledOptions = setOf(
                     LocalToolOption.AskUser,
@@ -36,11 +35,10 @@ class CoreToolExposureTest {
                     LocalToolOption.Battery,
                     LocalToolOption.SmsSend,
                 ),
-                directOptionToolNames = setOf("ask_user", "read_file", "web_fetch"),
+                directOptionToolNames = setOf("ask_user", "read_file"),
                 availableToolNames = setOf(
                     "ask_user",
                     "read_file",
-                    "web_fetch",
                     "termux_run_command",
                     "transcribe_audio_file",
                     "whisper_status",

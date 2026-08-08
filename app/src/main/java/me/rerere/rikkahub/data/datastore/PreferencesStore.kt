@@ -429,6 +429,14 @@ class SettingsStore(
                     } else assistant
                 }.toMutableList()
             }
+            // Remove deleted skills from enabledSkills. autonomous-agent was removed from the
+            // bundled set; if it's still in any assistant's enabledSkills (e.g., from a backup
+            // restore), remove it. Idempotent — safe every launch.
+            assistants = assistants.map { assistant ->
+                if ("autonomous-agent" in assistant.enabledSkills) {
+                    assistant.copy(enabledSkills = assistant.enabledSkills - "autonomous-agent")
+                } else assistant
+            }.toMutableList()
             val newAutoEnabled = it.autoEnabledDefaultSkills + DEFAULT_AUTO_ENABLED_SKILLS
             val ttsProviders = it.ttsProviders.ifEmpty { DEFAULT_TTS_PROVIDERS }.toMutableList()
             DEFAULT_TTS_PROVIDERS.forEach { defaultTTSProvider ->

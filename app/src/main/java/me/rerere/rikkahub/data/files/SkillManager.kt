@@ -329,6 +329,25 @@ class SkillManager(
                 Log.w(TAG, "seedDefaultSkillsIfNeeded: failed to seed $skillName", e)
             }
         }
+
+        // Clean up orphaned bundled skills — previously seeded from assets but no longer
+        // shipped (e.g., autonomous-agent was removed). Identified by the .seeded sentinel:
+        // user-installed skills don't have it, so this only removes skills the app itself
+        // installed and then removed.
+        val skillsDir = getSkillsDir()
+        skillsDir.listFiles()?.forEach { dir ->
+            if (!dir.isDirectory) return@forEach
+            if (dir.name in skillNames) return@forEach
+            val sentinel = dir.resolve(".seeded")
+            if (sentinel.exists()) {
+                runCatching {
+                    dir.deleteRecursively()
+                    Log.i(TAG, "seedDefaultSkillsIfNeeded: removed orphaned bundled skill ${dir.name}")
+                }.onFailure {
+                    Log.w(TAG, "seedDefaultSkillsIfNeeded: failed to remove orphaned skill ${dir.name}", it)
+                }
+            }
+        }
     }
 
     /**

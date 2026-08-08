@@ -112,6 +112,23 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
 
+internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
+    LocalToolOption.AskUser,
+    LocalToolOption.Files,
+)
+
+/**
+ * Tools that are always injected regardless of assistant tool config, so sub-agents
+ * (which inherit the parent's tool set) don't use bash workarounds for basic needs.
+ */
+internal val ESSENTIAL_TOOL_NAMES = setOf("get_time_info", "eval_javascript")
+
+internal fun selectDirectLocalToolNames(
+    enabledOptions: Set<LocalToolOption>,
+    directOptionToolNames: Set<String>,
+    availableToolNames: Set<String>,
+): Set<String> = directOptionToolNames.intersect(availableToolNames)
+
 internal fun backgroundTextGenerationParams(
     model: Model,
     reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,

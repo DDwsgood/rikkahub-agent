@@ -367,8 +367,31 @@
         <action android:name="android.intent.action.BOOT_COMPLETED" />
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
         <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+        <action android:name="android.intent.action.TIME_SET" />
+        <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+        <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
       </intent-filter>
     </receiver>
+
+    <!-- Explicit PendingIntent target for LLM-mode exact scheduled jobs (setExactAndAllowWhileIdle).
+         Lost in the 2.4.5 merge: without this declaration the AlarmManager broadcast has no
+         registered receiver, so LLM-mode cron jobs never fired in the background. It only
+         persists the trigger into expedited WorkManager work; agent execution never happens
+         inside the receiver. -->
+    <receiver
+      android:name=".service.ExactCronAlarmReceiver"
+      android:enabled="true"
+      android:exported="false" />
+
+    <!-- Explicit PendingIntent target for direct-mode exact scheduled jobs (setAlarmClock).
+         Lost in the 2.4.5 merge (same crash-free symptom: direct-mode jobs silently never
+         fired). Enqueues an expedited (0-delay, foreground-promoted) worker — NOT the regular
+         delayed WorkManager path. Direct-mode actions are short tool calls that need on-time
+         delivery. -->
+    <receiver
+      android:name=".service.DirectCronAlarmReceiver"
+      android:enabled="true"
+      android:exported="false" />
 
     <!-- Phase 12 — geofence transition receiver. Play Services delivers via
          PendingIntent.getBroadcast outside any active component, so this MUST be a

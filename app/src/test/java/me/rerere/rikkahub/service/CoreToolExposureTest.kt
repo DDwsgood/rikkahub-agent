@@ -17,7 +17,6 @@ class CoreToolExposureTest {
         )
         assertFalse(LocalToolOption.Battery in DIRECT_LOCAL_TOOL_OPTIONS)
         assertFalse(LocalToolOption.SmsSend in DIRECT_LOCAL_TOOL_OPTIONS)
-        assertFalse(LocalToolOption.WebFetch in DIRECT_LOCAL_TOOL_OPTIONS)
     }
 
     @Test
@@ -30,7 +29,6 @@ class CoreToolExposureTest {
                 enabledOptions = setOf(
                     LocalToolOption.AskUser,
                     LocalToolOption.Files,
-                    LocalToolOption.WebFetch,
                     LocalToolOption.Termux,
                     LocalToolOption.Battery,
                     LocalToolOption.SmsSend,

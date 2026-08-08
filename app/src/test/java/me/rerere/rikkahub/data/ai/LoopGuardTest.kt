@@ -7,7 +7,7 @@ import org.junit.Test
 
 /**
  * Covers the loop guard's two non-obvious rules:
- *  - Observation tools (read_window_tree / take_screenshot) run in an act-observe cycle, so an
+ *  - Observation tools (read_window_tree / find_node) run in an act-observe cycle, so an
  *    intervening ACTION resets their repeat count: identical observes around real actions must
  *    NOT trip. This is the Aurora-Store regression: click_node -> read_window_tree repeated.
  *  - Two observers merely alternating on a frozen screen (no action) still trip, preserving the
@@ -58,23 +58,23 @@ class LoopGuardTest {
     fun observation_repeatedWithNoAction_trips() {
         // No action ever ran; the model is hammering the same observation on a frozen screen.
         // Use a fresh nowMs vs epoch 0 within the 5s TTL so the bypass does not fire.
-        val prior = List(3) { call("take_screenshot", epochMs = 1_000L) }
-        val decision = evaluate(prior, "take_screenshot", nowMs = 2_000L)
+        val prior = List(3) { call("read_window_tree", epochMs = 1_000L) }
+        val decision = evaluate(prior, "read_window_tree", nowMs = 2_000L)
         assertTrue(decision.block)
     }
 
     @Test
     fun alternatingObservers_onFrozenScreen_stillTrip() {
-        // screenshot/window_tree alternating with NO action between: both are observers so
-        // neither resets the other, and the screenshot repeats accumulate to the threshold.
+        // read_window_tree/find_node alternating with NO action between: both are observers so
+        // neither resets the other, and the reads repeat accumulate to the threshold.
         val prior = listOf(
-            call("take_screenshot", epochMs = 1_000L),
             call("read_window_tree", epochMs = 1_000L),
-            call("take_screenshot", epochMs = 1_000L),
+            call("find_node", epochMs = 1_000L),
             call("read_window_tree", epochMs = 1_000L),
-            call("take_screenshot", epochMs = 1_000L),
+            call("find_node", epochMs = 1_000L),
+            call("read_window_tree", epochMs = 1_000L),
         )
-        val decision = evaluate(prior, "take_screenshot", nowMs = 2_000L)
+        val decision = evaluate(prior, "read_window_tree", nowMs = 2_000L)
         assertTrue("alternating observers must still trip", decision.block)
     }
 

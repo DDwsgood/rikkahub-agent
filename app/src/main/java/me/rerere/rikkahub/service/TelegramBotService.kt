@@ -970,10 +970,10 @@ class TelegramBotService : Service() {
             finalReply.isBlank() -> {
                 // The model called tool(s) but emitted no final user-facing text. We try
                 // to RESCUE useful artifacts before falling back to a textual hint:
-                //   - take_screenshot / take_photo wrote a file the user almost certainly
+                //   - take_photo wrote a file the user almost certainly
                 //     wanted to see — auto-send the photo to Telegram with a caption that
                 //     makes the rescue obvious. Without this, "show me the screenshot"
-                //     produces a take_screenshot call but no telegram_send_photo and the
+                //     produces a take_photo call but no telegram_send_photo and the
                 //     user just sees "(model didn't reply)" — burying the file they asked
                 //     for behind a generic fallback string.
                 android.util.Log.i(

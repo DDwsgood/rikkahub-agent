@@ -53,7 +53,7 @@ private object Capability {
         LocalToolOption.Workflows,           // notification_received trigger
     )
     val Accessibility: Set<LocalToolOption> = setOf(
-        LocalToolOption.ScreenAutomation,    // take_screenshot, swipe, click_at, scroll, gesture
+        LocalToolOption.ScreenAutomation,    // swipe, click_at, scroll, gesture
     )
     val Termux: Set<LocalToolOption> = setOf(
         LocalToolOption.Termux,
@@ -257,7 +257,7 @@ class DoctorChecks(
                 enabled = enabled,
                 granted = PermissionHelper.hasAccessibilityService(context),
                 grantedDetail = "Enabled in system settings.",
-                missingDetail = "Not enabled. take_screenshot, swipe, scroll, click_at, and gesture tools won't work.",
+                missingDetail = "Not enabled. swipe, scroll, click_at, and gesture tools won't work.",
                 fix = FixAction.OpenIntent(
                     label = "Open settings",
                     intent = PermissionHelper.accessibilitySettingsIntent(),

@@ -170,7 +170,6 @@ private val FRESHNESS_TTL_MS_BY_TOOL: Map<String, Long> = mapOf(
     "get_location" to 30_000L,
     "get_time_info" to 5_000L,
     "read_sensor" to 5_000L,
-    "take_screenshot" to 5_000L,
     "read_window_tree" to 5_000L,
     "list_active_notifications" to 5_000L,
     "list_jobs" to 60_000L,
@@ -179,7 +178,7 @@ private val FRESHNESS_TTL_MS_BY_TOOL: Map<String, Long> = mapOf(
 /**
  * UI-observation tools that read screen/device state without changing it. Used by the loop
  * guard's reset rule below: when the model drives a UI it runs an act-observe cycle and
- * naturally repeats the same observation call (read_window_tree / take_screenshot with
+ * naturally repeats the same observation call (read_window_tree with
  * identical args) after every action. Those repeats are progress, NOT a loop, so an
  * intervening ACTION (any executed tool NOT in this set) resets the observation repeat count.
  * Tools that ARE in this set do not reset each other, so a model that merely alternates

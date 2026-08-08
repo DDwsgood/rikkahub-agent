@@ -382,7 +382,6 @@ object ToolNameTranscoder {
         // English words, so they're safe within code regions.
         "send_message" to "telegram_send_message",
         "open_app" to "launch_app",
-        "screenshot" to "take_screenshot",
         "vibrate_phone" to "vibrate",
     )
 

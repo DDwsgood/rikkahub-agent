@@ -29,7 +29,7 @@ import java.io.File
  *  - `/sdcard/Pictures/...` (any user-visible path)
  *  - any path PathSafetyGuard allows
  *
- * No approval required — same risk profile as `take_screenshot`, which is also
+ * No approval required — same risk profile as `take_photo`, which is also
  * auto-approved (the LLM can already see arbitrary screen content; reading a file
  * the file tools can already read isn't a privilege escalation).
  *
@@ -45,7 +45,7 @@ fun showImageTool(
     modelCanSeeImages: Boolean = true,
 ): Tool = Tool(
     name = "show_image",
-    description = "Display an image file inline in the chat (Telegram: sends as a real photo). Use when the user wants to see an image at a known path, or after take_photo/take_screenshot to surface the result. Path accepts ~ or absolute. Supported: PNG, JPEG, WebP, GIF, BMP.",
+    description = "Display an image file inline in the chat (Telegram: sends as a real photo). Use when the user wants to see an image at a known path, or after take_photo to surface the result. Path accepts ~ or absolute. Supported: PNG, JPEG, WebP, GIF, BMP.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {

@@ -522,8 +522,6 @@ internal suspend fun TelegramBotService.autoCancelStuckTurn(chatId: Long) {
  * photo to Telegram, false if there was nothing to rescue.
  *
  * Covered tools (and the JSON-output key they each use for the file path):
- *  - `take_screenshot` — writes `gallery_path` (Pictures/RikkaHub/Screenshots) +
- *    `file_path` (cache).
  *  - `take_photo` — writes `gallery_path` (cache).
  *  - `show_image` — writes `path`.
  *
@@ -547,7 +545,6 @@ internal suspend fun TelegramBotService.tryRescueImageFromTurn(
     // Tools that produce a single image file we can re-upload as a photo. Order
     // doesn't matter — we walk the assistant's tool calls newest-first.
     val rescueable = setOf(
-        "take_screenshot",
         "take_photo",
         "show_image",
     )
@@ -575,8 +572,6 @@ internal suspend fun TelegramBotService.tryRescueImageFromTurn(
         val file = java.io.File(path)
         if (!file.exists() || !file.isFile) continue
         val caption = when (tool.toolName) {
-            "take_screenshot" ->
-                "📸 (rescued — model took the screenshot but didn't reply with a description)"
             "take_photo" ->
                 "📸 (rescued — model captured the photo but didn't reply with a description)"
             "show_image" ->

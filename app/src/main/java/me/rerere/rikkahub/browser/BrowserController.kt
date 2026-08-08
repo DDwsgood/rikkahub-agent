@@ -1,7 +1,5 @@
 package me.rerere.rikkahub.browser
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.webkit.WebView
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -14,8 +12,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.io.File
-import java.io.FileOutputStream
 import java.lang.ref.WeakReference
 
 /**
@@ -23,25 +19,18 @@ import java.lang.ref.WeakReference
  * Mirrors the [me.rerere.rikkahub.service.RikkaAccessibilityService.instance] pattern: the
  * Activity (or headless session host) publishes itself in on bind and clears on unbind.
  *
- * Pass 1 laid the foundation — the WeakReference, the recent-actions log, and the
- * [BrowserControllerHandle.withController] dispatch helper. Pass 2 added launch-await
- * (`awaitBind`), the 5-min single-task window, and a main-thread bridge.
- *
- * **Pass 3 introduces a [Mode] sealed class** so the controller can serve two parallel
- * use cases without forking the tool dispatcher:
- *  - [Mode.Foreground]: the on-screen [BrowserActivity] hosts the WebView. The user
- *    watches the AI navigate.
+ * The controller uses a [Mode] sealed class so it can serve two use cases without forking
+ * the tool dispatcher:
+ *  - [Mode.Foreground]: the on-screen [BrowserActivity] hosts the WebView. Used for
+ *    user-initiated browser sessions (Settings → Open Browser, skill webview cards).
  *  - [Mode.Headless]: a [HeadlessBrowserSession] hosts the WebView in the application
- *    process, parented to an unattached layout. Used when the calling conversation is a
- *    Telegram bot / cron / sub-agent — anything `HeadlessConversations.isHeadless(convId)`
- *    returns true for. After every state-changing tool, the controller streams a screenshot
- *    + URL into the calling chat via [BrowserScreenshotStreamer].
+ *    process, parented to an unattached layout. Used by all LLM-driven browser tools.
  *
- * The legacy [bind]/[unbind] entry points still work — they delegate to the new
- * foreground bind so existing call sites in [BrowserActivity] compile unchanged. The
- * [WeakReference] reaches into [Mode.Foreground.activityRef] now; [Mode.Headless] holds a
- * hard reference (the headless session is the WebView's only owner — letting it GC mid-task
- * would lose the session).
+ * The legacy [bind]/[unbind] entry points still work — they delegate to the foreground
+ * bind so existing call sites in [BrowserActivity] compile unchanged. The
+ * [WeakReference] reaches into [Mode.Foreground.activityRef]; [Mode.Headless] holds a
+ * hard reference (the headless session is the WebView's only owner — letting it GC
+ * mid-task would lose the session).
  */
 object BrowserController {
 
@@ -67,39 +56,13 @@ object BrowserController {
     /**
      * Global browser execution mode — controls whether browser tools run in the foreground
      * (visible Activity) or headless (background WebView). User-configurable via Settings →
-     * Browser; kept in sync by [BrowserPreferences]. Defaults to ALWAYS_FOREGROUND.
+     * Browser; kept in sync by [BrowserPreferences]. Defaults to ALWAYS_BACKGROUND.
      *
-     * When set to ALWAYS_BACKGROUND, browser tools run headless even for main-app chats,
-     * so the browser Activity doesn't pop up over whatever the user is doing.
+     * When set to ALWAYS_FOREGROUND, browser tools launch the browser Activity on screen.
      */
     @Volatile
-    var backgroundMode: BrowserBackgroundMode = BrowserBackgroundMode.ALWAYS_FOREGROUND
+    var backgroundMode: BrowserBackgroundMode = BrowserBackgroundMode.ALWAYS_BACKGROUND
 
-    /** Cache subdir for streamed (headless) screenshots — separate from the `browser-shots`
-     *  subdir the explicit browser_screenshot tool writes into so the streamer pipe can be
-     *  swept independently if it ever grows unbounded. */
-    private const val STREAM_CACHE_SUBDIR = "browser-stream"
-
-    /**
-     * Skip a stream send if URL matches the previous send within this window. 8 s was the
-     * first cut but live testing with slow models (minimax-m2.7 at 0.7 tok/s) showed a
-     * single LLM turn easily spans 30+ s while bouncing back to the same URL multiple
-     * times. 30 s catches all the practical "model retrying the same page" cases without
-     * suppressing legitimate revisits later in the conversation (different turn = mostly
-     * a new URL anyway).
-     */
-    private const val STREAM_DEDUPE_WINDOW_MS = 30_000L
-
-    /**
-     * After `awaitReadyState` returns (`document.readyState === "complete"`), the WebView
-     * has parsed HTML and finished resource loads but still hasn't painted its first frame.
-     * `webView.draw(canvas)` at that exact moment captures the empty/white initial backing
-     * — the bug the user reported on cold `browser_open`. 250 ms wasn't enough on slower
-     * pages (kali.org/docs/ rendered the first 2 streams white). 600 ms handles the long
-     * tail; further actions on the same page hit the de-dupe window so this delay only
-     * fires once per real navigation.
-     */
-    private const val PAINT_SETTLE_MS = 600L
     private const val TAG = "BrowserController"
 
     /**
@@ -114,9 +77,7 @@ object BrowserController {
 
         /**
          * A headless WebView lives in the application process, parented to an unattached
-         * layout owned by [HeadlessBrowserSession]. After every state-changing tool, the
-         * controller posts a screenshot + URL caption into the conversation identified by
-         * [callerConvId] via [BrowserScreenshotStreamer].
+         * layout owned by [HeadlessBrowserSession].
          */
         data class Headless(val callerConvId: String, val webView: WebView) : Mode()
     }
@@ -125,12 +86,11 @@ object BrowserController {
     private var mode: Mode = Mode.Idle
 
     /**
-     * Serialises every read-modify-write of [mode] and [streamDedupe]. The bind/unbind
-     * entry points and the per-conv de-dupe map mutate shared state from multiple coroutines
-     * (Telegram polling loop, cron worker, sub-agent), so a plain `@Volatile` on [mode] is
-     * not enough to make "check the current binding, then replace it" atomic. Without it, two
-     * concurrent headless conversations can both pass [bindHeadless]'s clobber check and the
-     * second silently overwrites the first — a later screenshot then routes to the wrong chat.
+     * Serialises every read-modify-write of [mode]. The bind/unbind entry points mutate
+     * shared state from multiple coroutines (Telegram polling loop, cron worker, sub-agent),
+     * so a plain `@Volatile` on [mode] is not enough to make "check the current binding,
+     * then replace it" atomic. Without it, two concurrent headless conversations can both
+     * pass [bindHeadless]'s clobber check and the second silently overwrites the first.
      */
     private val bindLock = Any()
 
@@ -155,26 +115,6 @@ object BrowserController {
     @Volatile
     var pendingTaskJob: Job? = null
 
-    /**
-     * De-dupe state for [streamScreenshotIfHeadless], keyed by [Mode.Headless.callerConvId].
-     * When the LLM bounces between the same/very-similar URL (e.g. minimax-m2.7 occasionally
-     * calls browser_open 5x in a row trying to find a page) every state-changing tool fires
-     * the streamer, flooding the user's Telegram chat with near-identical PNGs. Skip the send
-     * when the URL is the same as that conversation's last stream AND the last stream was
-     * within [STREAM_DEDUPE_WINDOW_MS]. A click that didn't change the URL is also caught by
-     * this rule (URL stays equal).
-     *
-     * **Why keyed per conv.** A single global last-URL/last-time pair let two concurrent
-     * headless conversations clobber each other's de-dupe memory: conv A streams page X, conv
-     * B then streams the same X within the window and gets wrongly suppressed (or vice-versa,
-     * A's stale mark suppresses B's legitimate first frame). Keying on the caller conv id
-     * isolates the windows. Entries are dropped on [unbindHeadless] so a finished conversation
-     * doesn't retain memory. Guarded by [bindLock] for the same reason [mode] is.
-     */
-    private data class StreamMark(val url: String?, val atMs: Long)
-
-    private val streamDedupe = mutableMapOf<String, StreamMark>()
-
     private val _recentActions = MutableStateFlow<List<String>>(emptyList())
 
     /** Compose-friendly observable of the last [MAX_RECENT_ACTIONS] AI actions, newest first. */
@@ -187,7 +127,7 @@ object BrowserController {
 
     /**
      * Activity calls this in onCreate. Replaces any prior binding (only one BrowserActivity
-     * at a time). Pass 3 also routes around an existing [Mode.Headless] — installing a
+     * at a time). Also routes around an existing [Mode.Headless] — installing a
      * foreground binding while a headless session is live is undefined; the headless session
      * MUST `unbindHeadless` before the foreground Activity binds.
      */
@@ -196,10 +136,8 @@ object BrowserController {
         if (!bindDeferred.isCompleted) {
             bindDeferred.complete(Unit)
         }
-        // Trim stale screenshots from any prior session (including ones killed by
-        // process-stop). Doing this on bind catches both the clean-end and crash-end
-        // cases — by the time the new session writes its first capture, there are at
-        // most `keepLast` files in each cache subdir.
+        // Sweep stale cache files from any prior session (including ones killed by
+        // process-stop). No-op when there are no cache subdirs to sweep.
         runCatching { BrowserCacheSweeper.sweep(webView.context.applicationContext) }
     }
 
@@ -228,7 +166,7 @@ object BrowserController {
     // --- Headless bindings ------------------------------------------------------------
 
     /**
-     * Pass 3: bind a headless WebView for the conversation identified by [callerConvId].
+     * Bind a headless WebView for the conversation identified by [callerConvId].
      * The WebView is held by hard reference because the [HeadlessBrowserSession] is its
      * only owner — losing it to GC mid-task would silently lose the session.
      *
@@ -237,8 +175,8 @@ object BrowserController {
      *
      * Returns false WITHOUT mutating state if a DIFFERENT conversation already holds a live
      * headless (or foreground) binding — the controller's [mode] is a single global slot, so
-     * letting a second concurrent conversation overwrite it would route the first's streamed
-     * screenshots into the wrong chat. The caller (browser_open) surfaces a clean
+     * letting a second concurrent conversation overwrite it would clobber the first's
+     * session. The caller (browser_open) surfaces a clean
      * [bindBusyEnvelope] in that case. Re-binding the SAME conv id is always allowed (the
      * normal per-task reuse where browser_open fires again on a session that's already bound).
      */
@@ -266,16 +204,11 @@ object BrowserController {
                 Mode.Idle -> Unit
             }
             mode = Mode.Headless(callerConvId, webView)
-            // Fresh session for this conv — drop its de-dupe memory so the first stream of a
-            // new task isn't suppressed by a URL match against a previous task on the same id.
-            streamDedupe.remove(callerConvId)
         }
         if (!bindDeferred.isCompleted) {
             bindDeferred.complete(Unit)
         }
-        // Trim stale screenshots — same reasoning as bindForeground. Headless sessions
-        // produce streamer PNGs in `browser-stream/` after every state-changing tool, so
-        // a long bot conversation can put real pressure on cacheDir without this.
+        // Sweep stale cache files — same reasoning as bindForeground.
         runCatching { BrowserCacheSweeper.sweep(webView.context.applicationContext) }
         return true
     }
@@ -317,9 +250,6 @@ object BrowserController {
                 _recentActions.value = emptyList()
                 bindDeferred = CompletableDeferred()
             }
-            // Drop the conversation's de-dupe memory regardless of which mode is live, so a
-            // finished conv can't leave a stale URL mark that suppresses a future reuse.
-            streamDedupe.remove(callerConvId)
         }
     }
 
@@ -328,10 +258,10 @@ object BrowserController {
      * Called by [HeadlessBrowserSessionPool]'s idle sweep when it evicts (and destroys) a
      * session: without this the controller's [mode] keeps pointing at the now-destroyed
      * WebView, so the next tool call would dispatch onto a dead view (evaluateJavascript
-     * throws, screenshots stream white) instead of cleanly returning `browser_session_lost`.
+     * throws) instead of cleanly returning `browser_session_lost`.
      *
-     * Mirrors [unbindHeadless]'s teardown (task timer, action log, fresh bind deferred, de-dupe
-     * memory) but ONLY when this conv still owns the slot — a different live owner or a
+     * Mirrors [unbindHeadless]'s teardown (task timer, action log, fresh bind deferred)
+     * but ONLY when this conv still owns the slot — a different live owner or a
      * foreground binding is left untouched. Guarded by [bindLock] so it composes safely with
      * concurrent bind/unbind; the pool calls it while holding its OWN (separate) pool lock, and
      * this method never reaches back into the pool, so the two locks never nest in conflicting
@@ -346,7 +276,6 @@ object BrowserController {
                 _recentActions.value = emptyList()
                 bindDeferred = CompletableDeferred()
             }
-            streamDedupe.remove(callerConvId)
         }
     }
 
@@ -457,106 +386,12 @@ object BrowserController {
     /**
      * Returned when a headless browser_open lands while a DIFFERENT conversation already
      * holds the (single, global) controller binding. The controller can drive one WebView at
-     * a time; binding a second concurrently would route the first conversation's streamed
-     * screenshots into the wrong chat, so the second is rejected here instead.
+     * a time; binding a second concurrently would clobber the first conversation's session,
+     * so the second is rejected here instead.
      */
     fun bindBusyEnvelope(): JsonObject = buildJsonObject {
         put("error", "browser_busy")
         put("recovery", "Another conversation is currently driving the browser. Wait for it to finish (it calls browser_done), then retry browser_open.")
-    }
-
-    /**
-     * Pass 3 auto-stream hook: every state-changing tool calls this AFTER its action
-     * completes (and after [awaitReadyState]) so the remote user gets a screenshot.
-     * No-op when the controller isn't in [Mode.Headless] — foreground users watch the
-     * Activity directly and don't need a streamed copy.
-     *
-     * Failures are swallowed at the streamer level (a missing chat mapping, a Telegram
-     * outage, etc.) so a screenshot send error never bubbles up to fail the tool itself.
-     * The LLM has already produced its envelope by the time we get here.
-     *
-     * Wiring: the streamer is resolved lazily through Koin so the controller doesn't take
-     * a constructor dep on it (would create a cycle through TelegramBotService → Koin →
-     * LocalTools → BrowserController). [BrowserScreenshotStreamer.NoOp] is the safe
-     * fallback if no implementation is registered (e.g. from a JVM unit test).
-     */
-    suspend fun streamScreenshotIfHeadless(actionLabel: String) {
-        val m = mode
-        if (m !is Mode.Headless) return
-        val webView = m.webView
-        val context = webView.context.applicationContext ?: return
-        // Capture on the main thread (WebView APIs all require it). Read webView.url here
-        // too — accessing it off the main thread tripped StrictMode and threw, which the
-        // outer runCatching silently swallowed; the user saw "no screenshot in chat" with
-        // no obvious error.
-        data class Capture(val path: String, val url: String?)
-        // Read the current URL on the main thread first. If it matches the last streamed
-        // URL within STREAM_DEDUPE_WINDOW_MS, skip everything — bitmap allocation, file
-        // write, and Telegram upload. Catches three real-world cases that flood the user's
-        // chat with redundant PNGs:
-        //   1. Click that didn't navigate (URL unchanged → diff helper marks it unchanged
-        //      but the streamer still fires for the action label).
-        //   2. browser_open + immediately some other write tool on the same page.
-        //   3. Confused model that calls browser_open 5x in a row trying to find a page.
-        val currentUrl = runCatching {
-            withContext(Dispatchers.Main) { webView.url }
-        }.onFailure {
-            // A throw reading webView.url (StrictMode off-main-thread, destroyed WebView)
-            // would otherwise vanish — the de-dupe check then treats the URL as null and
-            // streams anyway. Log so the cause is recoverable from logcat.
-            android.util.Log.w(TAG, "streamScreenshotIfHeadless: reading webView.url failed", it)
-        }.getOrNull()
-        val now = System.currentTimeMillis()
-        // Per-conv de-dupe: only this conversation's own prior stream can suppress this one,
-        // so a concurrent conversation streaming the same URL can't wrongly gate it.
-        val lastMark = synchronized(bindLock) { streamDedupe[m.callerConvId] }
-        if (
-            currentUrl != null &&
-            currentUrl == lastMark?.url &&
-            (now - lastMark.atMs) < STREAM_DEDUPE_WINDOW_MS
-        ) {
-            android.util.Log.d(TAG, "streamScreenshotIfHeadless: skipping duplicate URL $currentUrl within ${STREAM_DEDUPE_WINDOW_MS}ms")
-            return
-        }
-        // Paint settle: awaitReadyState ensures HTML+resources, NOT first paint. Without
-        // this delay, the very first browser_open screenshot streams an empty white frame
-        // because draw(canvas) ran before the renderer flushed.
-        kotlinx.coroutines.delay(PAINT_SETTLE_MS)
-        val capture = runCatching {
-            withContext(Dispatchers.Main) {
-                val w = webView.width.coerceAtLeast(1)
-                val h = webView.height.coerceAtLeast(1)
-                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bitmap)
-                webView.draw(canvas)
-                val cacheDir = File(context.cacheDir, STREAM_CACHE_SUBDIR).apply { mkdirs() }
-                val out = File(cacheDir, "stream-${System.currentTimeMillis()}.jpg")
-                // Recycle in a finally block so a FileOutputStream failure doesn't leak
-                // the ~8 MB native backing. Without this, any IO error mid-capture leaves
-                // the bitmap alive until the next GC (the outer runCatching swallows
-                // the exception before the bitmap variable goes out of scope).
-                try {
-                    FileOutputStream(out).use { os ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, os)
-                    }
-                } finally {
-                    bitmap.recycle()
-                }
-                Capture(out.absolutePath, currentUrl)
-            }
-        }.onFailure { android.util.Log.w(TAG, "streamScreenshotIfHeadless: capture failed", it) }
-            .getOrNull() ?: return
-        // Record what we just streamed AFTER the bitmap path succeeds so a transient
-        // capture failure doesn't lock out a subsequent attempt for the dedupe window.
-        synchronized(bindLock) { streamDedupe[m.callerConvId] = StreamMark(capture.url, now) }
-
-        val streamer: BrowserScreenshotStreamer? = runCatching {
-            org.koin.java.KoinJavaComponent.getKoin().getOrNull<BrowserScreenshotStreamer>()
-        }.getOrNull()
-        runCatching {
-            (streamer ?: BrowserScreenshotStreamer.NoOp)
-                .send(m.callerConvId, capture.path, actionLabel, capture.url)
-        }.onFailure { android.util.Log.w(TAG, "streamScreenshotIfHeadless: streamer.send failed", it) }
     }
 }
 

@@ -24,9 +24,9 @@ private val Context.browserDataStore by preferencesDataStore(name = "browser_pre
  * headless (background WebView). User-configurable in Settings → Browser.
  */
 enum class BrowserBackgroundMode {
-    /** Browser Activity pops up — the user sees the browser. Default. */
+    /** Browser Activity pops up — the user sees the browser. */
     ALWAYS_FOREGROUND,
-    /** Browser runs headless — no Activity, screenshots streamed into the chat. */
+    /** Browser runs headless — no Activity. Default. */
     ALWAYS_BACKGROUND,
 }
 
@@ -40,7 +40,7 @@ enum class BrowserBackgroundMode {
  * gate is enforced. Pass 1 doesn't touch tool registration.
  *
  * Defaults come from [BrowserToolDefaults.DEFAULT_ENABLED] so users get a sensible
- * read-only browser on first install: navigate, screenshot, read text — but no clicks
+ * read-only browser on first install: navigate, read text — but no clicks
  * or JS until they explicitly opt in.
  */
 class BrowserPreferences(private val context: Context) {
@@ -111,7 +111,7 @@ class BrowserPreferences(private val context: Context) {
     fun backgroundModeFlow(): Flow<BrowserBackgroundMode> = store.data.map { prefs ->
         prefs[backgroundModeKey]
             ?.let { name -> runCatching { BrowserBackgroundMode.valueOf(name) }.getOrNull() }
-            ?: BrowserBackgroundMode.ALWAYS_FOREGROUND
+            ?: BrowserBackgroundMode.ALWAYS_BACKGROUND
     }
 
     /** Persist the browser background mode. */

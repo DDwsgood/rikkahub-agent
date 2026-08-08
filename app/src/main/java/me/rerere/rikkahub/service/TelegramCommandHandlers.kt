@@ -525,7 +525,6 @@ internal suspend fun TelegramBotService.autoCancelStuckTurn(chatId: Long) {
  *  - `take_screenshot` — writes `gallery_path` (Pictures/RikkaHub/Screenshots) +
  *    `file_path` (cache).
  *  - `take_photo` — writes `gallery_path` (cache).
- *  - `browser_screenshot` — writes `file_path` (cache/browser-shots).
  *  - `show_image` — writes `path`.
  *
  * Walks the most recent assistant message's tool calls newest-first, finds the
@@ -550,7 +549,6 @@ internal suspend fun TelegramBotService.tryRescueImageFromTurn(
     val rescueable = setOf(
         "take_screenshot",
         "take_photo",
-        "browser_screenshot",
         "show_image",
     )
     // Walk newest-first so if the model took multiple screenshots we send the last one.
@@ -581,8 +579,6 @@ internal suspend fun TelegramBotService.tryRescueImageFromTurn(
                 "📸 (rescued — model took the screenshot but didn't reply with a description)"
             "take_photo" ->
                 "📸 (rescued — model captured the photo but didn't reply with a description)"
-            "browser_screenshot" ->
-                "📸 (rescued — model captured the browser page but didn't reply with a description)"
             "show_image" ->
                 "📸 (rescued — model surfaced an image but didn't reply with a description)"
             else ->

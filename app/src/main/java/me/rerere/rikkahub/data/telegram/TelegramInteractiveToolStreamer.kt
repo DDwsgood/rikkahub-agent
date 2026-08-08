@@ -19,8 +19,8 @@ private const val MAX_CAPTION_CHARS = 1024
  * Settle delay before capturing the device screen. Interactive tools (launch_app, a tap that
  * opens an app, global-action back) kick off a launch/transition animation; capturing
  * immediately grabs a half-painted frame — the app switcher, a white screen, or the previous
- * app. Waiting lets the UI settle, mirroring the browser streamer's PAINT_SETTLE_MS (600ms)
- * but a touch longer since cross-app launches animate slower than a WebView repaint.
+ * app. Waiting lets the UI settle — cross-app launches animate slower than a WebView
+ * repaint, so the delay is a touch longer than a typical paint-settle.
  */
 private const val SCREEN_SETTLE_MS = 900L
 

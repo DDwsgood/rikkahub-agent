@@ -672,8 +672,7 @@ class TelegramBotService : Service() {
         try { client.sendChatAction(m.chatId, "typing") } catch (_: Throwable) {}
         chatService.initializeConversation(convId)
         // Mark this conv browser-headless so browser tools route through
-        // HeadlessBrowserSessionPool (no Activity launch on the user's phone) and
-        // `streamScreenshotIfHeadless` actually streams to Telegram. Use the
+        // HeadlessBrowserSessionPool (no Activity launch on the user's phone). Use the
         // browser-only variant — the bot HAS an approval channel (inline-keyboard
         // prompts via promptForToolApproval), so tool calls must still flow through
         // the per-tool approval gate. Using the full mark() here would silently

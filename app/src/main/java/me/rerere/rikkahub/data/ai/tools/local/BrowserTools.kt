@@ -1,8 +1,6 @@
 package me.rerere.rikkahub.data.ai.tools.local
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -22,7 +20,6 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.rikkahub.browser.BrowserBackgroundMode
 import me.rerere.rikkahub.browser.BrowserController
 import me.rerere.rikkahub.browser.BrowserControllerHandle
 import me.rerere.rikkahub.browser.BrowserDiffHelper
@@ -31,16 +28,12 @@ import me.rerere.rikkahub.browser.HeadlessBrowserSessionPool
 import me.rerere.rikkahub.browser.ReadabilityRunner.runReadability
 import me.rerere.rikkahub.browser.awaitReadyState
 import me.rerere.rikkahub.browser.evaluateJavascriptAsync
-import me.rerere.rikkahub.data.ai.tools.HeadlessConversations
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
-import java.io.File
-import java.io.FileOutputStream
 import kotlin.uuid.ExperimentalUuidApi
-import kotlin.uuid.Uuid
 
 /**
- * Pass 2 of the in-app Browser feature: 17 LLM-callable tool factories that drive the
- * BrowserActivity's WebView through [BrowserControllerHandle.withController].
+ * Browser tool factories that drive a headless WebView through
+ * [BrowserControllerHandle.withController]. All tools run in headless mode.
  *
  * Every tool wraps its dispatch in [withTimeoutOrNull] (30 s per the spec's "every tool
  * MUST have a hard timeout" rule); every state-changing write tool also calls
@@ -51,9 +44,6 @@ import kotlin.uuid.Uuid
  * Settings → Browser unregisters it entirely, so YOLO can't accidentally run a tool the
  * user has explicitly disabled.
  */
-
-private const val MAX_SCREENSHOT_HEIGHT_PX = 8192
-private const val SCREENSHOT_CACHE_SUBDIR = "browser-shots"
 
 /**
  * Hard cap on the string browser_eval_js puts in its result envelope. Matches the 64 KB
@@ -71,38 +61,11 @@ private const val EVAL_JS_MAX_RESULT_CHARS = 64 * 1024
 private val toolTimeoutMs: Long get() = BrowserController.perToolTimeoutMs
 
 /**
- * Pass 3: appended to every browser tool's description so the LLM knows that in headless
- * (Telegram / cron / sub-agent) mode, the act of taking a state-changing action will
- * automatically push a screenshot+caption to the calling chat. Without this cue, the
- * model would otherwise call `browser_screenshot` after every action — doubling vision
- * tokens and round-trips for no gain.
- */
-private const val TELEGRAM_HEADLESS_CUE =
-    " In Telegram / headless mode, screenshots stream to the calling chat after each state-changing action — call browser_done when you're confident the task is complete."
-
-/**
- * Decide whether the current invocation should run in headless mode. Resolution order:
- *  1. [ToolInvocationContext.callerConversationId] is the canonical source. Cron jobs,
- *     sub-agents, Telegram bot, external automation all set it.
- *  2. We try to parse it as a [Uuid]. The [HeadlessConversations] registry keys on Uuid
- *     (cron / sub-agent paths use the conversation's primary key).
- *  3. If parsing fails (some external automation paths use string ids), we still treat
- *     the [ToolInvocationContext.isHeadless] flag as authoritative — that flag is set by
- *     every flow that wants headless behaviour.
- *
- * Conservative default: foreground. The visible Activity is never wrong; the worst case
- * of a misclassification is the activity briefly appears on the user's screen.
+ * Always returns true — browser tools permanently run in headless mode.
  */
 @OptIn(ExperimentalUuidApi::class)
 private fun isHeadlessInvocation(ctx: ToolInvocationContext?): Boolean {
-    if (ctx == null) return false
-    if (ctx.isHeadless) return true
-    // Global preference: ALWAYS_BACKGROUND forces headless for main-app chats too,
-    // so the browser Activity doesn't pop up over whatever the user is doing.
-    if (BrowserController.backgroundMode == BrowserBackgroundMode.ALWAYS_BACKGROUND) return true
-    val convId = ctx.callerConversationId ?: return false
-    val asUuid = runCatching { Uuid.parse(convId) }.getOrNull() ?: return false
-    return HeadlessConversations.isHeadless(asUuid)
+    return true
 }
 
 // ---- Common envelope helpers --------------------------------------------------------------
@@ -134,7 +97,7 @@ private fun jsString(s: String): String = JsonPrimitive(s).toString()
 
 fun browserOpenTool(context: Context, invocationContext: ToolInvocationContext? = null): Tool = Tool(
     name = BrowserToolDefaults.OPEN,
-    description = "Navigate the in-app browser to a URL. Launches the browser if it isn't open. Returns {success, current_url, title}. Resets the per-task 5-minute timer.$TELEGRAM_HEADLESS_CUE",
+    description = "Navigate the in-app browser to a URL. Launches the browser if it isn't open. Returns {success, current_url, title}. Resets the per-task 5-minute timer",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -170,88 +133,39 @@ fun browserOpenTool(context: Context, invocationContext: ToolInvocationContext? 
             }
         } else {
             withTimeoutOrNull(toolTimeoutMs) {
-                // Pass 3 mode picker. If the caller is a Telegram / cron / sub-agent
-                // conversation, run in headless mode — no on-screen Activity, screenshots
-                // streamed to the calling chat after every state-changing tool. Otherwise
-                // fall back to the foreground BrowserActivity (the only tool that can
-                // launch it).
-                val callerConvId = invocationContext?.callerConversationId
-                val headless = isHeadlessInvocation(invocationContext)
-
-                if (headless && callerConvId != null) {
-                    // Peek BEFORE allocating: getOrCreate + start() spin up a ~30 MB WebView,
-                    // which bindHeadless would then immediately reject if a different live
-                    // conversation owns the controller slot — wasting the allocation.
-                    // canBindHeadless mirrors bindHeadless's reject rule without mutating state;
-                    // bindHeadless stays authoritative and re-checks under its lock, so a race
-                    // here costs at most a discarded allocation, never a wrong binding.
-                    if (!BrowserController.canBindHeadless(callerConvId)) {
-                        return@withTimeoutOrNull BrowserController.bindBusyEnvelope()
-                    }
-                    // Headless path: get-or-create the per-conv WebView session. The
-                    // lifecycle of the WebView piggybacks on the calling FGS — when the
-                    // FGS dies, the whole pool dies with it. Subsequent tool calls will
-                    // see Mode.Idle and return `browser_session_lost`.
-                    val session = HeadlessBrowserSessionPool.getOrCreate(context, callerConvId)
-                    val webView = withContext(Dispatchers.Main) { session.start(callerConvId) }
-                    // Reject if another conversation already holds the (single, global)
-                    // controller binding — binding a second concurrently would route this
-                    // conv's streamed screenshots into the other chat. Same-conv re-bind is
-                    // always accepted, so the common per-task reuse path is unaffected.
-                    if (!BrowserController.bindHeadless(callerConvId, webView)) {
-                        return@withTimeoutOrNull BrowserController.bindBusyEnvelope()
-                    }
-                    BrowserController.startTaskWindow()
-                    BrowserController.appendAction("Open: $url")
-                    val result = BrowserControllerHandle.withController {
-                        withContext(Dispatchers.Main) { webView.loadUrl(url) }
-                        webView.awaitReadyState(8_000L)
-                        buildJsonObject {
-                            put("success", true)
-                            put("current_url", webView.url ?: url)
-                            put("title", webView.title.orEmpty())
-                        }
-                    }
-                    // Stream the landing-page screenshot so the user sees we arrived.
-                    BrowserController.streamScreenshotIfHeadless("Opened $url")
-                    result
-                } else {
-                    // Foreground path (Pass 1+2 behaviour). browser_open is the ONLY tool
-                    // allowed to launch the Activity. Any other tool returning
-                    // browser_not_open is the LLM's signal to call this first.
-                    val wasAlreadyBound = BrowserController.isBound()
-                    if (!wasAlreadyBound) {
-                        context.startActivity(
-                            me.rerere.rikkahub.browser.BrowserActivity.intent(
-                                context,
-                                url,
-                                conversationId = callerConvId,
-                            )
-                        )
-                        if (!BrowserController.awaitBind(5_000L)) {
-                            return@withTimeoutOrNull buildJsonObject {
-                                put("error", "browser_launch_failed")
-                                put("recovery", "Activity did not bind within 5s; retry browser_open or check that the app has overlay permission.")
-                            }
-                        }
-                    }
-                    // (Re)start the 5-minute task window on every browser_open.
-                    BrowserController.startTaskWindow()
-                    BrowserController.appendAction("Open: $url")
-                    BrowserControllerHandle.withController {
-                        // When the Activity was just freshly launched, the URL was already
-                        // passed as EXTRA_INITIAL_URL and the WebView began loading it
-                        // before bind() returned. Skip a redundant second loadUrl — it
-                        // would abort the in-flight load and restart from the top.
-                        if (wasAlreadyBound) {
-                            withContext(Dispatchers.Main) { webView.loadUrl(url) }
-                        }
-                        webView.awaitReadyState(8_000L)
-                        buildJsonObject {
-                            put("success", true)
-                            put("current_url", webView.url ?: url)
-                            put("title", webView.title.orEmpty())
-                        }
+                // Always headless: get-or-create the per-conv WebView session. Use a
+                // fallback id when no conversation context is available (direct app usage).
+                val callerConvId = invocationContext?.callerConversationId ?: "app-direct"
+                // Peek BEFORE allocating: getOrCreate + start() spin up a ~30 MB WebView,
+                // which bindHeadless would then immediately reject if a different live
+                // conversation owns the controller slot — wasting the allocation.
+                // canBindHeadless mirrors bindHeadless's reject rule without mutating state;
+                // bindHeadless stays authoritative and re-checks under its lock, so a race
+                // here costs at most a discarded allocation, never a wrong binding.
+                if (!BrowserController.canBindHeadless(callerConvId)) {
+                    return@withTimeoutOrNull BrowserController.bindBusyEnvelope()
+                }
+                // Headless path: get-or-create the per-conv WebView session. The
+                // lifecycle of the WebView piggybacks on the calling FGS — when the
+                // FGS dies, the whole pool dies with it. Subsequent tool calls will
+                // see Mode.Idle and return `browser_session_lost`.
+                val session = HeadlessBrowserSessionPool.getOrCreate(context, callerConvId)
+                val webView = withContext(Dispatchers.Main) { session.start(callerConvId) }
+                // Reject if another conversation already holds the (single, global)
+                // controller binding. Same-conv re-bind is always accepted, so the
+                // common per-task reuse path is unaffected.
+                if (!BrowserController.bindHeadless(callerConvId, webView)) {
+                    return@withTimeoutOrNull BrowserController.bindBusyEnvelope()
+                }
+                BrowserController.startTaskWindow()
+                BrowserController.appendAction("Open: $url")
+                BrowserControllerHandle.withController {
+                    withContext(Dispatchers.Main) { webView.loadUrl(url) }
+                    webView.awaitReadyState(8_000L)
+                    buildJsonObject {
+                        put("success", true)
+                        put("current_url", webView.url ?: url)
+                        put("title", webView.title.orEmpty())
                     }
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.OPEN)
@@ -275,7 +189,7 @@ fun browserOpenTool(context: Context, invocationContext: ToolInvocationContext? 
 
 fun browserCurrentUrlTool(): Tool = Tool(
     name = BrowserToolDefaults.CURRENT_URL,
-    description = "Return the browser's current URL and page title. {url, title}. browser_not_open if the browser isn't open.$TELEGRAM_HEADLESS_CUE",
+    description = "Return the browser's current URL and page title. {url, title}. browser_not_open if the browser isn't open",
     parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
     execute = {
         val out = withTimeoutOrNull(toolTimeoutMs) {
@@ -290,73 +204,16 @@ fun browserCurrentUrlTool(): Tool = Tool(
     },
 )
 
-fun browserScreenshotTool(context: Context): Tool = Tool(
-    name = BrowserToolDefaults.SCREENSHOT,
-    description = "Capture the visible viewport of the browser as a PNG vision attachment. Use browser_get_text first if you only need the page's text — screenshots cost vision tokens. full_page=true is best-effort and currently captures the viewport only (viewport_only:true in the response).$TELEGRAM_HEADLESS_CUE",
-    parameters = {
-        InputSchema.Obj(
-            properties = buildJsonObject {
-                put("full_page", buildJsonObject {
-                    put("type", "boolean")
-                    put("description", "If true, attempt to capture the entire scroll height (currently no-op; viewport-only)")
-                })
-            },
-        )
-    },
-    execute = { input ->
-        val fullPage = input.jsonObject["full_page"]?.jsonPrimitive?.booleanOrNull == true
-        val parts = mutableListOf<UIMessagePart>()
-        val out = withTimeoutOrNull(toolTimeoutMs) {
-            BrowserControllerHandle.withController {
-                val (path, w, h) = withContext(Dispatchers.Main) {
-                    val width = webView.width.coerceAtLeast(1)
-                    val height = webView.height.coerceAtLeast(1).coerceAtMost(MAX_SCREENSHOT_HEIGHT_PX)
-                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    val canvas = Canvas(bitmap)
-                    webView.draw(canvas)
-                    val cacheDir = File(context.cacheDir, SCREENSHOT_CACHE_SUBDIR).apply { mkdirs() }
-                    val out = File(cacheDir, "screenshot-${System.currentTimeMillis()}.png")
-                    // Recycle unconditionally in a finally block so the bitmap is freed
-                    // exactly once regardless of whether compress() succeeds or throws.
-                    // The prior pattern called recycle() in onFailure AND then again
-                    // unconditionally — a double-recycle causes IllegalStateException.
-                    try {
-                        FileOutputStream(out).use { os ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
-                        }
-                    } finally {
-                        bitmap.recycle()
-                    }
-                    Triple(out.absolutePath, width, height)
-                }
-                BrowserController.appendAction("Screenshot")
-                buildJsonObject {
-                    put("success", true)
-                    put("file_path", path)
-                    put("width", w)
-                    put("height", h)
-                    if (fullPage) put("viewport_only", true)
-                }
-            }
-        } ?: timeoutEnvelope(BrowserToolDefaults.SCREENSHOT)
-        out.jsonObject["file_path"]?.jsonPrimitive?.contentOrNull?.let { fp ->
-            parts.add(UIMessagePart.Image(url = "file://$fp"))
-        }
-        parts.add(UIMessagePart.Text(out.toString()))
-        parts
-    },
-)
-
 fun browserGetTextTool(): Tool = Tool(
     name = BrowserToolDefaults.GET_TEXT,
-    description = "Returns the main article content via Readability.js by default, falling back to selector-based extraction if Readability fails. Pass extract_mode:'raw' for the unfiltered text. Pass selector (e.g. 'article', 'main', '.content') for explicit scoping — selectors override Readability. max_chars (default 8000) caps the result. Use this BEFORE screenshot if you only need text content. {text, truncated, extract_mode}.$TELEGRAM_HEADLESS_CUE",
+    description = "Returns the main article content via Readability.js by default, falling back to selector-based extraction if Readability fails. Pass extract_mode:'raw' for the unfiltered text. Pass selector (e.g. 'article', 'main', '.content') for explicit scoping — selectors override Readability. max_chars (default 8000) caps the result. Use this BEFORE screenshot if you only need text content. {text, truncated, extract_mode}",
     parameters = { getTextSchema(defaultMax = 8000) },
     execute = { input -> textPart(runGetText(input)) },
 )
 
 fun browserGetDomTool(): Tool = Tool(
     name = BrowserToolDefaults.GET_DOM,
-    description = "Extract a simplified outerHTML of a CSS selector (default 'body'). Strips <script>/<style>. Truncates at max_chars (default 4000). Use scoped selectors like 'article' / 'main' rather than 'body' for relevance — body usually includes nav and footer chrome that costs tokens without value. {html, truncated}.$TELEGRAM_HEADLESS_CUE",
+    description = "Extract a simplified outerHTML of a CSS selector (default 'body'). Strips <script>/<style>. Truncates at max_chars (default 4000). Use scoped selectors like 'article' / 'main' rather than 'body' for relevance — body usually includes nav and footer chrome that costs tokens without value. {html, truncated}",
     parameters = { selectorAndMaxCharsSchema(defaultMax = 4000, required = false) },
     execute = { input -> textPart(runReadHelper(input, BrowserToolDefaults.GET_DOM, defaultMax = 4000) { selector, maxChars ->
         """(function(){
@@ -376,7 +233,7 @@ fun browserGetDomTool(): Tool = Tool(
 
 fun browserGetLinksTool(): Tool = Tool(
     name = BrowserToolDefaults.GET_LINKS,
-    description = "List up to 100 anchor links inside a CSS selector (default 'body') as {links:[{href, text}], count}. {error:'selector_not_found'} if the root selector doesn't match.$TELEGRAM_HEADLESS_CUE",
+    description = "List up to 100 anchor links inside a CSS selector (default 'body') as {links:[{href, text}], count}. {error:'selector_not_found'} if the root selector doesn't match",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("selector", buildJsonObject {
@@ -415,14 +272,14 @@ fun browserGetLinksTool(): Tool = Tool(
 
 fun browserBackTool(): Tool = Tool(
     name = BrowserToolDefaults.BACK,
-    description = "Navigate the browser one step back in history. {success, current_url}.$TELEGRAM_HEADLESS_CUE",
+    description = "Navigate the browser one step back in history. {success, current_url}",
     parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
     execute = { textPart(runHistoryNav(BrowserToolDefaults.BACK, forward = false)) },
 )
 
 fun browserForwardTool(): Tool = Tool(
     name = BrowserToolDefaults.FORWARD,
-    description = "Navigate the browser one step forward in history. {success, current_url}.$TELEGRAM_HEADLESS_CUE",
+    description = "Navigate the browser one step forward in history. {success, current_url}",
     parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
     execute = { textPart(runHistoryNav(BrowserToolDefaults.FORWARD, forward = true)) },
 )
@@ -483,7 +340,7 @@ internal fun buildWaitForPredicate(selector: String, state: String, containsText
 
 fun browserWaitForTool(): Tool = Tool(
     name = BrowserToolDefaults.WAIT_FOR,
-    description = "Pause until a CSS selector reaches a target state. Polls every 200 ms up to timeout_ms (default 10_000). state is one of attached (default — element present in DOM), detached (element gone), visible (present AND rendered), hidden (none rendered). Optional contains_text waits until a matching element contains that text. {found, elapsed_ms}.$TELEGRAM_HEADLESS_CUE",
+    description = "Pause until a CSS selector reaches a target state. Polls every 200 ms up to timeout_ms (default 10_000). state is one of attached (default — element present in DOM), detached (element gone), visible (present AND rendered), hidden (none rendered). Optional contains_text waits until a matching element contains that text. {found, elapsed_ms}",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("selector", buildJsonObject {
@@ -553,7 +410,7 @@ fun browserWaitForTool(): Tool = Tool(
 
 fun browserClickTool(): Tool = Tool(
     name = BrowserToolDefaults.CLICK,
-    description = "Click an element matching a CSS selector. Returns the diff between the page before and after the action by default ({added, removed, added_chars, removed_chars, truncated} truncated to 4000 chars total). Pass full:true to skip the diff and get post_click_url only — use when the click navigates to an entirely new page. Waits up to 8 s for readyState=complete.$TELEGRAM_HEADLESS_CUE",
+    description = "Click an element matching a CSS selector. Returns the diff between the page before and after the action by default ({added, removed, added_chars, removed_chars, truncated} truncated to 4000 chars total). Pass full:true to skip the diff and get post_click_url only — use when the click navigates to an entirely new page. Waits up to 8 s for readyState=complete",
     parameters = { selectorWithFullSchema("CSS selector to click") },
     execute = { input ->
         val selector = input.jsonObject["selector"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
@@ -586,18 +443,13 @@ fun browserClickTool(): Tool = Tool(
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.CLICK)
         }
-        // Pass 3: post-click screenshot stream in headless mode. Skipped on error envelopes
-        // so we don't push a stale screenshot when the click never landed.
-        if (out["success"]?.toString() == "true") {
-            BrowserController.streamScreenshotIfHeadless("Clicked $selector")
-        }
         textPart(out)
     },
 )
 
 fun browserTypeTool(): Tool = Tool(
     name = BrowserToolDefaults.TYPE,
-    description = "Type text into an input/textarea/contenteditable matching a CSS selector. Focuses, optionally clears, sets the value + dispatches an 'input' event so SPA frameworks observe the change. Returns the diff between the page before and after by default; pass full:true to skip the diff. {success, [diff]}.$TELEGRAM_HEADLESS_CUE",
+    description = "Type text into an input/textarea/contenteditable matching a CSS selector. Focuses, optionally clears, sets the value + dispatches an 'input' event so SPA frameworks observe the change. Returns the diff between the page before and after by default; pass full:true to skip the diff. {success, [diff]}",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("selector", buildJsonObject { put("type","string"); put("description","CSS selector of the input") })
@@ -644,16 +496,13 @@ fun browserTypeTool(): Tool = Tool(
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.TYPE)
         }
-        if (out["success"]?.toString() == "true") {
-            BrowserController.streamScreenshotIfHeadless("Typed into $selector")
-        }
         textPart(out)
     },
 )
 
 fun browserScrollTool(): Tool = Tool(
     name = BrowserToolDefaults.SCROLL,
-    description = "Scroll the page in a direction (up/down/top/bottom). amount is in pixels (default 600, ignored for top/bottom). {success, scroll_y}.$TELEGRAM_HEADLESS_CUE",
+    description = "Scroll the page in a direction (up/down/top/bottom). amount is in pixels (default 600, ignored for top/bottom). {success, scroll_y}",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("direction", buildJsonObject {
@@ -692,23 +541,13 @@ fun browserScrollTool(): Tool = Tool(
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.SCROLL)
         }
-        // Pass 3: browser_scroll is in WRITE_TOOLS and the TELEGRAM_HEADLESS_CUE describes
-        // "screenshots stream after each state-changing action." Stream the post-scroll view so
-        // the Telegram user can see the new viewport position (scroll is purely viewport movement
-        // — the diff helper won't capture it since body.innerText doesn't change).
-        if (out["success"]?.toString() == "true") {
-            val scrollY = out["scroll_y"]?.jsonPrimitive?.intOrNull
-            BrowserController.streamScreenshotIfHeadless(
-                if (scrollY != null) "Scrolled to y=$scrollY" else "Scrolled"
-            )
-        }
         textPart(out)
     },
 )
 
 fun browserSubmitTool(): Tool = Tool(
     name = BrowserToolDefaults.SUBMIT,
-    description = "Submit a form. If the selector is a <button type=submit> click it; otherwise locates the enclosing <form> and calls .submit(). Awaits the post-navigation readyState. Returns the diff between the page before and after by default; pass full:true to skip the diff (recommended when submission navigates to a brand-new page). {success, post_submit_url, [diff]}.$TELEGRAM_HEADLESS_CUE",
+    description = "Submit a form. If the selector is a <button type=submit> click it; otherwise locates the enclosing <form> and calls .submit(). Awaits the post-navigation readyState. Returns the diff between the page before and after by default; pass full:true to skip the diff (recommended when submission navigates to a brand-new page). {success, post_submit_url, [diff]}",
     parameters = { selectorWithFullSchema("CSS selector of a submit button or any element inside the target form") },
     execute = { input ->
         val selector = input.jsonObject["selector"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
@@ -746,16 +585,13 @@ fun browserSubmitTool(): Tool = Tool(
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.SUBMIT)
         }
-        if (out["success"]?.toString() == "true") {
-            BrowserController.streamScreenshotIfHeadless("Submitted $selector")
-        }
         textPart(out)
     },
 )
 
 fun browserSelectTool(): Tool = Tool(
     name = BrowserToolDefaults.SELECT,
-    description = "Set a <select> element's value. Dispatches 'change' so framework listeners fire. Returns the diff between the page before and after by default; pass full:true to skip the diff. {success, [diff]}.$TELEGRAM_HEADLESS_CUE",
+    description = "Set a <select> element's value. Dispatches 'change' so framework listeners fire. Returns the diff between the page before and after by default; pass full:true to skip the diff. {success, [diff]}",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("selector", buildJsonObject { put("type","string"); put("description","CSS selector of the <select>") })
@@ -791,16 +627,13 @@ fun browserSelectTool(): Tool = Tool(
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.SELECT)
         }
-        if (out["success"]?.toString() == "true") {
-            BrowserController.streamScreenshotIfHeadless("Selected $value in $selector")
-        }
         textPart(out)
     },
 )
 
 fun browserPressKeyTool(): Tool = Tool(
     name = BrowserToolDefaults.PRESS_KEY,
-    description = "Synthesize keydown + keyup events on the active element. Use KeyboardEvent.key values like 'Enter', 'Escape', 'ArrowDown', 'Tab'. Returns the diff between the page before and after by default; pass full:true to skip the diff (recommended when Enter triggers a navigation). {success, [diff]}.$TELEGRAM_HEADLESS_CUE",
+    description = "Synthesize keydown + keyup events on the active element. Use KeyboardEvent.key values like 'Enter', 'Escape', 'ArrowDown', 'Tab'. Returns the diff between the page before and after by default; pass full:true to skip the diff (recommended when Enter triggers a navigation). {success, [diff]}",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("key", buildJsonObject {
@@ -839,16 +672,13 @@ fun browserPressKeyTool(): Tool = Tool(
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.PRESS_KEY)
         }
-        if (out["success"]?.toString() == "true") {
-            BrowserController.streamScreenshotIfHeadless("Pressed $key")
-        }
         textPart(out)
     },
 )
 
 fun browserEvalJsTool(): Tool = Tool(
     name = BrowserToolDefaults.EVAL_JS,
-    description = "Run arbitrary JavaScript in the page and return its last expression. HARDLINE-checked: shell-shaped strings, document.cookie writes, eval/Function constructors, and string-form setTimeout are all blocked at the tool dispatcher BEFORE the JS executes. Always asks for approval; never eligible for 'Always Allow'.$TELEGRAM_HEADLESS_CUE",
+    description = "Run arbitrary JavaScript in the page and return its last expression. HARDLINE-checked: shell-shaped strings, document.cookie writes, eval/Function constructors, and string-form setTimeout are all blocked at the tool dispatcher BEFORE the JS executes. Always asks for approval; never eligible for 'Always Allow'",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("code", buildJsonObject {
@@ -880,14 +710,6 @@ fun browserEvalJsTool(): Tool = Tool(
                     }
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.EVAL_JS)
-        }
-        // Pass 3: browser_eval_js is in WRITE_TOOLS — it CAN mutate page state (e.g.
-        // click via JS, modify the DOM, submit a form programmatically). Stream a screenshot
-        // so the Telegram user sees the page after the script ran, consistent with every
-        // other write tool. Only stream on success — error envelopes (timeout, missing_code,
-        // browser_not_open) all carry an "error" key so we use that as the gate.
-        if (!out.containsKey("error")) {
-            BrowserController.streamScreenshotIfHeadless("Ran JS")
         }
         textPart(out)
     },
@@ -943,16 +765,13 @@ fun browserHandleDialogTool(): Tool = Tool(
                 }
             }
         } ?: timeoutEnvelope(BrowserToolDefaults.HANDLE_DIALOG)
-        if (!out.containsKey("error")) {
-            BrowserController.streamScreenshotIfHeadless("Handle dialog: $action")
-        }
         textPart(out)
     },
 )
 
 fun browserSetViewportTool(): Tool = Tool(
     name = BrowserToolDefaults.SET_VIEWPORT,
-    description = "Set the browser viewport dimensions. Useful for testing responsive layouts or capturing screenshots at specific sizes. In headless mode, resizes the WebView. In foreground mode, has no effect (the Activity controls the size).",
+    description = "Set the browser viewport dimensions. Useful for testing responsive layouts or capturing screenshots at specific sizes. Resizes the headless WebView.",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("width", buildJsonObject {
@@ -994,9 +813,6 @@ fun browserSetViewportTool(): Tool = Tool(
                 }
             }
         } ?: timeoutEnvelope(BrowserToolDefaults.SET_VIEWPORT)
-        if (!out.containsKey("error")) {
-            BrowserController.streamScreenshotIfHeadless("Set viewport: ${width}x${height}")
-        }
         textPart(out)
     },
 )
@@ -1017,7 +833,7 @@ fun browserSetViewportTool(): Tool = Tool(
  */
 fun browserClickAndReadTool(): Tool = Tool(
     name = BrowserToolDefaults.CLICK_AND_READ,
-    description = "One-shot click + read in a single round trip. Click an element, await readyState, then return either the diff (default extract_mode:'diff') or the extracted text (auto/readability/raw — same semantics as browser_get_text). Use this instead of browser_click + browser_get_text when you want to minimise tokens. {success, post_click_url, page_title, [diff], [text]}.$TELEGRAM_HEADLESS_CUE",
+    description = "One-shot click + read in a single round trip. Click an element, await readyState, then return either the diff (default extract_mode:'diff') or the extracted text (auto/readability/raw — same semantics as browser_get_text). Use this instead of browser_click + browser_get_text when you want to minimise tokens. {success, post_click_url, page_title, [diff], [text]}",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("selector", buildJsonObject {
@@ -1117,11 +933,6 @@ fun browserClickAndReadTool(): Tool = Tool(
                 }
             } ?: timeoutEnvelope(BrowserToolDefaults.CLICK_AND_READ)
         }
-        // Pass 3 parity: stream a screenshot in headless mode on success, same as
-        // plain browser_click. The diff envelope still flows to the LLM via textPart.
-        if (out["success"]?.toString() == "true") {
-            BrowserController.streamScreenshotIfHeadless("Clicked $selector (and read)")
-        }
         textPart(out)
     },
 )
@@ -1130,7 +941,7 @@ fun browserClickAndReadTool(): Tool = Tool(
 
 fun browserDoneTool(invocationContext: ToolInvocationContext? = null): Tool = Tool(
     name = BrowserToolDefaults.DONE,
-    description = "Signal that the AI has finished its current browser task. Clears the per-task 5-minute timer so the next browser_open starts fresh. The browser session ITSELF stays alive — subsequent turns can navigate, click, scroll without re-opening; only `/new` (Telegram) or the in-app reset closes it. result_url is optional; pass the page URL the user should look at if any. {success}.$TELEGRAM_HEADLESS_CUE",
+    description = "Signal that the AI has finished its current browser task. Clears the per-task 5-minute timer so the next browser_open starts fresh. The browser session ITSELF stays alive — subsequent turns can navigate, click, scroll without re-opening; only `/new` (Telegram) or the in-app reset closes it. result_url is optional; pass the page URL the user should look at if any. {success}",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("summary", buildJsonObject {
@@ -1150,14 +961,10 @@ fun browserDoneTool(invocationContext: ToolInvocationContext? = null): Tool = To
         } else {
             BrowserController.appendAction("Done: $summary")
             BrowserController.clearTaskWindow()
-            // Pass 3 design originally released the headless WebView here. Live-test feedback
-            // (2026-05-08): users want the session to persist across LLM turns so a follow-up
-            // "click the next link" doesn't have to re-open from scratch — that broke the
-            // page state, cookies-in-flight, and the read screenshots stayed white because
-            // we paid the page-load tax twice. browser_done now ONLY clears the per-task
+            // The session persists across LLM turns so a follow-up "click the next link"
+            // doesn't have to re-open from scratch. browser_done ONLY clears the per-task
             // 5-minute timer; the session stays alive until `/new` (TelegramBotService.handleResetCommand)
-            // or the calling FGS dies. Foreground mode behaves identically — Activity keeps
-            // running as before.
+            // or the calling FGS dies.
             buildJsonObject { put("success", true) }
         }
         textPart(out)
@@ -1442,12 +1249,6 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
             }
         }
     } ?: timeoutEnvelope(toolName)
-    // Pass 3: stream the post-nav screenshot to the calling chat in headless mode. Only
-    // fires when the controller is actually in Mode.Headless; foreground-mode is a no-op.
-    // Don't stream when we already returned an error envelope.
-    if (out["success"]?.toString() == "true") {
-        BrowserController.streamScreenshotIfHeadless(if (forward) "Forward" else "Back")
-    }
     return out
 }
 
@@ -1456,14 +1257,8 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
  * [me.rerere.rikkahub.data.ai.tools.LocalTools.getTools] which iterates the per-tool
  * preference map and only constructs the ones currently enabled.
  *
- * Pass 3: [invocationContext] flows through to the two tool factories that consult it:
- *  - [browserOpenTool]: picks foreground-Activity vs headless-WebView mode by reading
- *    [HeadlessConversations.isHeadless] on the caller's conversation id.
- *  - [browserDoneTool]: in headless mode, also releases the per-conv WebView session.
- *
- * Other tool factories don't need the context — the auto-stream side of headless mode is
- * handled inside [BrowserController.streamScreenshotIfHeadless] which reads the live mode
- * directly without per-tool plumbing.
+ * [invocationContext] flows through to [browserOpenTool] and [browserDoneTool] which
+ * consult it for the caller conversation id.
  */
 fun createBrowserTool(
     toolName: String,
@@ -1472,7 +1267,6 @@ fun createBrowserTool(
 ): Tool? = when (toolName) {
     BrowserToolDefaults.OPEN -> browserOpenTool(context, invocationContext)
     BrowserToolDefaults.CURRENT_URL -> browserCurrentUrlTool()
-    BrowserToolDefaults.SCREENSHOT -> browserScreenshotTool(context)
     BrowserToolDefaults.GET_TEXT -> browserGetTextTool()
     BrowserToolDefaults.GET_DOM -> browserGetDomTool()
     BrowserToolDefaults.GET_LINKS -> browserGetLinksTool()

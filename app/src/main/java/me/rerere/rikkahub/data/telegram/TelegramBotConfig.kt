@@ -22,11 +22,11 @@ data class TelegramBotConfig(
      */
     val customCommands: List<Pair<String, String>> = emptyList(),
     /**
-     * Auto-stream screenshots to Telegram after every state-changing browser tool and
-     * after every interactive tool fires from a headless (Telegram) conversation. Default
-     * on. Toggleable via the `/stream` slash command — users on metered data may want it
-     * off. The streamers (TelegramBrowserScreenshotStreamer, TelegramInteractiveToolStreamer)
-     * each read this flag at send-time and short-circuit when false.
+     * Auto-stream screenshots to Telegram after every interactive tool fires from a
+     * headless (Telegram) conversation. Default on. Toggleable via the `/stream` slash
+     * command — users on metered data may want it off. The streamer
+     * (TelegramInteractiveToolStreamer) reads this flag at send-time and short-circuits
+     * when false.
      */
     val streamScreenshots: Boolean = true,
 ) {

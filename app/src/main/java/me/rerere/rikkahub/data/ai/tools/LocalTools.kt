@@ -67,7 +67,6 @@ import me.rerere.rikkahub.data.ai.tools.local.speechToTextTool
 import me.rerere.rikkahub.data.ai.tools.local.stopMediaTool
 import me.rerere.rikkahub.data.ai.tools.local.storageTool
 import me.rerere.rikkahub.data.ai.tools.local.swipeTool
-import me.rerere.rikkahub.data.ai.tools.local.takeScreenshotTool
 import me.rerere.rikkahub.data.ai.tools.local.tapTool
 import me.rerere.rikkahub.data.ai.tools.local.telephonyInfoTool
 import me.rerere.rikkahub.data.ai.tools.local.toastTool
@@ -873,7 +872,6 @@ class LocalTools(
             tools.add(me.rerere.rikkahub.data.ai.tools.local.setTextTool(invocationContext, interactiveToolStreamer))
             tools.add(scrollTool(invocationContext, interactiveToolStreamer))
             tools.add(globalActionTool(invocationContext, interactiveToolStreamer))
-            tools.add(takeScreenshotTool(context))  // take_screenshot IS the screenshot; skip auto-stream
             tools.add(me.rerere.rikkahub.data.ai.tools.local.wakeScreenTool(context))
         }
         if (options.contains(LocalToolOption.AppLauncher)) {
@@ -1156,6 +1154,6 @@ internal fun categorizeTool(name: String): String = when {
     name in setOf("get_telephony_info") -> "telephony"
     name in setOf("set_wallpaper") -> "wallpaper"
     name in setOf("transcribe_audio_file", "whisper_status") -> "shell"
-    name in setOf("take_screenshot", "read_window_tree") -> "screen"
+    name in setOf("read_window_tree") -> "screen"
     else -> "misc"
 }

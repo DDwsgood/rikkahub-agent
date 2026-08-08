@@ -274,7 +274,6 @@ private fun ToolCategorySection(
 private fun toolDisplayTitle(toolName: String): String = when (toolName) {
     BrowserToolDefaults.OPEN -> stringResource(R.string.setting_browser_tool_open_title)
     BrowserToolDefaults.CURRENT_URL -> stringResource(R.string.setting_browser_tool_current_url_title)
-    BrowserToolDefaults.SCREENSHOT -> stringResource(R.string.setting_browser_tool_screenshot_title)
     BrowserToolDefaults.GET_TEXT -> stringResource(R.string.setting_browser_tool_get_text_title)
     BrowserToolDefaults.GET_DOM -> stringResource(R.string.setting_browser_tool_get_dom_title)
     BrowserToolDefaults.GET_LINKS -> stringResource(R.string.setting_browser_tool_get_links_title)
@@ -296,7 +295,6 @@ private fun toolDisplayTitle(toolName: String): String = when (toolName) {
 private fun toolDisplayDesc(toolName: String): String = when (toolName) {
     BrowserToolDefaults.OPEN -> stringResource(R.string.setting_browser_tool_open_desc)
     BrowserToolDefaults.CURRENT_URL -> stringResource(R.string.setting_browser_tool_current_url_desc)
-    BrowserToolDefaults.SCREENSHOT -> stringResource(R.string.setting_browser_tool_screenshot_desc)
     BrowserToolDefaults.GET_TEXT -> stringResource(R.string.setting_browser_tool_get_text_desc)
     BrowserToolDefaults.GET_DOM -> stringResource(R.string.setting_browser_tool_get_dom_desc)
     BrowserToolDefaults.GET_LINKS -> stringResource(R.string.setting_browser_tool_get_links_desc)

@@ -5,16 +5,9 @@ import android.util.Log
 import java.io.File
 
 /**
- * Best-effort cleanup of the browser screenshot cache directories. Every PNG capture
- * (foreground `browser_screenshot` + headless auto-stream after every state-changing
- * tool) writes a 1080x1920 ARGB_8888 file ≈ 7.9 MB. A long Telegram-bot session that
- * fires 50 actions with auto-stream produces ~400 MB of orphaned PNGs in app cache that
- * would otherwise sit there until the OS clears it (which on modern Android is "rarely,
- * if ever, on its own").
- *
- * The cleanup runs on every browser bind (foreground / headless) so the previous
- * session's leftovers — including any from a force-stop or process-kill — are gone
- * before the new session starts writing.
+ * Best-effort cleanup of browser cache directories. Runs on every browser bind
+ * (foreground / headless) so any leftovers from a prior session — including any
+ * from a force-stop or process-kill — are gone before the new session starts.
  *
  * Strategy: keep the most-recent [keepLast] files per subdirectory, sorted by
  * `lastModified()` descending. Failures are swallowed with a single warn-log; missing
@@ -23,7 +16,7 @@ import java.io.File
 internal object BrowserCacheSweeper {
 
     private const val TAG = "BrowserCacheSweeper"
-    private val CACHE_SUBDIRS = listOf("browser-stream", "browser-shots")
+    private val CACHE_SUBDIRS = emptyList<String>()
 
     /**
      * Trim the browser-related cache subdirs to [keepLast] entries each (newest first).

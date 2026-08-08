@@ -1,21 +1,19 @@
 package me.rerere.rikkahub.browser
 
 /**
- * Authoritative list of the 17 browser tools the LLM can drive, plus their default
+ * Authoritative list of the browser tools the LLM can drive, plus their default
  * enabled/disabled state. Read tools (cheap, don't touch the page) default ON;
  * write tools (mutate state, can be misused) default OFF; the loop-control tool
  * defaults ON because the AI can't escape the browser loop without it.
  *
- * Pass 1 lays the catalogue. Pass 2's [me.rerere.rikkahub.data.ai.tools.LocalTools]
- * registration block will gate per-tool registration on these defaults via
- * [BrowserPreferences.isToolEnabled].
+ * [me.rerere.rikkahub.data.ai.tools.LocalTools] registration block gates per-tool
+ * registration on these defaults via [BrowserPreferences.isToolEnabled].
  */
 object BrowserToolDefaults {
 
     // --- Read tools (default ON) --------------------------------------------------------------
     const val OPEN = "browser_open"
     const val CURRENT_URL = "browser_current_url"
-    const val SCREENSHOT = "browser_screenshot"
     const val GET_TEXT = "browser_get_text"
     const val GET_DOM = "browser_get_dom"
     const val GET_LINKS = "browser_get_links"
@@ -45,7 +43,7 @@ object BrowserToolDefaults {
     const val DONE = "browser_done"
 
     val READ_TOOLS: Set<String> = setOf(
-        OPEN, CURRENT_URL, SCREENSHOT, GET_TEXT, GET_DOM, GET_LINKS, GET_COOKIES, BACK, FORWARD, WAIT_FOR,
+        OPEN, CURRENT_URL, GET_TEXT, GET_DOM, GET_LINKS, GET_COOKIES, BACK, FORWARD, WAIT_FOR,
     )
 
     val WRITE_TOOLS: Set<String> = setOf(
@@ -56,7 +54,7 @@ object BrowserToolDefaults {
 
     /** Stable display order for the Settings page. Read first, then write, then loop-control. */
     val ALL_TOOLS: List<String> = listOf(
-        OPEN, CURRENT_URL, SCREENSHOT, GET_TEXT, GET_DOM, GET_LINKS, GET_COOKIES, BACK, FORWARD, WAIT_FOR,
+        OPEN, CURRENT_URL, GET_TEXT, GET_DOM, GET_LINKS, GET_COOKIES, BACK, FORWARD, WAIT_FOR,
         CLICK, TYPE, SCROLL, SUBMIT, SELECT, PRESS_KEY, EVAL_JS, HANDLE_DIALOG, SET_VIEWPORT, CLICK_AND_READ,
         DONE,
     )

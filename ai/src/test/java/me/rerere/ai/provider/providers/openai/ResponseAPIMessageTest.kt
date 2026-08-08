@@ -5,8 +5,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
+import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderSetting
@@ -39,13 +43,16 @@ class ResponseAPIMessageTest {
     }
 
     // Helper to invoke buildMessages method
-    private fun invokeBuildMessages(messages: List<UIMessage>): JsonArray {
-        return api.buildMessages(messages)
+    private fun invokeBuildMessages(
+        messages: List<UIMessage>,
+        supportInputModalities: List<Modality> = listOf(Modality.TEXT, Modality.IMAGE),
+    ): JsonArray {
+        return api.buildMessages(messages, supportInputModalities)
     }
 
     private fun invokeBuildRequestBody(
         providerSetting: ProviderSetting.OpenAI,
-        messages: List<UIMessage>,
+        messages: List<UIMessage> = listOf(UIMessage.user("hello")),
         params: TextGenerationParams,
         stream: Boolean = false
     ): JsonObject {
@@ -416,7 +423,155 @@ class ResponseAPIMessageTest {
         }
     }
 
+    // ==================== Vision gate tests ====================
+    // Regression coverage mirroring ChatCompletionsAPI: a text-only model must never
+    // see an `input_image` item, no matter which of the three emission sites
+    // (tool image-lift, assistant content image, user content image) produced it.
+
+    private val imagePlaceholder = "[Image output omitted: current model does not support image input]"
+
+    private fun createHistoryWithImages(): List<UIMessage> {
+        val assistantWithToolImage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Text("Let me take a screenshot"),
+                createExecutedToolWithImage("call_shot", "take_screenshot", "{}"),
+            )
+        )
+        val assistantWithImageContent = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Text("Here is a generated image"),
+                UIMessagePart.Image("data:image/png;base64,QUJD"),
+            )
+        )
+        val userWithImage = UIMessage(
+            role = MessageRole.USER,
+            parts = listOf(
+                UIMessagePart.Text("What's in this image?"),
+                UIMessagePart.Image("data:image/png;base64,WFla"),
+            )
+        )
+        return listOf(
+            UIMessage.user("Take a screenshot"),
+            assistantWithToolImage,
+            UIMessage.user("Now generate an image"),
+            assistantWithImageContent,
+            userWithImage,
+        )
+    }
+
+    private fun createExecutedToolWithImage(callId: String, name: String, input: String): UIMessagePart.Tool {
+        return UIMessagePart.Tool(
+            toolCallId = callId,
+            toolName = name,
+            input = input,
+            output = listOf(UIMessagePart.Image("data:image/png;base64,AAAA")),
+        )
+    }
+
+    @Test
+    fun `text-only model emits zero input_image and a placeholder at every site`() {
+        val result = invokeBuildMessages(
+            createHistoryWithImages(),
+            supportInputModalities = listOf(Modality.TEXT),
+        )
+        val serialized = result.toString()
+
+        assertFalse(
+            "text-only model must not emit input_image anywhere",
+            serialized.contains("\"input_image\"")
+        )
+        val placeholderCount = Regex(Regex.escape(imagePlaceholder)).findAll(serialized).count()
+        assertEquals(
+            "expected a placeholder for the tool-output image, the assistant content image, " +
+                "and the user content image",
+            3,
+            placeholderCount
+        )
+    }
+
+    @Test
+    fun `vision model still emits input_image unchanged`() {
+        val result = invokeBuildMessages(
+            createHistoryWithImages(),
+            supportInputModalities = listOf(Modality.TEXT, Modality.IMAGE),
+        )
+        val serialized = result.toString()
+
+        assertTrue("vision model should still emit input_image", serialized.contains("\"input_image\""))
+        assertFalse(
+            "vision model should not fall back to the text placeholder",
+            serialized.contains(imagePlaceholder)
+        )
+    }
+
+    @Test
+    fun `function tools and built-in tools should coexist in the same tools array`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            params = createToolParams(
+                tools = listOf(createFunctionTool("get_weather")),
+                builtInTools = setOf(BuiltInTools.Search)
+            )
+        )
+
+        val tools = requestBody["tools"]?.jsonArray
+        assertTrue("tools should exist", tools != null)
+        val types = tools!!.map { it.jsonObject["type"]?.jsonPrimitive?.content }
+        assertTrue("function tool should not be dropped", types.contains("function"))
+        assertTrue("built-in web_search should be present", types.contains("web_search"))
+        assertEquals(2, tools.size)
+    }
+
+    @Test
+    fun `function tools should be sent when no built-in tools configured`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            params = createToolParams(tools = listOf(createFunctionTool("get_weather")))
+        )
+
+        val tools = requestBody["tools"]?.jsonArray
+        assertEquals(1, tools?.size)
+        assertEquals("function", tools!![0].jsonObject["type"]?.jsonPrimitive?.content)
+        assertEquals("get_weather", tools[0].jsonObject["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `tools key should be absent when neither function nor built-in tools exist`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            params = createToolParams()
+        )
+
+        assertFalse("tools key should not be written", requestBody.containsKey("tools"))
+    }
+
     // ==================== Helper Functions ====================
+
+    private fun createToolParams(
+        tools: List<Tool> = emptyList(),
+        builtInTools: Set<BuiltInTools> = emptySet()
+    ): TextGenerationParams {
+        return TextGenerationParams(
+            model = Model(
+                modelId = "test-model",
+                displayName = "test-model",
+                abilities = listOf(ModelAbility.TOOL),
+                tools = builtInTools
+            ),
+            tools = tools
+        )
+    }
+
+    private fun createFunctionTool(name: String): Tool {
+        return Tool(
+            name = name,
+            description = "test tool",
+            parameters = { InputSchema.Obj(properties = JsonObject(emptyMap())) },
+            execute = { emptyList() }
+        )
+    }
 
     private fun createExecutedTool(
         callId: String,

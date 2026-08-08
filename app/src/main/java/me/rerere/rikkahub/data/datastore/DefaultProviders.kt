@@ -20,6 +20,7 @@ import kotlin.uuid.Uuid
 val DEFAULT_AUTO_MODEL_ID = Uuid.parse("b7055fb4-39f9-4042-a88a-0d80ed76cf08")
 val DEFAULT_CODEX_PROVIDER_ID = Uuid.parse("7ce7e322-b995-4b0c-9d48-42e08dcfcdda")
 val DEFAULT_GROK_PROVIDER_ID = Uuid.parse("8f3e1d20-4b6a-4c9e-a1f2-9d5c7e0b3a44")
+val DEFAULT_GEMINI_OAUTH_PROVIDER_ID = Uuid.parse("2b6c1f84-73ad-4e35-b0c7-1a9e4d5f8c21")
 
 val DEFAULT_PROVIDERS = listOf(
     ProviderSetting.AICore(
@@ -56,6 +57,19 @@ val DEFAULT_PROVIDERS = listOf(
         },
         shortDescription = {
             Text("On-device — LiteRT-LM")
+        },
+    ),
+    ProviderSetting.LlamaCppLocal(
+        // llama.cpp on-device provider. Disabled by default, matching LiteRT above. The
+        // model catalog, settings tile and SAF picker are built in later tasks of the
+        // llama.cpp model-selection plan; for now this only makes the Settings tile exist.
+        enabled = false,
+        builtIn = true,
+        description = {
+            Text("Runs GGUF models on-device via llama.cpp. No API key, no network at inference.")
+        },
+        shortDescription = {
+            Text("On-device - llama.cpp")
         },
     ),
     // All built-in providers ship DISABLED by default. New installs start with zero
@@ -104,6 +118,15 @@ val DEFAULT_PROVIDERS = listOf(
         name = "Grok",
         enabled = false,
         builtIn = true,
+    ),
+    ProviderSetting.GeminiOAuth(
+        id = DEFAULT_GEMINI_OAUTH_PROVIDER_ID,
+        name = "Gemini OAuth",
+        enabled = false,
+        builtIn = true,
+        shortDescription = {
+            Text(stringResource(R.string.gemini_provider_short_description))
+        },
     ),
     ProviderSetting.Google(
         id = Uuid.parse("6ab18148-c138-4394-a46f-1cd8c8ceaa6d"),
@@ -181,6 +204,19 @@ val DEFAULT_PROVIDERS = listOf(
         )
     ),
     ProviderSetting.OpenAI(
+        id = Uuid.parse("d6c4d8c6-3f62-4ca9-a6f3-7ade6b15ecc3"),
+        name = "月之暗面",
+        baseUrl = "https://api.moonshot.cn/v1",
+        apiKey = "",
+        enabled = true,
+        builtIn = true,
+        balanceOption = BalanceOption(
+            enabled = true,
+            apiPath = "/users/me/balance",
+            resultPath = "data.available_balance"
+        )
+    ),
+    ProviderSetting.OpenAI(
         id = Uuid.parse("d5734028-d39b-4d41-9841-fd648d65440e"),
         name = "OpenRouter",
         baseUrl = "https://openrouter.ai/api/v1",
@@ -237,19 +273,6 @@ val DEFAULT_PROVIDERS = listOf(
         apiKey = "",
         enabled = false,
         builtIn = true
-    ),
-    ProviderSetting.OpenAI(
-        id = Uuid.parse("d6c4d8c6-3f62-4ca9-a6f3-7ade6b15ecc3"),
-        name = "月之暗面",
-        baseUrl = "https://api.moonshot.cn/v1",
-        apiKey = "",
-        enabled = false,
-        builtIn = true,
-        balanceOption = BalanceOption(
-            enabled = true,
-            apiPath = "/users/me/balance",
-            resultPath = "data.available_balance"
-        )
     ),
     ProviderSetting.OpenAI(
         id = Uuid.parse("3bc40dc1-b11a-46fa-863b-6306971223be"),

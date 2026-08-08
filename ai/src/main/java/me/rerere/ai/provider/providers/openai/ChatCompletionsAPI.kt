@@ -49,8 +49,10 @@ import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.parseErrorDetail
+import me.rerere.ai.util.redactSecrets
 import me.rerere.ai.util.stringSafe
 import me.rerere.ai.util.toHeaders
+import me.rerere.common.android.Logging
 import me.rerere.common.http.await
 import me.rerere.common.http.jsonArrayOrNull
 import me.rerere.common.http.jsonObjectOrNull
@@ -67,6 +69,11 @@ import okhttp3.sse.EventSources
 import kotlin.time.Clock
 
 private const val TAG = "ChatCompletionsAPI"
+
+// Same wording toToolResultContent() already uses when downgrading a tool-result image to
+// text for a model without image input support; reused here for consistency.
+private const val IMAGE_UNSUPPORTED_PLACEHOLDER =
+    "[Image output omitted: current model does not support image input]"
 
 class ChatCompletionsAPI(
     private val client: OkHttpClient,
@@ -92,7 +99,9 @@ class ChatCompletionsAPI(
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
 
-        Log.i(TAG, "generateText: ${json.encodeToString(requestBody)}")
+        if (Logging.isDebugLoggingEnabled()) {
+            Log.i(TAG, "generateText: ${json.encodeToString(redactSecrets(requestBody))}")
+        }
 
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
@@ -150,7 +159,9 @@ class ChatCompletionsAPI(
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
 
-        Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
+        if (Logging.isDebugLoggingEnabled()) {
+            Log.i(TAG, "streamText: ${json.encodeToString(redactSecrets(requestBody))}")
+        }
 
         // just for debugging response body
         // println(client.newCall(request).await().body.string())
@@ -172,45 +183,54 @@ class ChatCompletionsAPI(
                     .trim()
                     .split("\n")
                     .filter { it.isNotBlank() }
-                    .map { json.parseToJsonElement(it).jsonObject }
-                    .forEach {
-                        if (it["error"] != null) {
-                            val error = it["error"]!!.parseErrorDetail()
-                            throw error
-                        }
-                        val id = it["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                        val model = it["model"]?.jsonPrimitive?.contentOrNull ?: ""
-
-                        val choices = it["choices"]?.jsonArray ?: JsonArray(emptyList())
-                        val choiceList = buildList {
-                            if (choices.isNotEmpty()) {
-                                val choice = choices[0].jsonObject
-                                val message =
-                                    choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
-                                    ?: throw Exception("delta/message is null")
-                                val finishReason =
-                                    choice["finish_reason"]?.jsonPrimitive?.contentOrNull
-                                        ?: "unknown"
-                                add(
-                                    UIMessageChoice(
-                                        index = 0,
-                                        delta = parseMessage(message),
-                                        message = null,
-                                        finishReason = finishReason,
-                                    )
-                                )
+                    .forEach { line ->
+                        // A single malformed/unparseable line must not escape this
+                        // callback: an uncaught exception here propagates through
+                        // OkHttp's SSE reader and aborts the whole stream instead of
+                        // just skipping this one line.
+                        try {
+                            val it = json.parseToJsonElement(line).jsonObject
+                            if (it["error"] != null) {
+                                val error = it["error"]!!.parseErrorDetail()
+                                close(error)
+                                return@forEach
                             }
-                        }
-                        val usage = parseTokenUsage(it["usage"] as? JsonObject)
+                            val id = it["id"]?.jsonPrimitive?.contentOrNull ?: ""
+                            val model = it["model"]?.jsonPrimitive?.contentOrNull ?: ""
 
-                        val messageChunk = MessageChunk(
-                            id = id,
-                            model = model,
-                            choices = choiceList,
-                            usage = usage
-                        )
-                        trySend(messageChunk).onFailure { e ->
-                            Log.w(TAG, "onEvent: chunk dropped (${e?.message})")
+                            val choices = it["choices"]?.jsonArray ?: JsonArray(emptyList())
+                            val choiceList = buildList {
+                                if (choices.isNotEmpty()) {
+                                    val choice = choices[0].jsonObject
+                                    val message =
+                                        choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
+                                        ?: throw Exception("delta/message is null")
+                                    val finishReason =
+                                        choice["finish_reason"]?.jsonPrimitive?.contentOrNull
+                                            ?: "unknown"
+                                    add(
+                                        UIMessageChoice(
+                                            index = 0,
+                                            delta = parseMessage(message),
+                                            message = null,
+                                            finishReason = finishReason,
+                                        )
+                                    )
+                                }
+                            }
+                            val usage = parseTokenUsage(it["usage"] as? JsonObject)
+
+                            val messageChunk = MessageChunk(
+                                id = id,
+                                model = model,
+                                choices = choiceList,
+                                usage = usage
+                            )
+                            trySend(messageChunk).onFailure { e ->
+                                Log.w(TAG, "onEvent: chunk dropped (${e?.message})")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onEvent: skipping malformed chunk (${e.message})", e)
                         }
                     }
             }
@@ -310,6 +330,11 @@ class ChatCompletionsAPI(
                 buildProviderObject(providerSetting.routing, hasToolsOrSchema = hasTools)?.let {
                     put("provider", it)
                 }
+                // Fallback models: tried in order when the primary `model` is down,
+                // rate-limited, or refuses on moderation.
+                buildFallbackModelsArray(params.model.modelId, providerSetting.routing)?.let {
+                    put("models", it)
+                }
             }
 
             if (params.model.abilities.contains(ModelAbility.REASONING)) {
@@ -398,6 +423,11 @@ class ChatCompletionsAPI(
                     "api.moonshot.cn" -> {
                         put("thinking", buildJsonObject {
                             put("type", if (!level.isEnabled) "disabled" else "enabled")
+                            // K2.6 的 thinking.keep 默认为 null（忽略历史思考），思考开启时
+                            // 需显式传 "all" 才是保留式思考；文档推荐与 enabled 搭配（#1586）
+                            if (level.isEnabled && ModelRegistry.KIMI_K2_6.match(params.model.modelId)) {
+                                put("keep", "all")
+                            }
                         })
                     }
 
@@ -543,7 +573,13 @@ class ChatCompletionsAPI(
     }
 
     private fun isModelAllowTemperature(model: Model): Boolean {
-        return !ModelRegistry.OPENAI_O_MODELS.match(model.modelId) && !ModelRegistry.GPT_5.match(model.modelId)
+        val isMoonshotRestricted = ModelRegistry.KIMI_K2_5.match(model.modelId) ||
+                ModelRegistry.KIMI_K2_6.match(model.modelId) ||
+                ModelRegistry.KIMI_K3.match(model.modelId) ||
+                ModelRegistry.KIMI_K3_ALIAS.match(model.modelId)
+        return !ModelRegistry.OPENAI_O_MODELS.match(model.modelId) && 
+               !ModelRegistry.GPT_5.match(model.modelId) && 
+               !isMoonshotRestricted
     }
 
     private fun buildMessages(
@@ -562,7 +598,11 @@ class ChatCompletionsAPI(
                     supportInputModalities = supportInputModalities,
                 )
             } else {
-                addNonAssistantMessage(message, openRouterCache = openRouterCache)
+                addNonAssistantMessage(
+                    message,
+                    openRouterCache = openRouterCache,
+                    supportInputModalities = supportInputModalities,
+                )
             }
         }
     }
@@ -595,7 +635,8 @@ class ChatCompletionsAPI(
                     buildAssistantMessageJson(
                         contentParts = contentBuffer,
                         tools = group.tools,
-                        reasoningPart = reasoningPart
+                        reasoningPart = reasoningPart,
+                        supportInputModalities = supportInputModalities,
                     )?.let { assistantMessage ->
                         add(assistantMessage)
                     }
@@ -615,7 +656,13 @@ class ChatCompletionsAPI(
                         // vision-capable model otherwise. Emit a follow-up user message that
                         // carries those images so the model actually sees them on its next
                         // turn (e.g. take_screenshot, take_photo, etc.).
-                        val toolImages = tool.output.filterIsInstance<UIMessagePart.Image>()
+                        val toolImages = if (Modality.IMAGE in supportInputModalities) {
+                            tool.output.filterIsInstance<UIMessagePart.Image>()
+                        } else {
+                            // Model can't see images anyway; the tool-result content above
+                            // already carries the text placeholder, don't double up.
+                            emptyList()
+                        }
                         if (toolImages.isNotEmpty()) {
                             add(buildJsonObject {
                                 put("role", "user")
@@ -650,7 +697,8 @@ class ChatCompletionsAPI(
             buildAssistantMessageJson(
                 contentParts = contentBuffer,
                 tools = emptyList(),
-                reasoningPart = reasoningPart
+                reasoningPart = reasoningPart,
+                supportInputModalities = supportInputModalities,
             )?.let { assistantMessage ->
                 add(assistantMessage)
             }
@@ -660,7 +708,8 @@ class ChatCompletionsAPI(
     private fun buildAssistantMessageJson(
         contentParts: List<UIMessagePart>,
         tools: List<UIMessagePart.Tool>,
-        reasoningPart: UIMessagePart.Reasoning?
+        reasoningPart: UIMessagePart.Reasoning?,
+        supportInputModalities: List<Modality>,
     ): JsonObject? {
         val hasUsableContent = contentParts.any { part ->
             when (part) {
@@ -700,15 +749,20 @@ class ChatCompletionsAPI(
 
                             is UIMessagePart.Image -> {
                                 add(buildJsonObject {
-                                    part.encodeBase64().onSuccess { encodedImage ->
-                                        put("type", "image_url")
-                                        put("image_url", buildJsonObject {
-                                            put("url", encodedImage.base64)
-                                        })
-                                    }.onFailure {
-                                        Log.w(TAG, "failed to encode image to base64", it)
+                                    if (Modality.IMAGE !in supportInputModalities) {
                                         put("type", "text")
-                                        put("text", "")
+                                        put("text", IMAGE_UNSUPPORTED_PLACEHOLDER)
+                                    } else {
+                                        part.encodeBase64().onSuccess { encodedImage ->
+                                            put("type", "image_url")
+                                            put("image_url", buildJsonObject {
+                                                put("url", encodedImage.base64)
+                                            })
+                                        }.onFailure {
+                                            Log.w(TAG, "failed to encode image to base64", it)
+                                            put("type", "text")
+                                            put("text", "")
+                                        }
                                     }
                                 })
                             }
@@ -738,7 +792,11 @@ class ChatCompletionsAPI(
         }
     }
 
-    private fun JsonArrayBuilder.addNonAssistantMessage(message: UIMessage, openRouterCache: Boolean = false) {
+    private fun JsonArrayBuilder.addNonAssistantMessage(
+        message: UIMessage,
+        openRouterCache: Boolean = false,
+        supportInputModalities: List<Modality>,
+    ) {
         add(buildJsonObject {
             put("role", JsonPrimitive(message.role.name.lowercase()))
 
@@ -750,10 +808,13 @@ class ChatCompletionsAPI(
                 // cache_control breakpoint can land on the stable (first) block; the
                 // volatile block after it does not bust the prefix hash.
                 putJsonArray("content") {
-                    textParts.forEach { part ->
+                    // Append "\n" to every block but the last so the concatenated block
+                    // text equals the "\n"-joined non-caching form below (stable\nvolatile
+                    // either way); otherwise cache-on and cache-off send different prompts.
+                    textParts.forEachIndexed { index, part ->
                         add(buildJsonObject {
                             put("type", "text")
-                            put("text", part.text)
+                            put("text", if (index == textParts.lastIndex) part.text else "${part.text}\n")
                         })
                     }
                 }
@@ -776,15 +837,20 @@ class ChatCompletionsAPI(
 
                             is UIMessagePart.Image -> {
                                 add(buildJsonObject {
-                                    part.encodeBase64().onSuccess { encodedImage ->
-                                        put("type", "image_url")
-                                        put("image_url", buildJsonObject {
-                                            put("url", encodedImage.base64)
-                                        })
-                                    }.onFailure {
-                                        Log.w(TAG, "failed to encode image to base64", it)
+                                    if (Modality.IMAGE !in supportInputModalities) {
                                         put("type", "text")
-                                        put("text", "")
+                                        put("text", IMAGE_UNSUPPORTED_PLACEHOLDER)
+                                    } else {
+                                        part.encodeBase64().onSuccess { encodedImage ->
+                                            put("type", "image_url")
+                                            put("image_url", buildJsonObject {
+                                                put("url", encodedImage.base64)
+                                            })
+                                        }.onFailure {
+                                            Log.w(TAG, "failed to encode image to base64", it)
+                                            put("type", "text")
+                                            put("text", "")
+                                        }
                                     }
                                 })
                             }
@@ -959,7 +1025,11 @@ class ChatCompletionsAPI(
             promptTokens = jsonObject["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
             completionTokens = jsonObject["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
             totalTokens = jsonObject["total_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+            // 各 provider 汇报缓存命中的字段形状不统一，按方言兜底解析（#1576）：
+            // OpenAI 嵌套 -> Moonshot 顶层 cached_tokens -> DeepSeek prompt_cache_hit_tokens
             cachedTokens = jsonObject["prompt_tokens_details"]?.jsonObjectOrNull?.get("cached_tokens")?.jsonPrimitive?.intOrNull
+                ?: jsonObject["cached_tokens"]?.jsonPrimitive?.intOrNull
+                ?: jsonObject["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull
                 ?: 0,
             // OpenRouter reports the generation cost (USD) here when the request asks for it
             // via usage:{include:true}. Other OpenAI-compatible providers omit it -> null.

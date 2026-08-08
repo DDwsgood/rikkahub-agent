@@ -7,6 +7,14 @@ import java.util.concurrent.TimeUnit
 
 interface WorkspaceShellRunner {
     fun execute(context: WorkspaceShellContext): WorkspaceCommandResult
+
+    /**
+     * Launch [context.command] as a live process for background use. The returned
+     * Process is NOT waited on and NOT timed out; the caller owns draining and
+     * lifecycle. [context.timeoutMillis] and [context.stdin] are ignored.
+     * Throws IllegalStateException on setup failure (rootfs / proot / loader missing).
+     */
+    fun start(context: WorkspaceShellContext): Process
 }
 
 data class WorkspaceShellContext(
@@ -19,16 +27,22 @@ data class WorkspaceShellContext(
     val workingDir: File,
     val timeoutMillis: Long,
     val stdin: ByteArray? = null,
+    val bindMounts: List<WorkspaceBindMount> = emptyList(),
 )
 
 class HostShellRunner : WorkspaceShellRunner {
     override fun execute(context: WorkspaceShellContext): WorkspaceCommandResult {
-        val process = ProcessBuilder(defaultShell(), "-c", context.command)
-            .directory(context.workingDir)
-            .redirectErrorStream(false)
-            .start()
+        val process = newProcessBuilder(context).start()
         return process.readResult(context.timeoutMillis, context.stdin)
     }
+
+    override fun start(context: WorkspaceShellContext): Process =
+        newProcessBuilder(context).start()
+
+    private fun newProcessBuilder(context: WorkspaceShellContext): ProcessBuilder =
+        ProcessBuilder(defaultShell(), "-c", context.command)
+            .directory(context.workingDir)
+            .redirectErrorStream(false)
 
     private fun defaultShell(): String =
         if (File("/system/bin/sh").exists()) "/system/bin/sh" else "/bin/sh"

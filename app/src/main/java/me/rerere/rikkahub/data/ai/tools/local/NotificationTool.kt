@@ -1,7 +1,9 @@
 package me.rerere.rikkahub.data.ai.tools.local
 
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -14,10 +16,23 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val CHANNEL_ID = "rikkahub_ai_tool"
 private const val CHANNEL_NAME = "AI tool notifications"
+
+// PendingIntent request codes keyed by conversation id. String.hashCode() collides too
+// easily for a FLAG_UPDATE_CURRENT PendingIntent (a tap could open the wrong
+// conversation); a per-process registry guarantees distinct codes across different
+// conversation ids while staying stable for the same id, so updates refresh in place.
+private val conversationRequestCodes = ConcurrentHashMap<String, Int>()
+private val nextConversationRequestCode = AtomicInteger(0)
+
+private fun requestCodeForConversation(convId: String): Int =
+    conversationRequestCodes.computeIfAbsent(convId) { nextConversationRequestCode.incrementAndGet() }
 
 private fun ensureChannel(context: Context) {
     val channel = NotificationChannelCompat.Builder(
@@ -85,6 +100,22 @@ fun notificationTool(
             .setAutoCancel(true)
         if (body != null) {
             builder.setContentText(body)
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        }
+
+        val convId = invocationContext.callerConversationId
+        if (!convId.isNullOrBlank()) {
+            val intent = Intent(context, RouteActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra("conversationId", convId)
+            }
+            val pi = PendingIntent.getActivity(
+                context,
+                requestCodeForConversation(convId),
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            builder.setContentIntent(pi)
         }
 
         val payload = try {

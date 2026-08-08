@@ -57,10 +57,6 @@
   <string name="assistant_page_chat_model_desc">تعيين نموذج الدردشة الافتراضي للمساعد. إذا لم يُعيَّن، فسيُستخدم نموذج الدردشة الافتراضي العام</string>
   <string name="assistant_page_clone">استنساخ</string>
   <string name="assistant_page_confirm">تأكيد</string>
-  <string name="assistant_page_context_message_count">حجم رسائل السياق: %d</string>
-  <string name="assistant_page_context_message_desc">يتحكم في عدد الرسائل التاريخية التي تُرسل إلى النموذج كسياق. الرسائل التي تتجاوز هذا العدد سيتم تجاهلها، وسيُحتفظ فقط بأحدث N رسالة، مما يوفر الرموز</string>
-  <string name="assistant_page_context_message_size">حجم رسائل السياق</string>
-  <string name="assistant_page_context_message_unlimited">رسائل سياق غير محدودة</string>
   <string name="assistant_page_creative">إبداعي</string>
   <string name="assistant_page_current_assistant">المساعد الحالي</string>
   <string name="assistant_page_custom_bodies">جسم مخصص</string>
@@ -544,8 +540,6 @@
   <string name="placeholder_battery_level">مستوى البطارية</string>
   <string name="placeholder_char">اسم المساعد</string>
   <string name="placeholder_current_date">التاريخ</string>
-  <string name="placeholder_current_datetime">التاريخ والوقت</string>
-  <string name="placeholder_current_time">الوقت</string>
   <string name="placeholder_device_info">معلومات الجهاز</string>
   <string name="placeholder_locale">اللغة المحلية</string>
   <string name="placeholder_model_id">معرّف النموذج</string>

@@ -1,5 +1,6 @@
 package me.rerere.search
 
+import android.util.Log
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -24,6 +25,8 @@ import me.rerere.search.SearchService.Companion.keyRoulette
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+
+private const val TAG = "ExaSearchService"
 
 object ExaSearchService : SearchService<SearchServiceOptions.ExaOptions> {
     override val name: String = "Exa"
@@ -60,7 +63,16 @@ object ExaSearchService : SearchService<SearchServiceOptions.ExaOptions> {
             required = listOf("query")
         )
 
-    override fun scrapingParameters(options: SearchServiceOptions.ExaOptions): InputSchema? = null
+    override fun scrapingParameters(options: SearchServiceOptions.ExaOptions): InputSchema? =
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("url", buildJsonObject {
+                    put("type", "string")
+                    put("description", "url to scrape")
+                })
+            },
+            required = listOf("url")
+        )
 
     override suspend fun search(
         params: JsonObject,
@@ -91,8 +103,7 @@ object ExaSearchService : SearchService<SearchServiceOptions.ExaOptions> {
                 val response = runCatching {
                     json.decodeFromString<ExaData>(bodyRaw)
                 }.onFailure {
-                    it.printStackTrace()
-                    println(bodyRaw)
+                    Log.e(TAG, "Failed to decode Exa search response: $bodyRaw", it)
                     error("Failed to decode response: $bodyRaw")
                 }.getOrThrow()
 
@@ -109,7 +120,7 @@ object ExaSearchService : SearchService<SearchServiceOptions.ExaOptions> {
                         images = response.results.mapNotNull { it.image?.takeIf { url -> url.isNotBlank() } },
                     ))
             } else {
-                println(response.body.string())
+                Log.e(TAG, "Exa search failed with code ${response.code}: ${response.body.string()}")
                 error("response failed #${response.code}")
             }
         }
@@ -119,8 +130,51 @@ object ExaSearchService : SearchService<SearchServiceOptions.ExaOptions> {
         params: JsonObject,
         commonOptions: SearchCommonOptions,
         serviceOptions: SearchServiceOptions.ExaOptions
-    ): Result<ScrapedResult> {
-        return Result.failure(Exception("Scraping is not supported for Exa"))
+    ): Result<ScrapedResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = params["url"]?.jsonPrimitive?.content ?: error("url is required")
+            val body = buildJsonObject {
+                put("urls", buildJsonArray {
+                    add(JsonPrimitive(url))
+                })
+                put("text", JsonPrimitive(true))
+            }
+            val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
+
+            val request = Request.Builder()
+                .url("https://api.exa.ai/contents")
+                .post(json.encodeToString(body).toRequestBody("application/json".toMediaType()))
+                .addHeader("Authorization", "Bearer $apiKey")
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            if (response.isSuccessful) {
+                val bodyRaw = response.body.string()
+                val data = runCatching {
+                    json.decodeFromString<ExaData>(bodyRaw)
+                }.onFailure {
+                    Log.e(TAG, "Failed to decode Exa scrape response: $bodyRaw", it)
+                    error("Failed to decode response: $bodyRaw")
+                }.getOrThrow()
+
+                return@withContext Result.success(
+                    ScrapedResult(
+                        urls = data.results.map {
+                            ScrapedResultUrl(
+                                url = it.url,
+                                content = it.text ?: "",
+                                metadata = ScrapedResultMetadata(
+                                    title = it.title,
+                                )
+                            )
+                        }
+                    )
+                )
+            } else {
+                Log.e(TAG, "Exa scrape failed with code ${response.code}: ${response.body.string()}")
+                error("response failed #${response.code}")
+            }
+        }
     }
 
     @Serializable

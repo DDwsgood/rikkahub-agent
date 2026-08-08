@@ -120,6 +120,7 @@ import me.rerere.rikkahub.data.ai.tools.local.batchCopyTool
 import me.rerere.rikkahub.data.ai.tools.local.batchMoveTool
 import me.rerere.rikkahub.data.ai.tools.local.batchDeleteTool
 import me.rerere.rikkahub.data.ai.tools.local.webFetchTool
+import me.rerere.rikkahub.data.ai.tools.local.webExtractTool
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.utils.readClipboardText
@@ -193,7 +194,6 @@ sealed class LocalToolOption {
     @Serializable @SerialName("js_skills")           data object JsSkills           : LocalToolOption()
     @Serializable @SerialName("system_intents")      data object SystemIntents      : LocalToolOption()
     @Serializable @SerialName("browser")             data object Browser            : LocalToolOption()
-    @Serializable @SerialName("web_fetch")           data object WebFetch           : LocalToolOption()
 
     // Phase 25 — Phase 3 second cut + ExternalStorage + Archive.
     @Serializable @SerialName("sms_send")             data object SmsSend             : LocalToolOption()
@@ -879,6 +879,8 @@ class LocalTools(
         if (options.contains(LocalToolOption.AppLauncher)) {
             tools.add(me.rerere.rikkahub.data.ai.tools.local.launchAppTool(context, invocationContext, interactiveToolStreamer))
             tools.add(me.rerere.rikkahub.data.ai.tools.local.listInstalledAppsTool(context))
+            tools.add(me.rerere.rikkahub.data.ai.tools.local.listAppActivitiesTool(context))
+            tools.add(me.rerere.rikkahub.data.ai.tools.local.launchActivityTool(context, invocationContext, interactiveToolStreamer))
             tools.add(me.rerere.rikkahub.data.ai.tools.local.openUrlTool(context, invocationContext, interactiveToolStreamer))
         }
         if (options.contains(LocalToolOption.Termux)) {
@@ -1006,9 +1008,11 @@ class LocalTools(
                 }
             }
         }
-        if (options.contains(LocalToolOption.WebFetch)) {
-            // Lightweight HTTP GET/POST (item 1.2) — backed by the shared OkHttp singleton.
+        // web_fetch/web_extract are always-on unless disabled in Search settings, no
+        // per-assistant toggle.
+        if (settingsStore.settingsFlow.value.enableWebFetchTools) {
             tools.add(webFetchTool(okHttpClient))
+            tools.add(webExtractTool(okHttpClient))
         }
         // Phase 25 — Phase 3 second cut + ExternalStorage + Archive.
         if (options.contains(LocalToolOption.SmsSend)) {

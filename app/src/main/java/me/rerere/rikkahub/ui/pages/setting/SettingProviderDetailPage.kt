@@ -121,6 +121,7 @@ import me.rerere.rikkahub.ui.pages.assistant.detail.CustomBodies
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomHeaders
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.CodexProviderConfigure
+import me.rerere.rikkahub.ui.pages.setting.components.GeminiProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.GrokProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConnectionTester
 import me.rerere.rikkahub.ui.pages.setting.components.SettingProviderBalanceOption
@@ -184,7 +185,11 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                     }
                 },
                 actions = {
-                    if (provider !is ProviderSetting.Codex && provider !is ProviderSetting.Grok) {
+                    if (
+                        provider !is ProviderSetting.Codex &&
+                        provider !is ProviderSetting.Grok &&
+                        provider !is ProviderSetting.GeminiOAuth
+                    ) {
                         val shareSheetState = rememberShareSheetState()
                         ShareSheet(shareSheetState)
                         IconButton(
@@ -274,6 +279,13 @@ private fun SettingProviderConfigPage(
     }
     if (provider is ProviderSetting.Grok) {
         GrokProviderConfigure(
+            provider = provider,
+            onEdit = onEdit,
+        )
+        return
+    }
+    if (provider is ProviderSetting.GeminiOAuth) {
+        GeminiProviderConfigure(
             provider = provider,
             onEdit = onEdit,
         )
@@ -1517,7 +1529,8 @@ private fun ProviderOverrideSettings(
         }
 
         // Provider configuration modal
-        if (showProviderConfig && editingProvider != null) {
+        val currentEditingProvider = editingProvider
+        if (showProviderConfig && currentEditingProvider != null) {
             ModalBottomSheet(
                 onDismissRequest = {
                     showProviderConfig = false
@@ -1525,7 +1538,7 @@ private fun ProviderOverrideSettings(
                 },
                 sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded))
             ) {
-                var internalProvider by remember(editingProvider) { mutableStateOf(editingProvider!!) }
+                var internalProvider by remember(currentEditingProvider) { mutableStateOf(currentEditingProvider) }
 
                 Column(
                     modifier = Modifier

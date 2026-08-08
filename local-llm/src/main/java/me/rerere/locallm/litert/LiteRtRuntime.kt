@@ -19,6 +19,11 @@ import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolProvider
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -29,7 +34,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.rerere.locallm.AcceleratorProbe
+import me.rerere.locallm.BuildConfig
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 
@@ -56,6 +63,29 @@ fun turnSignature(role: String, text: String): String = "$role|${text.length}|${
  */
 data class Turn(val role: String, val rawText: String) {
     val signature: String get() = turnSignature(role, rawText)
+}
+
+/**
+ * One tool call the model asked for, lifted out of the SDK's `ToolCall` so callers do not
+ * have to depend on litertlm types. [argumentsJson] is the arguments object serialised back
+ * to a JSON string, matching the `input` field of `UIMessagePart.Tool`.
+ */
+data class RuntimeToolCall(val name: String, val argumentsJson: String)
+
+/**
+ * What [LiteRtRuntime.streamTurns] emits.
+ *
+ * The runtime disables the SDK's automatic tool calling, so a turn can end either with
+ * generated text, with tool calls the host must execute, or with both. Tool calls are
+ * surfaced rather than run here so the host can apply approval and the HARDLINE floor.
+ */
+sealed interface StreamEvent {
+    /** The **cumulative** response so far, not a delta, same contract the SDK's
+     *  `MessageCallback` uses. Downstream computes deltas itself. */
+    data class Delta(val cumulative: String) : StreamEvent
+
+    /** Tool calls the model emitted this turn, in the order the model produced them. */
+    data class ToolCalls(val calls: List<RuntimeToolCall>) : StreamEvent
 }
 
 /**
@@ -106,8 +136,8 @@ class LiteRtVisionUnavailableException(
 )
 
 /**
- * Wraps Google's LiteRT-LM runtime (com.google.ai.edge.litertlm:litertlm-android:0.11.0)
- * for on-device inference of `.litertlm` model files.
+ * Wraps Google's LiteRT-LM runtime (`com.google.ai.edge.litertlm:litertlm-android`, version
+ * pinned in the version catalog) for on-device inference of `.litertlm` model files.
  *
  * # Why this rewrite (vs. the simpler v22A original)
  *
@@ -156,6 +186,46 @@ class LiteRtRuntime(private val context: Context) {
      * subsequent loads skip the GPU-init attempt. Resets on app restart (acceptable for v1).
      */
     @Volatile private var sessionFallbackAccelerator: String? = null
+
+    // ---- Durable accelerator-crash guard ----
+    //
+    // A GPU delegate that faults takes the whole process down with it. No exception ever
+    // reaches Kotlin, so neither [sessionFallbackAccelerator] nor the CPU retry in
+    // [ensureLoaded] gets a chance to run, and the next launch walks straight back into
+    // the same crash. The only thing that outlives a SIGSEGV is a file: arm a marker
+    // before handing a non-CPU backend to the native engine, disarm it once the model has
+    // actually produced a token, and force CPU while a marker is still standing.
+    //
+    // Keyed on the SDK version so a runtime upgrade that fixes a device re-enables its GPU
+    // instead of leaving it blacklisted forever.
+
+    private val crashMarkers by lazy {
+        context.getSharedPreferences("litert_accel_crash", Context.MODE_PRIVATE)
+    }
+
+    /** Key of the marker currently on disk, so repeat turns skip a redundant write. */
+    @Volatile private var armedMarkerKey: String? = null
+
+    private fun crashMarkerKey(modelPath: String, accel: String): String =
+        "${BuildConfig.LITERTLM_SDK_VERSION}|$accel|${File(modelPath).name}"
+
+    private fun armCrashMarker(modelPath: String, accel: String) {
+        if (accel == "CPU") return
+        val key = crashMarkerKey(modelPath, accel)
+        if (armedMarkerKey == key) return
+        // commit(), not apply(): a native fault can easily beat an async write to disk.
+        crashMarkers.edit().putBoolean(key, true).commit()
+        armedMarkerKey = key
+    }
+
+    private fun disarmCrashMarker() {
+        val key = armedMarkerKey ?: return
+        armedMarkerKey = null
+        crashMarkers.edit().remove(key).commit()
+    }
+
+    private fun crashedPreviously(modelPath: String, accel: String): Boolean =
+        accel != "CPU" && crashMarkers.getBoolean(crashMarkerKey(modelPath, accel), false)
 
     /** Last-known telemetry from [streamTurns]. Read by [LiteRtProvider] after each stream
      *  completes so the rolling perf samples can be persisted. Cleared on engine teardown. */
@@ -377,10 +447,23 @@ class LiteRtRuntime(private val context: Context) {
     ): LoadOutcome = mutex.withLock {
         // Use in-session fallback if a prior GPU→CPU retry already succeeded this session.
         // forceCpu wins over a non-null preferredAccel.
-        val accel = if (forceCpu) "CPU"
+        val requestedAccel = if (forceCpu) "CPU"
         else sessionFallbackAccelerator
             ?: preferredAccel
             ?: AcceleratorProbe.probeLiteRt(context)
+        // A prior run on this accelerator took the process down mid-inference. There is no
+        // safe way to retry it, so stay on CPU until the SDK version changes.
+        val accel = if (crashedPreviously(modelPath, requestedAccel)) {
+            android.util.Log.w(
+                "LiteRtRuntime",
+                "ensureLoaded: $requestedAccel crashed the process on a previous run for " +
+                    "${File(modelPath).name} (SDK ${BuildConfig.LITERTLM_SDK_VERSION}); using CPU",
+            )
+            sessionFallbackAccelerator = "CPU"
+            "CPU"
+        } else {
+            requestedAccel
+        }
 
         // Probe the file for speculative-decoding support BEFORE building the engine.
         val supportsSpeculativeDecoding = try {
@@ -456,6 +539,9 @@ class LiteRtRuntime(private val context: Context) {
         loaded = null
 
         // Try the preferred accelerator first; fall back to CPU if it isn't already CPU.
+        // Arm the durable marker first: engine init is one of the two places a broken GPU
+        // delegate can fault, and a fault here leaves nothing for the runCatching to see.
+        armCrashMarker(modelPath, accel)
         val firstAttempt = runCatching {
             tryLoadWithBackend(desiredEngineKey, accel, desiredConversationSpec)
         }
@@ -725,6 +811,12 @@ class LiteRtRuntime(private val context: Context) {
                     },
                     systemInstruction = spec.systemInstruction,
                     tools = spec.tools,
+                    // Surface tool calls instead of dispatching them. The SDK would happily
+                    // run them itself, but that path skips the host's approval prompt, the
+                    // auto-approve allowlist, the HARDLINE floor, and the per-turn
+                    // wall-clock budget. [LiteRtProvider] republishes the calls as ordinary
+                    // tool parts so the normal execution path applies.
+                    automaticToolCalling = false,
                 )
             )
         } finally {
@@ -769,7 +861,7 @@ class LiteRtRuntime(private val context: Context) {
         images: List<Bitmap> = emptyList(),
         audioClips: List<ByteArray> = emptyList(),
         onThinking: ((String) -> Unit)? = null,
-    ): Flow<String> = callbackFlow {
+    ): Flow<StreamEvent> = callbackFlow {
         // GPU-boost the inference. Three levers, in order of effectiveness:
         //   1. PerformanceHintManager (API 33+). Opens a hint session for this thread
         //      with a 50ms target — the OS scheduler treats the process as doing
@@ -817,6 +909,10 @@ class LiteRtRuntime(private val context: Context) {
             }
 
             val conv = instance.conversation
+            // The other place a broken GPU delegate faults: it can survive engine init and
+            // only die once real work is submitted. Re-arm for every turn; the first token
+            // below disarms.
+            armCrashMarker(instance.engineKey.modelPath, instance.engineKey.accelerator)
             // Build Contents in Gallery's order: images and audio first, text last.
             val contentList = mutableListOf<Content>()
             for (image in images) contentList.add(Content.ImageBytes(image.toPngByteArray()))
@@ -830,20 +926,42 @@ class LiteRtRuntime(private val context: Context) {
             // budget for this call.
             val telemetryInputChars = inputText.length
             val callStartedNs = System.nanoTime()
+            // Set once the SDK reports the generation finished (either way). Read from the
+            // flow's coroutine in awaitClose to tell a natural end from a cancellation.
+            val generationFinished = java.util.concurrent.atomic.AtomicBoolean(false)
             var firstMessageNs: Long = 0L
             var lastCumulative = ""
+            // How many of the message's tool calls have already been forwarded. The SDK
+            // re-delivers the full list on each callback, so forward only the new tail.
+            var emittedToolCalls = 0
             conv.sendMessageAsync(
                 Contents.of(contentList),
                 object : MessageCallback {
                     override fun onMessage(message: Message) {
-                        if (firstMessageNs == 0L) firstMessageNs = System.nanoTime()
+                        if (firstMessageNs == 0L) {
+                            firstMessageNs = System.nanoTime()
+                            // The accelerator got through init and prefill and produced a
+                            // token, so it is not the one that kills the process.
+                            disarmCrashMarker()
+                        }
                         message.channels["thought"]?.let { thinking ->
                             if (thinking.isNotEmpty()) onThinking?.invoke(thinking)
                         }
                         val text = message.toString()
                         if (text.isNotEmpty()) {
                             lastCumulative = text
-                            trySend(text)
+                            trySend(StreamEvent.Delta(text))
+                        }
+                        val calls = message.toolCalls
+                        if (calls.size > emittedToolCalls) {
+                            val fresh = calls.drop(emittedToolCalls).map { call ->
+                                RuntimeToolCall(
+                                    name = call.name,
+                                    argumentsJson = argumentsToJson(call.arguments),
+                                )
+                            }
+                            emittedToolCalls = calls.size
+                            trySend(StreamEvent.ToolCalls(fresh))
                         }
                     }
                     override fun onDone() {
@@ -868,18 +986,42 @@ class LiteRtRuntime(private val context: Context) {
                             specDecodingEngaged = instance.speculativeDecodingEngaged,
                         )
                         instance.lastUseAtMs = android.os.SystemClock.elapsedRealtime()
+                        generationFinished.set(true)
                         close()
                     }
                     override fun onError(throwable: Throwable) {
                         // The KV-cache state is now unknown — force the next turn cold.
                         instance.processed.clear()
                         instance.lastUseAtMs = android.os.SystemClock.elapsedRealtime()
+                        generationFinished.set(true)
                         if (throwable is CancellationException) close() else close(throwable)
                     }
                 },
                 emptyMap(),
             )
-            awaitClose { /* SDK callback already closed the channel above. */ }
+            awaitClose {
+                // Reached either because the SDK finished (the callbacks close the channel
+                // above) or because the collector went away first: the user hit stop, or
+                // the surface collecting this flow was torn down.
+                //
+                // In the second case the native generation is STILL RUNNING: it keeps the
+                // GPU busy writing into a channel nobody reads, and because the mutex is
+                // released as soon as this block returns, the next turn can call
+                // sendMessageAsync on a Conversation that has not finished the previous
+                // one. Cancel it so stopping actually stops.
+                if (!generationFinished.get()) {
+                    android.util.Log.i(
+                        "LiteRtRuntime",
+                        "stream cancelled before completion; cancelling native generation",
+                    )
+                    runCatching { conv.cancelProcess() }
+                        .onFailure {
+                            android.util.Log.w("LiteRtRuntime", "cancelProcess failed", it)
+                        }
+                    // The KV cache now holds a partial turn, so the next turn must go cold.
+                    instance.processed.clear()
+                }
+            }
         } } finally {
             runCatching { hintSession?.close() }
             runCatching { Process.setThreadPriority(callerTid, originalPriority) }
@@ -956,6 +1098,34 @@ class LiteRtRuntime(private val context: Context) {
          * implemented` (the upstream root cause on Adreno 7xx + One UI / OriginOS), or
          * `gpu_backend_opengl.cc` (the file that hosts the stub). Match any of those.
          */
+        /**
+         * Serialise a `ToolCall`'s argument map to a JSON object string, matching the
+         * `input` field of `UIMessagePart.Tool` so the host can parse it exactly like a
+         * cloud provider's arguments payload.
+         *
+         * The SDK decodes arguments into plain Kotlin values (`String`, `Number`,
+         * `Boolean`, `List`, `Map`, null) and its own converter is internal, so we walk the
+         * structure ourselves. An unrecognised leaf is stringified rather than dropped: a
+         * tool receiving a stringly-typed argument can still fail loudly, whereas a missing
+         * key looks like the model never supplied it.
+         */
+        internal fun argumentsToJson(arguments: Map<String, Any?>): String =
+            JsonObject(arguments.mapValues { (_, v) -> toJsonElement(v) }).toString()
+
+        private fun toJsonElement(value: Any?): JsonElement = when (value) {
+            null -> JsonNull
+            is String -> JsonPrimitive(value)
+            is Boolean -> JsonPrimitive(value)
+            is Number -> JsonPrimitive(value)
+            is Map<*, *> -> JsonObject(
+                value.entries.associate { (k, v) -> k.toString() to toJsonElement(v) }
+            )
+
+            is Iterable<*> -> JsonArray(value.map { toJsonElement(it) })
+            is Array<*> -> JsonArray(value.map { toJsonElement(it) })
+            else -> JsonPrimitive(value.toString())
+        }
+
         internal fun isVisionExecutorError(joinedMessage: String): Boolean =
             joinedMessage.contains("vision_litert", ignoreCase = true) ||
                 joinedMessage.contains("CreateSharedMemoryManager", ignoreCase = true) ||

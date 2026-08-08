@@ -90,8 +90,13 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         // table) plus a folder_id column on ConversationEntity (defaultValue ""). Both are pure
         // additions; upstream numbered it as their v24, folded into the fork's version space here.
         AutoMigration(from = 26, to = 27),
-        // v28: scheduled jobs can opt into AlarmManager exact delivery. Existing jobs stay
-        // on the battery-friendly WorkManager backend through the column default.
+        // v28: two independent pure-addition changes, both handled by one AutoMigration:
+        // (a) scheduled jobs can opt into AlarmManager exact delivery via a new column;
+        //     existing jobs stay on the battery-friendly WorkManager backend through the column
+        //     default.
+        // (b) indices only: conversation listing, assistant memory lookup, the enabled-job scan
+        //     and per-job run history were all full table scans. Room generates the CREATE INDEX
+        //     statements itself.
         AutoMigration(from = 27, to = 28),
     ]
 )

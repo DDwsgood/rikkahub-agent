@@ -3,6 +3,8 @@ package me.rerere.rikkahub.ui.pages.setting.locallm
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,9 +14,12 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.LITERT_PROVIDER_ID
+import me.rerere.ai.provider.LLAMACPP_PROVIDER_ID
+import me.rerere.llamacpp.LlamaCppCatalog
 import me.rerere.locallm.AcceleratorProbe
 import me.rerere.locallm.LocalRuntime
 import me.rerere.locallm.LocalRuntimePreferences
@@ -22,7 +27,10 @@ import me.rerere.locallm.litert.LiteRtModelMetadata
 import me.rerere.locallm.MemoryGuard
 import me.rerere.locallm.ModelInstall
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.api.HuggingFaceAPI
+import me.rerere.rikkahub.data.api.HuggingFaceModelSearch
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.model.HfModelSearchResult
 import okhttp3.OkHttpClient
 
 /**
@@ -35,8 +43,9 @@ import okhttp3.OkHttpClient
  *  - [errorMessage]: non-null when the last action failed
  *  - [accelerator]: the cached accelerator string (null = never probed)
  *
- * The [runtime] parameter is preserved so a future second runtime can land without
- * breaking the koinViewModel call site. Currently only LiteRT is supported.
+ * The [runtime] parameter is what lets this single class drive both the LiteRT and
+ * llama.cpp settings tiles: each call site supplies its own [LocalRuntime] and every flow
+ * above fans out on it rather than hardcoding one runtime.
  */
 class SettingLocalLlmViewModel(
     val runtime: LocalRuntime,
@@ -44,6 +53,7 @@ class SettingLocalLlmViewModel(
     private val prefs: LocalRuntimePreferences,
     private val httpClient: OkHttpClient,
     private val settingsStore: SettingsStore,
+    private val hfApi: HuggingFaceAPI,
 ) : ViewModel() {
 
     data class Progress(val percent: Int, val bytesRead: Long, val totalBytes: Long?)
@@ -53,6 +63,25 @@ class SettingLocalLlmViewModel(
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    private val _hfSearchResults = MutableStateFlow<List<HfModelSearchResult>>(emptyList())
+    val hfSearchResults: StateFlow<List<HfModelSearchResult>> = _hfSearchResults.asStateFlow()
+
+    private val _hfSearchInProgress = MutableStateFlow(false)
+    val hfSearchInProgress: StateFlow<Boolean> = _hfSearchInProgress.asStateFlow()
+
+    /** Repo id the user tapped into, or null when the tile is showing search results.
+     *  Non-null with [hfSelectedRepoFiles] still null means the file listing is loading. */
+    private val _hfSelectedRepoId = MutableStateFlow<String?>(null)
+    val hfSelectedRepoId: StateFlow<String?> = _hfSelectedRepoId.asStateFlow()
+
+    private val _hfSelectedRepoFiles = MutableStateFlow<HuggingFaceModelSearch.FilesResult?>(null)
+    val hfSelectedRepoFiles: StateFlow<HuggingFaceModelSearch.FilesResult?> = _hfSelectedRepoFiles.asStateFlow()
+
+    // Tracks the in-flight coroutine for searchHuggingFace/selectHuggingFaceRepo so a stale
+    // response from a superseded call can't land after a newer one and overwrite its result.
+    private var hfSearchJob: Job? = null
+    private var hfSelectRepoJob: Job? = null
 
     private val _accelerator = MutableStateFlow<String?>(null)
     val accelerator: StateFlow<String?> = _accelerator.asStateFlow()
@@ -105,23 +134,34 @@ class SettingLocalLlmViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
+    /** The llama.cpp catalog entry `startDefaultDownload()` fetches: the smallest entry,
+     *  since it's the one guaranteed to fit any device the memory guard would approve at
+     *  all. [LlamaCppCatalog.ENTRIES] is ordered smallest-first. */
+    private val defaultLlamaCppEntry = LlamaCppCatalog.ENTRIES.first()
+
     /**
      * The default model URL for the runtime.
      *
      * LiteRT default: litert-community/Qwen2.5-1.5B-Instruct — q8 multi-prefill variant
-     * (~1.5 GB on disk). Present in Google Gallery's 1_0_13 allowlist, which is built
-     * against LiteRT-LM 0.11.0 — the same version we ship. Public and ungated (Apache-2.0).
+     * (~1.6 GB on disk). Public and ungated (Apache-2.0), and its chat template supports
+     * tool calling, which the agent loop depends on.
      *
      * paulsp94/Qwen3.5-2B-LiteRT-LM was dropped: that model is packaged for a different
-     * runtime version and throws FAILED_PRECONDITION: No KV cache inputs found on 0.11.0.
+     * runtime version and throws FAILED_PRECONDITION: No KV cache inputs found.
+     *
+     * llama.cpp default: [defaultLlamaCppEntry] from the curated GGUF catalog.
      */
-    private val defaultModelUrl: String =
-        "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
+    private val defaultModelUrl: String = when (runtime) {
+        LocalRuntime.LiteRT ->
+            "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
+        LocalRuntime.LlamaCpp -> defaultLlamaCppEntry.resolveUrl()
+    }
 
     /** Currently only LiteRT is wired; the helper exists so a future runtime can fan out
      *  by adding a `when` arm without touching every flow above. */
     private fun providerIdForRuntime(): kotlin.uuid.Uuid = when (runtime) {
         LocalRuntime.LiteRT -> LITERT_PROVIDER_ID
+        LocalRuntime.LlamaCpp -> LLAMACPP_PROVIDER_ID
     }
 
     init {
@@ -151,7 +191,7 @@ class SettingLocalLlmViewModel(
                 inputModalities = model.inputModalities,
                 abilities = model.abilities,
             )
-            val target = LiteRtModelMetadata.deriveCapabilities(model.modelId)
+            val target = deriveLocalModelCapabilities(runtime, model.modelId)
             val merged = LiteRtModelMetadata.mergeAdditive(current, target)
             if (merged.inputModalities == model.inputModalities &&
                 merged.abilities == model.abilities
@@ -233,7 +273,7 @@ class SettingLocalLlmViewModel(
             val knownModelIds = currentProvider.models.map { it.modelId }.toSet()
             val missing = finalInstalled.keys.filter { it !in knownModelIds }
             for (fileName in missing) {
-                val caps = LiteRtModelMetadata.deriveCapabilities(fileName)
+                val caps = deriveLocalModelCapabilities(runtime, fileName)
                 val model = Model(
                     modelId = fileName,
                     displayName = fileName,
@@ -252,6 +292,9 @@ class SettingLocalLlmViewModel(
         val forceCpuNow = prefs.forceCpu(runtime)
         val accel = when (runtime) {
             LocalRuntime.LiteRT -> AcceleratorProbe.probeLiteRt(context, forceCpu = forceCpuNow)
+            // llama.cpp is CPU-only in this build (no GPU backend compiled in), so there is
+            // nothing to probe and no force-CPU toggle to honour.
+            LocalRuntime.LlamaCpp -> "cpu"
         }
         prefs.setAccelerator(runtime, accel)
         _accelerator.value = accel
@@ -310,12 +353,26 @@ class SettingLocalLlmViewModel(
         }
     }
 
+    /**
+     * Both entry points below set [_downloadProgress] to a non-null placeholder
+     * synchronously, before [viewModelScope.launch] ever suspends, and refuse to start a
+     * second download while one is already in flight. The Install buttons in
+     * `ProviderConfigure.kt` disable on `downloadProgress != null`, but that value used to
+     * stay null until [ModelInstall.download]'s flow reached its first [ModelInstall.Progress.Started]
+     * event - after the HTTP response headers arrive - leaving a window in which a fast
+     * double-tap launched two concurrent downloads racing to write the same `.partial`
+     * file. Setting the placeholder here closes that window at the moment the tap is
+     * handled instead of once the network responds.
+     */
     fun startDefaultDownload() {
+        if (_downloadProgress.value != null) return
         _errorMessage.value = null
+        _downloadProgress.value = Progress(0, 0L, null)
         viewModelScope.launch {
             val url = defaultModelUrl
             val mem = MemoryGuard.canLoad(context, modelFileBytes = estimatedSize(runtime))
             if (mem is MemoryGuard.Decision.TooLarge) {
+                _downloadProgress.value = null
                 _errorMessage.value = context.getString(
                     R.string.local_llm_insufficient_memory_format,
                     mem.requiredFreeBytes / 1_000_000,
@@ -337,8 +394,57 @@ class SettingLocalLlmViewModel(
             _errorMessage.value = context.getString(R.string.local_llm_invalid_url)
             return
         }
+        if (_downloadProgress.value != null) return
         _errorMessage.value = null
+        _downloadProgress.value = Progress(0, 0L, null)
         viewModelScope.launch { executeDownload(normalizedUrl) }
+    }
+
+    /**
+     * Search the public HuggingFace model API for GGUF repos matching [query]. Clears any
+     * previously selected repo's file listing, since it belongs to the old search.
+     */
+    fun searchHuggingFace(query: String) {
+        _errorMessage.value = null
+        _hfSelectedRepoId.value = null
+        _hfSelectedRepoFiles.value = null
+        hfSearchJob?.cancel()
+        hfSearchJob = viewModelScope.launch {
+            _hfSearchInProgress.value = true
+            HuggingFaceModelSearch.search(hfApi, query)
+                .onSuccess { _hfSearchResults.value = it }
+                .onFailure {
+                    _hfSearchResults.value = emptyList()
+                    _errorMessage.value = context.getString(
+                        R.string.local_llm_hf_search_failed_format,
+                        it.message ?: it::class.simpleName ?: "",
+                    )
+                }
+            _hfSearchInProgress.value = false
+        }
+    }
+
+    /** List [repoId]'s `.gguf` files. A gated or private repo lands in [hfSelectedRepoFiles]
+     *  as [HuggingFaceModelSearch.FilesResult.RequiresAccess]; see that type's doc for why
+     *  this never shows up as a failed or hanging download instead. */
+    fun selectHuggingFaceRepo(repoId: String) {
+        _hfSelectedRepoId.value = repoId
+        _hfSelectedRepoFiles.value = null
+        hfSelectRepoJob?.cancel()
+        hfSelectRepoJob = viewModelScope.launch {
+            _hfSelectedRepoFiles.value = HuggingFaceModelSearch.listGgufFiles(hfApi, repoId)
+        }
+    }
+
+    fun clearHuggingFaceSelection() {
+        _hfSelectedRepoId.value = null
+        _hfSelectedRepoFiles.value = null
+    }
+
+    /** Install a file found via HuggingFace search through the same [startManualDownload]
+     *  path a pasted URL uses: [ModelInstall.download] already resumes and validates. */
+    fun installFromHuggingFace(repoId: String, fileName: String) {
+        startManualDownload(HuggingFaceModelSearch.resolveUrl(repoId, fileName))
     }
 
     /**
@@ -370,7 +476,18 @@ class SettingLocalLlmViewModel(
     }
 
     private suspend fun collectDownloadProgress(url: String, fileName: String, target: java.io.File) {
-        ModelInstall.download(httpClient, url, target).collect { p ->
+        collectInstallProgress(fileName, ModelInstall.download(httpClient, url, target))
+    }
+
+    /**
+     * Shared progress + registration handling for both [collectDownloadProgress] (HTTP
+     * fetch) and the SAF import in [installPickedFile] (local stream copy) — both emit the
+     * same [ModelInstall.Progress] events, so a completed one is registered identically:
+     * [fileName] lands in [prefs] and the provider's models the same way a completed
+     * download always has.
+     */
+    private suspend fun collectInstallProgress(fileName: String, progress: Flow<ModelInstall.Progress>) {
+        progress.collect { p ->
             when (p) {
                 is ModelInstall.Progress.Started ->
                     _downloadProgress.value = Progress(0, 0L, p.totalBytes)
@@ -383,21 +500,16 @@ class SettingLocalLlmViewModel(
                 is ModelInstall.Progress.Done -> {
                     _downloadProgress.value = null
                     prefs.addInstalledModel(runtime, fileName, p.file.absolutePath)
-                    val caps = LiteRtModelMetadata.deriveCapabilities(fileName)
+                    val caps = deriveLocalModelCapabilities(runtime, fileName)
                     val model = Model(
                         modelId = fileName,
                         displayName = fileName,
                         inputModalities = caps.inputModalities,
                         abilities = caps.abilities,
                     )
-                    updateMyProvider { provider -> provider.addModel(model) }
-                    // Enable the provider automatically after the first successful download.
-                    updateMyProvider { provider ->
-                        when (provider) {
-                            is ProviderSetting.LiteRtLocal -> provider.copy(enabled = true)
-                            else -> provider
-                        }
-                    }
+                    updateMyProvider { provider -> registerInstalledModel(provider, model) }
+                    // Enable the provider automatically after the first successful install.
+                    updateMyProvider(::enableAfterFirstDownload)
                     refreshFromDisk()
                 }
                 is ModelInstall.Progress.Failed -> {
@@ -406,6 +518,57 @@ class SettingLocalLlmViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Import a model file the user already has on-device, picked via the SAF file picker on
+     * the settings tile. Copies [inputStream] into [ModelInstall.targetFile] for [fileName],
+     * validating it against [expectedExtensionForRuntime] the same way a downloaded file is
+     * validated, then registers it exactly like [collectDownloadProgress] does on success.
+     */
+    fun installPickedFile(inputStream: java.io.InputStream, fileName: String) {
+        _errorMessage.value = null
+        viewModelScope.launch {
+            // The document provider's DISPLAY_NAME is untrusted input, so it gets reduced
+            // to a bare file name the same way extractFileNameFromUrl() does for downloads,
+            // before it ever reaches ModelInstall.targetFile()/prefs/Model.modelId. Without
+            // this, a crafted DISPLAY_NAME containing '/' or '..' segments could write
+            // outside local-models/llamacpp/ or store a path where a bare file name is
+            // required.
+            val safeFileName = fileName.substringAfterLast('/')
+            if (safeFileName.isBlank() || safeFileName == "." || safeFileName == "..") {
+                runCatching { inputStream.close() }
+                _errorMessage.value = "Import failed: invalid file name from picker: $fileName"
+                return@launch
+            }
+            val baseDir = ModelInstall.localModelsDir(context)
+            val target = ModelInstall.targetFile(baseDir, runtime, safeFileName)
+            try {
+                collectInstallProgress(
+                    safeFileName,
+                    ModelInstall.copyFromStream(
+                        input = inputStream,
+                        target = target,
+                        totalBytes = null,
+                        expectedExtension = expectedExtensionForRuntime(),
+                    ),
+                )
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // Cancellation is normal — user navigated away. Don't surface as an error.
+                _downloadProgress.value = null
+                throw cancel
+            } catch (t: Throwable) {
+                android.util.Log.w("LocalLlmVM", "Uncaught import failure", t)
+                _downloadProgress.value = null
+                _errorMessage.value = "Import failed: ${t::class.simpleName}: ${t.message ?: ""}"
+            }
+        }
+    }
+
+    /** The file extension a picked-file import must carry the right magic bytes for. */
+    private fun expectedExtensionForRuntime(): String = when (runtime) {
+        LocalRuntime.LiteRT -> "litertlm"
+        LocalRuntime.LlamaCpp -> "gguf"
     }
 
     fun clearError() {
@@ -452,5 +615,69 @@ class SettingLocalLlmViewModel(
     private fun estimatedSize(rt: LocalRuntime): Long = when (rt) {
         // Gallery allowlist sizeInBytes = 1_597_931_520 (~1.49 GB) + 200 MB safety pad.
         LocalRuntime.LiteRT -> 1_800_000_000L
+        // The real byte size of defaultLlamaCppEntry, straight from the verified catalog.
+        LocalRuntime.LlamaCpp -> defaultLlamaCppEntry.sizeBytes
+    }
+}
+
+/**
+ * Auto-enable transform applied after a model download completes: local-runtime provider
+ * settings (LiteRT, llama.cpp) flip to `enabled = true` so the just-downloaded model becomes
+ * usable without a second trip to Settings. Everything else (cloud providers, AICore) passes
+ * through unchanged — this only ever runs against the provider identified by
+ * [SettingLocalLlmViewModel.providerIdForRuntime], but stays a total function over
+ * [ProviderSetting] so it's directly unit-testable.
+ */
+internal fun enableAfterFirstDownload(provider: ProviderSetting): ProviderSetting = when (provider) {
+    is ProviderSetting.LiteRtLocal -> provider.copy(enabled = true)
+    is ProviderSetting.LlamaCppLocal -> provider.copy(enabled = true)
+    else -> provider
+}
+
+/**
+ * Registers a just-installed local model on [provider], shared by both the download and the
+ * SAF file-import routes through [SettingLocalLlmViewModel.collectInstallProgress]. [addModel]
+ * is a plain list append with no dedup, so calling it unconditionally for a file name that
+ * already has a registered [Model] would leave two entries carrying the same `modelId` but
+ * different [Model.id]s — the older one an unreachable ghost that [Model.id]-keyed deletion
+ * can never clean up. When an existing model already has [model]'s `modelId`, this updates
+ * that entry in place (keeping its [Model.id] so [ProviderSetting.editModel] finds it) instead
+ * of appending a second one.
+ */
+internal fun registerInstalledModel(provider: ProviderSetting, model: Model): ProviderSetting {
+    val existing = provider.models.firstOrNull { it.modelId == model.modelId }
+    return if (existing != null) {
+        provider.editModel(model.copy(id = existing.id))
+    } else {
+        provider.addModel(model)
+    }
+}
+
+/**
+ * Runtime-aware capability derivation for a just-installed or freshly-reconciled model
+ * file, shared by [SettingLocalLlmViewModel.migrateExistingModelMetadata],
+ * [SettingLocalLlmViewModel.refreshFromDisk]'s reconcile step, and the post-download
+ * registration path. LiteRT routes through the catalog-driven
+ * [LiteRtModelMetadata.deriveCapabilities]. llama.cpp has no per-file config table and no
+ * vision support in this build (vision is a spec non-goal), so it always reports TEXT-only
+ * input; TOOL and REASONING come from a matching [LlamaCppCatalog] entry's tags when the
+ * file is a catalog pick. A file that isn't in the catalog (e.g. a manually installed GGUF)
+ * still gets TOOL — the same "assume tool-tuned" fallback LiteRT applies to files outside
+ * its own catalog.
+ */
+internal fun deriveLocalModelCapabilities(
+    runtime: LocalRuntime,
+    fileName: String,
+): LiteRtModelMetadata.Capabilities = when (runtime) {
+    LocalRuntime.LiteRT -> LiteRtModelMetadata.deriveCapabilities(fileName)
+    LocalRuntime.LlamaCpp -> {
+        val tags = LlamaCppCatalog.ENTRIES.firstOrNull { it.file == fileName }?.tags.orEmpty()
+        LiteRtModelMetadata.Capabilities(
+            inputModalities = listOf(Modality.TEXT),
+            abilities = buildList {
+                add(ModelAbility.TOOL)
+                if ("thinking" in tags) add(ModelAbility.REASONING)
+            },
+        )
     }
 }

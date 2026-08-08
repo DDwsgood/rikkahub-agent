@@ -3,14 +3,18 @@ package me.rerere.rikkahub.data.codex
 import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -89,18 +93,18 @@ class CodexProvider(
                 if (response.code == 401) repository.markInvalid(account.id)
                 error("Failed to get Codex models: ${response.code} ${response.body.string()}")
             }
-            val models = json.parseToJsonElement(response.body.string())
-                .jsonObject["models"]?.jsonArray
+            val models = (json.parseToJsonElement(response.body.string()) as? JsonObject)
+                ?.get("models") as? JsonArray
                 ?: return@withContext emptyList()
             models.mapNotNull { element ->
-                val item = element.jsonObject
+                val item = element as? JsonObject ?: return@mapNotNull null
                 if (item["visibility"]?.jsonPrimitive?.contentOrNull != "list") {
                     return@mapNotNull null
                 }
                 val slug = item["slug"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
                 val modalities = item["input_modalities"]?.jsonArray
                     ?.mapNotNull { modality ->
-                        when (modality.jsonPrimitive.contentOrNull) {
+                        when ((modality as? JsonPrimitive)?.contentOrNull) {
                             "text" -> Modality.TEXT
                             "image" -> Modality.IMAGE
                             else -> null
@@ -282,7 +286,10 @@ class CodexProvider(
         }
         val eventSource = EventSources.createFactory(eventSourceClient).newEventSource(request, listener)
         awaitClose { eventSource.cancel() }
-    }
+        // trySend silently drops a delta when the buffer is full, dropping characters
+        // mid-reply (#1295), so the buffer must be unbounded — same fix as the other
+        // providers' streamText.
+    }.buffer(Channel.UNLIMITED)
 
     override suspend fun generateImage(
         providerSetting: ProviderSetting,
@@ -327,7 +334,7 @@ class CodexProvider(
 
     private companion object {
         const val CODEX_API_BASE = "${CodexAccountRepository.CODEX_BASE_URL}/codex"
-        const val CLIENT_VERSION = "0.144.1"
+        const val CLIENT_VERSION = "0.144.5"
 
         // The Codex backend routes newer models (e.g. gpt-5.6-luna, which is gated on
         // minimal_client_version 0.144.0) by the codex version advertised in the User-Agent, not

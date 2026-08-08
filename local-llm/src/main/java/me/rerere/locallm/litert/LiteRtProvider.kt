@@ -80,11 +80,6 @@ class LiteRtProvider(
     private val settingsUpdater: suspend (transform: (List<ProviderSetting>) -> List<ProviderSetting>) -> Unit,
 ) : Provider<ProviderSetting.LiteRtLocal> {
 
-    /** Singleton bridge — one ToolSet for the lifetime of this provider. Its @Tool
-     *  method reads the per-request tool list from [LiteRtToolBridgeRegistry]. */
-    private val toolBridge = LiteRtToolBridge()
-    private val toolProvider: ToolProvider = litertTool(toolBridge)
-
     /**
      * Self-heal a permanently corrupt model: delete the file from disk, remove it from
      * [LocalRuntimePreferences], and remove it from the provider's models list in settings.
@@ -137,7 +132,10 @@ class LiteRtProvider(
         return installed.map { (fileName, _) ->
             Model(
                 modelId = fileName,
-                displayName = fileName,
+                // The chat picker shows this. Raw filenames like
+                // "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm" are
+                // unreadable next to cloud model names, so prefer the catalog's label.
+                displayName = LiteRtCatalog.displayNameFor(fileName),
             )
         }
     }
@@ -215,11 +213,33 @@ class LiteRtProvider(
         // GPU-broken devices (Adreno 7xx + restrictive OEM ROMs, Google Tensor) by
         // making the bigger Gemma-4 models completely unreachable when a text-only
         // load would have worked.
+        // The model's real context ceiling, most trustworthy source first:
+        //   1. what the file declares about itself (LlmMetadataProto field 5),
+        //   2. the `ekvNNNN` marker its packager put in the filename,
+        //   3. our curated table.
+        // This is NOT advisory. `EngineConfig.maxNumTokens` is taken on trust by the
+        // engine, so a value above the KV cache the file was built for makes prefill run
+        // off the end of that cache and fault inside the native executor: SIGSEGV on the
+        // execution thread, nothing catchable, process gone. The comment that used to sit
+        // here claimed "the underlying KV cache size still caps it" — it does not, and
+        // that assumption is what let a 32000-token setting reach a 2048-token model.
+        val contextCeiling = LiteRtModelFile.readDeclaredMaxTokens(java.io.File(modelPath))
+            ?: LiteRtModelDefaults.contextCeilingFromFileName(params.model.modelId)
+            ?: config.maxContextLength
+
         // User-set max-context override. Lets capable models (Gemma 4 E2B = 32k) use more
-        // than Gallery's curated default; the underlying KV cache size still caps it
-        // (Qwen `ekv4096` cannot exceed 4096 regardless of this setting).
+        // than Gallery's curated default, but never past the ceiling above.
         val maxNumTokensOverride = prefs.maxNumTokensOverride(LocalRuntime.LiteRT)
-        val effectiveMaxNumTokens = maxNumTokensOverride ?: config.maxTokens
+        val requestedMaxNumTokens = maxNumTokensOverride ?: config.maxTokens
+        val effectiveMaxNumTokens = engineContextTokens(requestedMaxNumTokens, contextCeiling)
+        if (contextCeiling != null && requestedMaxNumTokens > contextCeiling) {
+            Log.w(
+                TAG,
+                "clamped maxNumTokens $requestedMaxNumTokens -> $contextCeiling for " +
+                    "${params.model.modelId}: the model cannot hold more than its declared " +
+                    "ceiling, and asking for more faults the native executor",
+            )
+        }
 
         // ---- System instruction (RADICALLY TRIMMED for small-context local models) ----
         //
@@ -251,62 +271,59 @@ class LiteRtProvider(
             systemTextsRaw
         }
 
-        // Compact tool prefix only — full-schema dump would re-blow the context budget
-        // (every tool's schema is ~200-500 chars, ×50 tools = ~15k chars on its own).
-        // Budget is adaptive: large-context models (Gemma 4 = 32k) see every enabled
-        // tool, small-context models (Qwen 1.5B = 4k) stay capped at 25 / 2000 chars.
-        // We pass the model's MAX CONTEXT LENGTH (not output cap): config.maxContextLength
-        // is the input + output budget, which is what determines how much tool prefix we
-        // can afford. For models without a curated maxContextLength (URL-pasted entries),
-        // fall back to maxTokens (output cap) as a conservative lower bound. See
-        // [LiteRtToolPrefix.budgetForContext] for tier thresholds.
-        // Native tool calling via the LiteRT-LM SDK's ToolSet mechanism — mirrors Google
-        // AI Edge Gallery's approach exactly. The bridge's @Tool method is enumerated
-        // by the SDK at engine creation time; the model invokes it as a native function
-        // call (no <tool_call> prompt-engineering, no regex extraction). When the model
-        // calls runTool(name, argsJson) the bridge looks up the named tool from the
-        // per-request snapshot and dispatches it through the regular execute path.
+        // Native tool calling. Every declared tool is handed to the runtime under its real
+        // name with its real JSON schema (see [LiteRtToolDeclaration]), so the model calls
+        // `web_fetch(url=...)` rather than a generic dispatcher: the model's own chat
+        // template renders the declarations, which is what these models were tuned on.
         //
-        // Populate the snapshot before handing the engine the call, clear it in the
-        // finally below so concurrent requests cannot see each other's tools.
-        LiteRtToolBridgeRegistry.setForRequest(params.tools)
-        val nativeTools = if (params.tools.isNotEmpty()) listOf(toolProvider) else emptyList()
-        Log.i(
-            TAG,
-            "tool bridge: ${params.tools.size} tool(s) registered for this request " +
-                "(${params.tools.joinToString(",") { it.name }.take(200)}…)",
-        )
-        // For models that still need a per-tool catalogue in the system prompt (small
-        // local models that benefit from explicit name + description listing alongside
-        // SDK tool registration), build a compact reference block. This is descriptive
-        // text only; the model invokes tools through the bridge, NOT by emitting
-        // <tool_call> blocks.
-        val toolReference = if (params.tools.isNotEmpty()) {
-            buildString {
-                append("You have ${params.tools.size} tools available. ")
-                append("Call runTool(name, argsJson) with one of these names to use them:\n")
-                params.tools.take(60).forEach { tool ->
-                    val firstLineDesc = tool.description.lineSequence().firstOrNull()
-                        ?.trim().orEmpty().take(80)
-                    append("- ${tool.name}: $firstLineDesc\n")
-                }
-                if (params.tools.size > 60) {
-                    append("(…and ${params.tools.size - 60} more tools available — ")
-                    append("call runTool with their names directly when needed.)\n")
-                }
+        // The conversation sets `automaticToolCalling = false`, so the runtime hands the
+        // calls back and we republish them as ordinary tool parts. That keeps local models
+        // on the same execution path as every cloud provider: HARDLINE floor, approval
+        // prompt, auto-approve allowlist, and the per-turn wall-clock budget all apply.
+        // No system-prompt tool catalogue is needed, and none is added: a duplicate
+        // listing would only compete with the template's own rendering for context.
+        //
+        // Declarations are budgeted like every other part of the prompt, against the context
+        // the ENGINE was configured with just above. Budgeting against the file's ceiling
+        // instead is what let a prompt built for 32768 tokens reach an engine holding 4096:
+        // the catalog deliberately allocates less than the file can hold, so the two numbers
+        // differ by 8x on the Gemma 4 entries. A tool that does not fit is skipped rather
+        // than truncated: half a JSON schema would render a malformed declaration.
+        val contextTokens = effectiveMaxNumTokens
+        val toolCharBudget = toolDeclarationCharBudget(contextTokens)
+        var toolCharsUsed = 0
+        val droppedTools = mutableListOf<String>()
+        val declarations = params.tools.mapNotNull { tool ->
+            val declaration = LiteRtToolDeclaration(tool)
+            val cost = declaration.declarationJson.length
+            if (toolCharsUsed + cost > toolCharBudget) {
+                droppedTools += tool.name
+                null
+            } else {
+                toolCharsUsed += cost
+                declaration
             }
-        } else {
-            ""
         }
-        val toolPrefix = toolReference
+        val nativeTools: List<ToolProvider> = declarations.map { litertTool(it) }
+        if (params.tools.isNotEmpty()) {
+            Log.i(
+                TAG,
+                "declared ${nativeTools.size}/${params.tools.size} tool(s) natively, " +
+                    "$toolCharsUsed/$toolCharBudget chars (context ${contextTokens}t)",
+            )
+        }
+        // Never drop tools silently: an assistant with a large enabled set on a small model
+        // loses real capability here, and that has to be visible when debugging why the
+        // model "ignored" a tool.
+        if (droppedTools.isNotEmpty()) {
+            Log.w(
+                TAG,
+                "dropped ${droppedTools.size} tool(s) over the declaration budget: " +
+                    droppedTools.joinToString(",").take(300),
+            )
+        }
 
-        val combinedSystem = buildString {
-            if (toolPrefix.isNotEmpty()) {
-                append(toolPrefix.trimEnd())
-                append("\n\n")
-            }
-            if (trimmedSystemTexts.isNotEmpty()) append(trimmedSystemTexts)
-        }.trim()
+        val combinedSystem = trimmedSystemTexts.trim()
 
         // ---- Conversation history → turn list + cold-path blob ----
         //
@@ -335,6 +352,17 @@ class LiteRtProvider(
             coldBlob = renderColdBlob(trimmed)
         }
         val turns = trimmed.map { it.toTurn() }
+
+        // Every piece of the prefill, so an overflow is visible in a bug report without a
+        // rebuild. The engine has no bounds check we can rely on here: a prompt past its
+        // token budget faults inside the native executor rather than returning an error.
+        val prefillChars = combinedSystem.length + toolCharsUsed + coldBlob.length
+        Log.i(
+            TAG,
+            "prefill budget: system=${combinedSystem.length} tools=$toolCharsUsed " +
+                "history=${coldBlob.length} total=${prefillChars}c " +
+                "(~${prefillChars / CHARS_PER_TOKEN}t of ${contextTokens}t)",
+        )
 
         // Check the persisted vision-unavailable flag. If a prior load fell back to
         // text-only on this device, skip the GPU vision attempt entirely — saves ~1 s of
@@ -494,45 +522,87 @@ class LiteRtProvider(
             )
         }
 
-        try {
+        var toolCallCount = 0
+        run {
             try {
                 runtime.streamTurns(
                     history = turns,
                     coldBlob = coldBlob,
                     images = turnImages,
                     audioClips = turnAudio,
-                ).collect { cumulative ->
-                    // Defensive: if the SDK ever emits a non-monotonic cumulative (e.g. after
-                    // an internal retry or template re-tokenisation), treat the new payload as a
-                    // fresh start — emit it whole as the delta rather than computing a negative-
-                    // length suffix that would silently drop characters.
-                    val delta = if (cumulative.startsWith(previousCumulative)) {
-                        cumulative.substring(previousCumulative.length)
-                    } else {
-                        cumulative
-                    }
-                    previousCumulative = cumulative
-                    fullResponseBuilder.setLength(0)
-                    fullResponseBuilder.append(cumulative)
+                ).collect { event ->
+                    when (event) {
+                        is StreamEvent.Delta -> {
+                            val cumulative = event.cumulative
+                            // Defensive: if the SDK ever emits a non-monotonic cumulative (e.g.
+                            // after an internal retry or template re-tokenisation), treat the new
+                            // payload as a fresh start, emitting it whole as the delta rather than
+                            // computing a negative-length suffix that would silently drop
+                            // characters.
+                            val delta = if (cumulative.startsWith(previousCumulative)) {
+                                cumulative.substring(previousCumulative.length)
+                            } else {
+                                cumulative
+                            }
+                            previousCumulative = cumulative
+                            fullResponseBuilder.setLength(0)
+                            fullResponseBuilder.append(cumulative)
 
-                    if (delta.isNotEmpty()) {
-                        emit(
-                            MessageChunk(
-                                id = streamId,
-                                model = params.model.modelId,
-                                choices = listOf(
-                                    UIMessageChoice(
-                                        index = 0,
-                                        delta = UIMessage(
-                                            role = MessageRole.ASSISTANT,
-                                            parts = listOf(UIMessagePart.Text(delta)),
+                            if (delta.isNotEmpty()) {
+                                emit(
+                                    MessageChunk(
+                                        id = streamId,
+                                        model = params.model.modelId,
+                                        choices = listOf(
+                                            UIMessageChoice(
+                                                index = 0,
+                                                delta = UIMessage(
+                                                    role = MessageRole.ASSISTANT,
+                                                    parts = listOf(UIMessagePart.Text(delta)),
+                                                ),
+                                                message = null,
+                                                finishReason = null,
+                                            )
                                         ),
-                                        message = null,
-                                        finishReason = null,
                                     )
-                                ),
+                                )
+                            }
+                        }
+
+                        is StreamEvent.ToolCalls -> {
+                            // Republish as ordinary tool parts. GenerationHandler picks these
+                            // up and runs its HARDLINE -> approval -> timeout pipeline, then
+                            // re-invokes this provider with the results in the history. The
+                            // SDK gives no call id, so mint one that is unique within the
+                            // stream. GenerationHandler matches parts by it.
+                            val parts = event.calls.map { call ->
+                                val id = "$streamId-tool-${toolCallCount++}"
+                                Log.i(TAG, "model requested tool '${call.name}' (id=$id)")
+                                UIMessagePart.Tool(
+                                    toolCallId = id,
+                                    toolName = call.name,
+                                    input = call.argumentsJson,
+                                    output = emptyList(),
+                                )
+                            }
+                            emit(
+                                MessageChunk(
+                                    id = streamId,
+                                    model = params.model.modelId,
+                                    choices = listOf(
+                                        UIMessageChoice(
+                                            index = 0,
+                                            delta = UIMessage(
+                                                role = MessageRole.ASSISTANT,
+                                                parts = parts,
+                                            ),
+                                            message = null,
+                                            finishReason = null,
+                                        )
+                                    ),
+                                )
                             )
-                        )
+                        }
                     }
                 }
             } catch (t: Throwable) {
@@ -543,8 +613,6 @@ class LiteRtProvider(
                 // hold". Surface that with a recovery hint.
                 throw translateSdkError(t, effectiveMaxNumTokens)
             }
-        } finally {
-            LiteRtToolBridgeRegistry.clear()
         }
 
         // ---- Persist tok/s telemetry --------------------------------------------------
@@ -578,15 +646,11 @@ class LiteRtProvider(
             }
         }
 
-        // With native SDK tool calling the @Tool method body already executed the tool
-        // and returned its output as the function's return value — there are NO leftover
-        // <tool_call> blocks to extract from the streamed text. The SDK incorporated the
-        // tool's output back into the model's reasoning automatically. Always emit
-        // finishReason = "stop" at end of stream.
-        //
-        // (The legacy LiteRtToolPrefix.extractToolCalls + unclosed-tag recovery path
-        // is kept around for the in-app browser tool which still uses prompt-engineered
-        // tool calling, but it is not called from the LiteRT chat path anymore.)
+        // Close the stream. Tool calls were republished as tool parts above and have NOT
+        // run yet: the host executes them after applying approval and the HARDLINE floor,
+        // then calls back in with the results. Reporting "tool_calls" is what tells the
+        // agent loop to do that; reporting "stop" would end the turn with the model's
+        // request silently dropped.
         emit(
             MessageChunk(
                 id = streamId,
@@ -599,7 +663,7 @@ class LiteRtProvider(
                             parts = emptyList(),
                         ),
                         message = null,
-                        finishReason = "stop",
+                        finishReason = if (toolCallCount > 0) "tool_calls" else "stop",
                     )
                 ),
             )
@@ -781,8 +845,34 @@ class LiteRtProvider(
         /** Hard char-cap for the rendered ChatML history. ~3000 chars ≈ 750 tokens. */
         private const val HISTORY_CHAR_BUDGET = 3000
 
-        // MAX_TOOLS_IN_PREFIX / TOOL_PREFIX_CHAR_BUDGET were static caps that starved
-        // large-context models (Gemma 4 = 32k) of 30+ enabled tools. Replaced by
-        // [LiteRtToolPrefix.budgetForContext], which scales with the model's context.
+        /** Rough chars-per-token used to turn a model's token context into a char budget. */
+        private const val CHARS_PER_TOKEN = 4
+
+        /**
+         * Char budget for the joined native tool declarations, scaled to the model's
+         * context the way the system prompt and history already are.
+         *
+         * Declarations are prompt text: the chat template renders every one of them ahead
+         * of the conversation. Leaving them uncapped let an assistant with a large enabled
+         * tool set push tens of thousands of characters of JSON schema into a model whose
+         * whole context is a few thousand tokens, which is far more than the 3.5k chars
+         * system + history are allowed between them.
+         *
+         * Half the context is reserved for the response; the system prompt and history
+         * budgets come off the input half first, and the declarations get what is left.
+         */
+        internal fun toolDeclarationCharBudget(contextTokens: Int): Int =
+            (contextTokens * CHARS_PER_TOKEN / 2) -
+                SYSTEM_MESSAGE_CHAR_BUDGET -
+                HISTORY_CHAR_BUDGET
+
+        /**
+         * The context the engine is actually configured with: what was asked for, clamped to
+         * the ceiling the model file can hold. Every part of the prefill is budgeted against
+         * this one number, so the prompt can never be built for a context larger than the
+         * engine that receives it.
+         */
+        internal fun engineContextTokens(requestedMaxTokens: Int, contextCeiling: Int?): Int =
+            contextCeiling?.let { minOf(requestedMaxTokens, it) } ?: requestedMaxTokens
     }
 }

@@ -13,7 +13,6 @@ data class WorkspaceBindMount(
 
 class ProotShellRunner(
     private val nativeLibraryDir: File,
-    private val extraBindMounts: List<WorkspaceBindMount> = emptyList(),
     private val patcher: RootfsPatcher = RootfsPatcher(),
 ) : WorkspaceShellRunner {
     override fun execute(context: WorkspaceShellContext): WorkspaceCommandResult {
@@ -44,7 +43,36 @@ class ProotShellRunner(
 
         context.tempDir.mkdirs()
         patcher.patch(context.linuxDir)
-        val process = ProcessBuilder(buildCommand(context, proot))
+        val process = newProcessBuilder(context, proot, loader).start()
+
+        return process.readResult(context.timeoutMillis, context.stdin)
+    }
+
+    override fun start(context: WorkspaceShellContext): Process {
+        if (!context.linuxDir.hasUsableRootfs()) {
+            throw IllegalStateException("Rootfs is not installed")
+        }
+
+        val proot = File(nativeLibraryDir, PROOT_EXEC)
+        val loader = File(nativeLibraryDir, PROOT_LOADER)
+        if (!proot.isFile) {
+            throw IllegalStateException("proot executable not found: ${proot.absolutePath}")
+        }
+        if (!loader.isFile) {
+            throw IllegalStateException("proot loader not found: ${loader.absolutePath}")
+        }
+
+        context.tempDir.mkdirs()
+        patcher.patch(context.linuxDir)
+        return newProcessBuilder(context, proot, loader).start()
+    }
+
+    private fun newProcessBuilder(
+        context: WorkspaceShellContext,
+        proot: File,
+        loader: File,
+    ): ProcessBuilder =
+        ProcessBuilder(buildCommand(context, proot))
             .directory(context.filesDir)
             .redirectErrorStream(false)
             .apply {
@@ -52,10 +80,6 @@ class ProotShellRunner(
                 environment()["PROOT_TMP_DIR"] = context.tempDir.absolutePath
                 environment()["TMPDIR"] = context.tempDir.absolutePath
             }
-            .start()
-
-        return process.readResult(context.timeoutMillis, context.stdin)
-    }
 
     private fun buildCommand(
         context: WorkspaceShellContext,
@@ -74,14 +98,14 @@ class ProotShellRunner(
             "${context.filesDir.absolutePath}:$WORKSPACE_DIR",
         )
 
-        extraBindMounts.forEach { mount ->
+        context.bindMounts.forEach { mount ->
             if (mount.source.exists()) {
                 command += "-b"
                 command += "${mount.source.absolutePath}:${mount.target.trimEnd('/')}"
             }
         }
 
-        listOf("/dev", "/proc", "/sys").forEach { path ->
+        WorkspaceManager.KERNEL_FS_MOUNTS.forEach { path ->
             if (File(path).exists()) {
                 command += "-b"
                 command += path
@@ -123,6 +147,6 @@ class ProotShellRunner(
     private companion object {
         private const val PROOT_EXEC = "libproot_exec.so"
         private const val PROOT_LOADER = "libproot_loader.so"
-        private const val WORKSPACE_DIR = "/workspace"
+        private val WORKSPACE_DIR = WorkspaceManager.ROOTFS_WORKSPACE_DIR
     }
 }

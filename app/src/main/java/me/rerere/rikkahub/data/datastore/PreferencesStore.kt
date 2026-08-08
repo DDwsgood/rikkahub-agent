@@ -7,6 +7,7 @@ import androidx.datastore.preferences.SharedPreferencesMigration
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -72,7 +73,7 @@ private const val TAG = "PreferencesStore"
  * → user loses ALL their saved providers (API keys, custom models, the lot).
  *
  * Per-entry decode lets surviving entries land while the unknown one is logged and skipped.
- * Keep this even after `local_llamacpp` is fully gone — it's good hygiene for any future
+ * Keep this even though `local_llamacpp` now ships: it's good hygiene for any future
  * polymorphic schema change (renamed types, removed types, etc).
  */
 private fun decodeProvidersTolerant(raw: String): List<ProviderSetting> {
@@ -117,7 +118,6 @@ class SettingsStore(
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
 
         // 模型选择
-        val ENABLE_WEB_SEARCH = booleanPreferencesKey("enable_web_search")
         val FAVORITE_MODELS = stringPreferencesKey("favorite_models")
         val SELECT_MODEL = stringPreferencesKey("chat_model")
         val FAST_MODEL = stringPreferencesKey("fast_model")
@@ -150,6 +150,7 @@ class SettingsStore(
         val SEARCH_SERVICES = stringPreferencesKey("search_services")
         val SEARCH_COMMON = stringPreferencesKey("search_common")
         val SEARCH_SELECTED = intPreferencesKey("search_selected")
+        val ENABLE_WEB_FETCH_TOOLS = booleanPreferencesKey("enable_web_fetch_tools")
 
         // MCP
         val MCP_SERVERS = stringPreferencesKey("mcp_servers")
@@ -163,6 +164,7 @@ class SettingsStore(
         // TTS
         val TTS_PROVIDERS = stringPreferencesKey("tts_providers")
         val SELECTED_TTS_PROVIDER = stringPreferencesKey("selected_tts_provider")
+        val DEFAULT_TTS_PLAYBACK_SPEED = floatPreferencesKey("default_tts_playback_speed")
 
         // ASR
         val ASR_PROVIDERS = stringPreferencesKey("asr_providers")
@@ -204,32 +206,37 @@ class SettingsStore(
             }
         }.map { preferences ->
             Settings(
-                enableWebSearch = preferences[ENABLE_WEB_SEARCH] == true,
-                favoriteModels = preferences[FAVORITE_MODELS]?.let {
-                    JsonInstant.decodeFromString(it)
+                favoriteModels = preferences[FAVORITE_MODELS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<Uuid>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode favoriteModels, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
-                chatModelId = preferences[SELECT_MODEL]?.let { Uuid.parse(it) }
+                chatModelId = preferences[SELECT_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
                     ?: DEFAULT_AUTO_MODEL_ID,
-                fastModelId = preferences[FAST_MODEL]?.let { Uuid.parse(it) }
+                fastModelId = preferences[FAST_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
                     ?: DEFAULT_AUTO_MODEL_ID,
-                titleModelId = preferences[TITLE_MODEL]?.let { Uuid.parse(it) },
-                translateModeId = preferences[TRANSLATE_MODEL]?.let { Uuid.parse(it) }
+                titleModelId = preferences[TITLE_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() },
+                translateModeId = preferences[TRANSLATE_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
                     ?: DEFAULT_AUTO_MODEL_ID,
                 enableSuggestion = preferences[ENABLE_SUGGESTION] != false,
-                suggestionModelId = preferences[SUGGESTION_MODEL]?.let { Uuid.parse(it) },
-                imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
+                suggestionModelId = preferences[SUGGESTION_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() },
+                imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: Uuid.random(),
                 titlePrompt = preferences[TITLE_PROMPT] ?: DEFAULT_TITLE_PROMPT,
                 translatePrompt = preferences[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
                 translateThinkingBudget = preferences[TRANSLATE_THINKING_BUDGET] ?: 0,
                 suggestionPrompt = preferences[SUGGESTION_PROMPT] ?: DEFAULT_SUGGESTION_PROMPT,
-                ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
+                ocrModelId = preferences[OCR_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: Uuid.random(),
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
-                compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
+                compressModelId = preferences[COMPRESS_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
-                assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
+                assistantId = preferences[SELECT_ASSISTANT]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
                     ?: DEFAULT_ASSISTANT_ID,
-                assistantTags = preferences[ASSISTANT_TAGS]?.let {
-                    JsonInstant.decodeFromString(it)
+                assistantTags = preferences[ASSISTANT_TAGS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<Tag>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode assistantTags, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
                 providers = decodeProvidersTolerant(preferences[PROVIDERS] ?: "[]"),
                 deletedBuiltInProviderIds = preferences[DELETED_BUILTIN_PROVIDER_IDS]
@@ -240,47 +247,92 @@ class SettingsStore(
                                 .toSet()
                         }.getOrNull()
                     } ?: emptySet(),
-                assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
+                assistants = runCatching {
+                    JsonInstant.decodeFromString<List<Assistant>>(preferences[ASSISTANTS] ?: "[]")
+                }.getOrElse {
+                    Log.w(TAG, "Failed to decode assistants, using default", it)
+                    emptyList()
+                },
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
-                customThemes = preferences[CUSTOM_THEMES]?.let {
-                    JsonInstant.decodeFromString(it)
+                customThemes = preferences[CUSTOM_THEMES]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<CustomTheme>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode customThemes, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
-                displaySetting = JsonInstant.decodeFromString(preferences[DISPLAY_SETTING] ?: "{}"),
-                searchServices = preferences[SEARCH_SERVICES]?.let {
-                    JsonInstant.decodeFromString(it)
+                displaySetting = runCatching {
+                    JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}")
+                }.getOrElse {
+                    Log.w(TAG, "Failed to decode displaySetting, using default", it)
+                    DisplaySetting()
+                },
+                searchServices = preferences[SEARCH_SERVICES]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<SearchServiceOptions>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode searchServices, using default", it)
+                        listOf(SearchServiceOptions.DEFAULT)
+                    }
                 } ?: listOf(SearchServiceOptions.DEFAULT),
-                searchCommonOptions = preferences[SEARCH_COMMON]?.let {
-                    JsonInstant.decodeFromString(it)
+                searchCommonOptions = preferences[SEARCH_COMMON]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<SearchCommonOptions>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode searchCommonOptions, using default", it)
+                        SearchCommonOptions()
+                    }
                 } ?: SearchCommonOptions(),
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
-                mcpServers = preferences[MCP_SERVERS]?.let {
-                    JsonInstant.decodeFromString(it)
+                enableWebFetchTools = preferences[ENABLE_WEB_FETCH_TOOLS] != false,
+                mcpServers = preferences[MCP_SERVERS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<McpServerConfig>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode mcpServers, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
-                webDavConfig = preferences[WEBDAV_CONFIG]?.let {
-                    JsonInstant.decodeFromString(it)
+                webDavConfig = preferences[WEBDAV_CONFIG]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<WebDavConfig>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode webDavConfig, using default", it)
+                        WebDavConfig()
+                    }
                 } ?: WebDavConfig(),
-                s3Config = preferences[S3_CONFIG]?.let {
-                    JsonInstant.decodeFromString(it)
+                s3Config = preferences[S3_CONFIG]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<S3Config>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode s3Config, using default", it)
+                        S3Config()
+                    }
                 } ?: S3Config(),
-                ttsProviders = preferences[TTS_PROVIDERS]?.let {
-                    JsonInstant.decodeFromString(it)
+                ttsProviders = preferences[TTS_PROVIDERS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<TTSProviderSetting>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode ttsProviders, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
-                selectedTTSProviderId = preferences[SELECTED_TTS_PROVIDER]?.let { Uuid.parse(it) }
+                selectedTTSProviderId = preferences[SELECTED_TTS_PROVIDER]?.let { runCatching { Uuid.parse(it) }.getOrNull() }
                     ?: DEFAULT_SYSTEM_TTS_ID,
-                asrProviders = preferences[ASR_PROVIDERS]?.let {
-                    JsonInstant.decodeFromString(it)
+                defaultTTSPlaybackSpeed = preferences[DEFAULT_TTS_PLAYBACK_SPEED]?.coerceIn(0.5f, 2.0f) ?: 1.0f,
+                asrProviders = preferences[ASR_PROVIDERS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<ASRProviderSetting>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode asrProviders, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
-                selectedASRProviderId = preferences[SELECTED_ASR_PROVIDER]?.let { Uuid.parse(it) },
-                modeInjections = preferences[MODE_INJECTIONS]?.let {
-                    JsonInstant.decodeFromString(it)
+                selectedASRProviderId = preferences[SELECTED_ASR_PROVIDER]?.let { runCatching { Uuid.parse(it) }.getOrNull() },
+                modeInjections = preferences[MODE_INJECTIONS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<PromptInjection.ModeInjection>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode modeInjections, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
-                lorebooks = preferences[LOREBOOKS]?.let {
-                    JsonInstant.decodeFromString(it)
+                lorebooks = preferences[LOREBOOKS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<Lorebook>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode lorebooks, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
-                quickMessages = preferences[QUICK_MESSAGES]?.let {
-                    JsonInstant.decodeFromString(it)
+                quickMessages = preferences[QUICK_MESSAGES]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<List<QuickMessage>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode quickMessages, using default", it)
+                        emptyList()
+                    }
                 } ?: emptyList(),
                 webServerEnabled = preferences[WEB_SERVER_ENABLED] == true,
                 webServerPort = preferences[WEB_SERVER_PORT] ?: 8080,
@@ -288,8 +340,11 @@ class SettingsStore(
                 webServerAccessPassword = preferences[WEB_SERVER_ACCESS_PASSWORD] ?: "",
                 webServerLocalhostOnly = preferences[WEB_SERVER_LOCALHOST_ONLY] == true,
                 aiLogLevel = AiLogLevel.fromPreference(preferences[AI_LOG_LEVEL]),
-                backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
-                    JsonInstant.decodeFromString(it)
+                backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<BackupReminderConfig>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode backupReminderConfig, using default", it)
+                        BackupReminderConfig()
+                    }
                 } ?: BackupReminderConfig(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
@@ -321,6 +376,15 @@ class SettingsStore(
                             // Insert right after AICore, or at 0 if AICore is absent.
                             // indexOfFirst returns -1 when absent; -1 + 1 = 0, so insert at 0.
                             val insertAt = providers.indexOfFirst { it is ProviderSetting.AICore } + 1
+                            providers.add(insertAt, defaultProvider.copyProvider())
+                        }
+                        is ProviderSetting.LlamaCppLocal -> {
+                            // Insert right after LiteRtLocal, so it groups with the other
+                            // on-device provider instead of appending after every remote
+                            // provider below. Falls back to right after AICore, or 0, if
+                            // LiteRtLocal is absent - same absent-index fallback as above.
+                            val insertAt = providers.indexOfFirst { it is ProviderSetting.LiteRtLocal }
+                                .let { if (it >= 0) it + 1 else providers.indexOfFirst { p -> p is ProviderSetting.AICore } + 1 }
                             providers.add(insertAt, defaultProvider.copyProvider())
                         }
                         else -> providers.add(defaultProvider.copyProvider())
@@ -409,11 +473,19 @@ class SettingsStore(
                             models = provider.models.distinctBy { model -> model.id }
                         )
 
+                        is ProviderSetting.LlamaCppLocal -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
+
                         is ProviderSetting.Codex -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )
 
                         is ProviderSetting.Grok -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
+
+                        is ProviderSetting.GeminiOAuth -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )
                     }
@@ -464,7 +536,19 @@ class SettingsStore(
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
-        settingsFlow.value = settings
+        transformLock.withLock {
+            updateInternal(settings)
+        }
+    }
+
+    /**
+     * Unlocked write path: every caller must already hold [transformLock]. Writes disk
+     * before memory: if `dataStore.edit` throws (IOException, disk full, a serialization
+     * bug), `settingsFlow` must still match what's actually on disk rather than a value
+     * that was never persisted, or observers would react to a change that silently rolls
+     * back on the next app launch.
+     */
+    private suspend fun updateInternal(settings: Settings) {
         dataStore.edit { preferences ->
             preferences[DYNAMIC_COLOR] = settings.dynamicColor
             preferences[THEME_ID] = settings.themeId
@@ -472,7 +556,6 @@ class SettingsStore(
             preferences[DEVELOPER_MODE] = settings.developerMode
             preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
 
-            preferences[ENABLE_WEB_SEARCH] = settings.enableWebSearch
             preferences[FAVORITE_MODELS] = JsonInstant.encodeToString(settings.favoriteModels)
             preferences[SELECT_MODEL] = settings.chatModelId.toString()
             preferences[FAST_MODEL] = settings.fastModelId.toString()
@@ -508,15 +591,19 @@ class SettingsStore(
             // maxOf(0, size - 1) guards the empty-list case: a persisted "[]" for
             // search_services leaves searchServices empty (the ?: default only fires on a
             // missing key, not on an empty array), and coerceIn(0, -1) throws
-            // IllegalArgumentException because min > max — crashing every settings write.
+            // IllegalArgumentException because min > max, crashing every settings write.
             preferences[SEARCH_SELECTED] =
                 settings.searchServiceSelected.coerceIn(0, maxOf(0, settings.searchServices.size - 1))
+            preferences[ENABLE_WEB_FETCH_TOOLS] = settings.enableWebFetchTools
 
             preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
             preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
             preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
             preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
-            preferences[SELECTED_TTS_PROVIDER] = settings.selectedTTSProviderId.toString()
+            settings.selectedTTSProviderId?.let {
+                preferences[SELECTED_TTS_PROVIDER] = it.toString()
+            } ?: preferences.remove(SELECTED_TTS_PROVIDER)
+            preferences[DEFAULT_TTS_PLAYBACK_SPEED] = settings.defaultTTSPlaybackSpeed.coerceIn(0.5f, 2.0f)
             preferences[ASR_PROVIDERS] = JsonInstant.encodeToString(settings.asrProviders)
             settings.selectedASRProviderId?.let {
                 preferences[SELECTED_ASR_PROVIDER] = it.toString()
@@ -534,19 +621,23 @@ class SettingsStore(
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
         }
+        settingsFlow.value = settings
     }
 
-    /** Serialises rapid-fire transform-based updates so concurrent callers don't race
-     *  each other. Without this lock, two `update {fn}` calls dispatched in quick
-     *  succession both snapshot `settingsFlow.value` BEFORE either has written, then
-     *  each writes its own delta off the same stale base — last writer wins, the
-     *  earlier change is silently dropped. The most-visible repro: rapid-fire taps on
-     *  per-assistant tool toggles where every other tap appeared to revert. */
+    /** Serialises every settings write: both transform-based `update {fn}` calls and
+     *  direct `update(Settings)` calls (e.g. a WebDAV/S3 restore replacing the whole
+     *  settings object), so concurrent callers don't race each other. Without this lock,
+     *  two writes dispatched in quick succession could both read `settingsFlow.value`
+     *  before either has persisted, then each write its own delta off the same stale
+     *  base: last writer wins, the earlier change is silently dropped. The most-visible
+     *  repro: rapid-fire taps on per-assistant tool toggles where every other tap
+     *  appeared to revert; a restore racing an in-flight transform update is the same
+     *  class of bug with worse stakes. */
     private val transformLock = kotlinx.coroutines.sync.Mutex()
 
     suspend fun update(fn: (Settings) -> Settings) {
         transformLock.withLock {
-            update(fn(settingsFlow.value))
+            updateInternal(fn(settingsFlow.value))
         }
     }
 
@@ -576,6 +667,20 @@ class SettingsStore(
                 assistants = settings.assistants.map { assistant ->
                     if (assistant.id == assistantId) {
                         assistant.copy(reasoningLevel = reasoningLevel)
+                    } else {
+                        assistant
+                    }
+                }
+            )
+        }
+    }
+
+    suspend fun updateAssistantWebSearch(assistantId: Uuid, enabled: Boolean) {
+        update { settings ->
+            settings.copy(
+                assistants = settings.assistants.map { assistant ->
+                    if (assistant.id == assistantId) {
+                        assistant.copy(enableWebSearch = enabled)
                     } else {
                         assistant
                     }
@@ -631,7 +736,6 @@ data class Settings(
     val customThemes: List<CustomTheme> = emptyList(),
     val developerMode: Boolean = false,
     val displaySetting: DisplaySetting = DisplaySetting(),
-    val enableWebSearch: Boolean = false,
     val favoriteModels: List<Uuid> = emptyList(),
     val chatModelId: Uuid = Uuid.random(),
     val fastModelId: Uuid = Uuid.random(),
@@ -669,11 +773,13 @@ data class Settings(
     val searchServices: List<SearchServiceOptions> = listOf(SearchServiceOptions.DEFAULT),
     val searchCommonOptions: SearchCommonOptions = SearchCommonOptions(),
     val searchServiceSelected: Int = 0,
+    val enableWebFetchTools: Boolean = true,
     val mcpServers: List<McpServerConfig> = emptyList(),
     val webDavConfig: WebDavConfig = WebDavConfig(),
     val s3Config: S3Config = S3Config(),
     val ttsProviders: List<TTSProviderSetting> = DEFAULT_TTS_PROVIDERS,
     val selectedTTSProviderId: Uuid = DEFAULT_SYSTEM_TTS_ID,
+    val defaultTTSPlaybackSpeed: Float = 1.0f,
     val asrProviders: List<ASRProviderSetting> = emptyList(),
     val selectedASRProviderId: Uuid? = null,
     val modeInjections: List<PromptInjection.ModeInjection> = DEFAULT_MODE_INJECTIONS,
@@ -883,7 +989,7 @@ internal val DEFAULT_ASSISTANTS = listOf(
             You are a helpful assistant, called {{char}}, based on model {{model_name}}.
 
             ## Info
-            - Time: {{cur_datetime}}
+            - Date: {{cur_date}}
             - Locale: {{locale}}
             - Timezone: {{timezone}}
             - Device Info: {{device_info}}

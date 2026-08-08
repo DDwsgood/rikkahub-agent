@@ -20,6 +20,7 @@ import me.rerere.rikkahub.data.ai.RequestLoggingInterceptor
 import me.rerere.rikkahub.data.ai.transformers.AssistantTemplateLoader
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
+import me.rerere.rikkahub.data.api.HuggingFaceAPI
 import me.rerere.rikkahub.data.api.RikkaHubAPI
 import me.rerere.rikkahub.data.api.SponsorAPI
 import me.rerere.rikkahub.data.codex.CodexAccountRepository
@@ -29,6 +30,10 @@ import me.rerere.rikkahub.data.codex.CodexProvider
 import me.rerere.rikkahub.data.grok.GrokAccountRepository
 import me.rerere.rikkahub.data.grok.GrokCredentialStore
 import me.rerere.rikkahub.data.grok.GrokOAuthManager
+import me.rerere.rikkahub.data.gemini.GeminiAccountRepository
+import me.rerere.rikkahub.data.gemini.GeminiCredentialStore
+import me.rerere.rikkahub.data.gemini.GeminiOAuthManager
+import me.rerere.rikkahub.data.gemini.GeminiProvider
 import me.rerere.rikkahub.data.grok.GrokProvider
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
@@ -68,21 +73,34 @@ val dataSourceModule = module {
             .addMigrations(Migration_6_7, Migration_11_12, Migration_13_14, Migration_14_15, Migration_15_16, Migration_23_24)
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
-                    val dictDir = SimpleDictManager.extractDict(context)
-                    val cursor = db.query("SELECT jieba_dict(?)", arrayOf(dictDir.absolutePath))
-                    cursor.use {
-                        if (it.moveToFirst()) {
-                            val result = it.getString(0)
-                            val success = result?.trimEnd('/') == dictDir.absolutePath.trimEnd('/')
-                            if (!success) {
-                                android.util.Log.e(
-                                    "DataSourceModule",
-                                    "jieba_dict failed: $result, path=${dictDir.absolutePath}"
-                                )
+                    // Both steps below are best-effort FTS setup: a failure here (missing dict
+                    // assets, FTS5 module unavailable, native lib not loaded yet) must degrade
+                    // search, not crash every single app launch by throwing out of onOpen and
+                    // failing the whole database open.
+                    try {
+                        val dictDir = SimpleDictManager.extractDict(context)
+                        val cursor = db.query("SELECT jieba_dict(?)", arrayOf(dictDir.absolutePath))
+                        cursor.use {
+                            if (it.moveToFirst()) {
+                                val result = it.getString(0)
+                                val success = result?.trimEnd('/') == dictDir.absolutePath.trimEnd('/')
+                                if (!success) {
+                                    android.util.Log.e(
+                                        "DataSourceModule",
+                                        "jieba_dict failed: $result, path=${dictDir.absolutePath}"
+                                    )
+                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        android.util.Log.e("DataSourceModule", "onOpen: jieba_dict setup failed", e)
                     }
-                    db.execSQL(me.rerere.rikkahub.data.db.fts.MESSAGE_FTS_CREATE_SQL.trimIndent())
+
+                    try {
+                        db.execSQL(me.rerere.rikkahub.data.db.fts.MESSAGE_FTS_CREATE_SQL.trimIndent())
+                    } catch (e: Exception) {
+                        android.util.Log.e("DataSourceModule", "onOpen: message_fts table creation failed", e)
+                    }
                 }
             })
             .openHelperFactory(
@@ -158,7 +176,7 @@ val dataSourceModule = module {
     single { AgentRunRepository(get()) }
     single { AgentRunBootRecovery(context = get(), repository = get()) }
 
-    single { McpManager(context = get(), settingsStore = get(), appScope = get(), filesManager = get(), appEventBus = get()) }
+    single { McpManager(settingsStore = get(), appScope = get(), filesManager = get(), appEventBus = get()) }
 
     single {
         GenerationHandler(
@@ -248,6 +266,17 @@ val dataSourceModule = module {
             .build()
     }
 
+    single<OkHttpClient>(named("gemini")) {
+        OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.MINUTES)
+            .writeTimeout(120, TimeUnit.SECONDS)
+            .followSslRedirects(true)
+            .followRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
     single {
         GrokAccountRepository(
             store = GrokCredentialStore(context = get(), json = get()),
@@ -267,7 +296,28 @@ val dataSourceModule = module {
     }
 
     single {
+        GeminiAccountRepository(
+            store = GeminiCredentialStore(context = get(), json = get()),
+            client = get(named("gemini")),
+            json = get(),
+        )
+    }
+
+    single {
+        GeminiOAuthManager(
+            context = get(),
+            scope = get<AppScope>(),
+            client = get(named("gemini")),
+            repository = get(),
+        )
+    }
+
+    single {
         SponsorAPI.create(get())
+    }
+
+    single {
+        HuggingFaceAPI.create(get())
     }
 
     single {
@@ -304,6 +354,14 @@ val dataSourceModule = module {
                 ),
             )
             pm.registerProvider(
+                "local_llamacpp",
+                me.rerere.llamacpp.LlamaCppProvider(
+                    context = get(),
+                    runtime = get(),
+                    prefs = get(),
+                ),
+            )
+            pm.registerProvider(
                 "codex",
                 CodexProvider(
                     context = get(),
@@ -318,6 +376,14 @@ val dataSourceModule = module {
                     context = get(),
                     client = get(named("grok")),
                     repository = get<GrokAccountRepository>(),
+                    json = json,
+                )
+            )
+            pm.registerProvider(
+                "gemini_oauth",
+                GeminiProvider(
+                    client = get(named("gemini")),
+                    repository = get<GeminiAccountRepository>(),
                     json = json,
                 )
             )

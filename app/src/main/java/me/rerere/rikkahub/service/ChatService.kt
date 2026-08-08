@@ -107,38 +107,10 @@ import me.rerere.workspace.WorkspaceShellStatus
 import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
-
-internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
-    LocalToolOption.AskUser,
-    LocalToolOption.Files,
-    LocalToolOption.WebFetch,
-)
-
-/**
- * Tools that are always injected into every conversation regardless of the assistant's
- * enabled tool options. These are nearly free, universally useful, and prevent sub-agents
- * (which inherit the parent's tool configuration) from resorting to bash workarounds.
- */
-internal val ESSENTIAL_TOOL_NAMES = setOf("get_time_info", "eval_javascript")
-
-internal const val TERMUX_RUN_COMMAND_TOOL_NAME = "termux_run_command"
-
-internal fun selectDirectLocalToolNames(
-    enabledOptions: Set<LocalToolOption>,
-    directOptionToolNames: Set<String>,
-    availableToolNames: Set<String>,
-): Set<String> = buildSet {
-    addAll(directOptionToolNames.intersect(availableToolNames))
-    if (
-        LocalToolOption.Termux in enabledOptions &&
-        TERMUX_RUN_COMMAND_TOOL_NAME in availableToolNames
-    ) {
-        add(TERMUX_RUN_COMMAND_TOOL_NAME)
-    }
-}
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -231,6 +203,25 @@ class ChatService(
     private val sessionMutexes = ConcurrentHashMap<Uuid, Mutex>()
     private fun mutexFor(conversationId: Uuid): Mutex =
         sessionMutexes.getOrPut(conversationId) { Mutex() }
+
+    /**
+     * Per-conversation notification id / PendingIntent request-code allocator.
+     *
+     * conversationId.hashCode() (the previous scheme) can collide across different
+     * conversationIds, which would let one conversation's live-update notification refresh
+     * clobber another's, or let a stale PendingIntent's FLAG_UPDATE_CURRENT silently repoint
+     * at the wrong conversation. This registry hands out a distinct, stable sequence number
+     * per conversationId instead: stable so repeated calls keep landing on the same
+     * notification/PendingIntent (update-in-place, no stacking), collision-free since two
+     * different conversationIds can never share a slot.
+     */
+    private val conversationNotificationSequence = ConcurrentHashMap<Uuid, Int>()
+    private val nextConversationNotificationSequence = AtomicInteger(0)
+
+    private fun notificationSequenceFor(conversationId: Uuid): Int =
+        conversationNotificationSequence.computeIfAbsent(conversationId) {
+            nextConversationNotificationSequence.incrementAndGet()
+        }
 
     /**
      * Hydrate the in-memory session for [conversationId] from disk if it's currently
@@ -843,7 +834,7 @@ class ChatService(
 
             // memory tool
             if (!model.abilities.contains(ModelAbility.TOOL)) {
-                if (settings.enableWebSearch || mcpManager.getAllAvailableTools().isNotEmpty()) {
+                if (assistant.enableWebSearch || mcpManager.getAllAvailableTools().isNotEmpty()) {
                     addError(
                         IllegalStateException(context.getString(R.string.tools_warning)),
                         conversationId,
@@ -927,7 +918,11 @@ class ChatService(
                     name = mcpToolName,
                     description = effectiveDesc,
                     parameters = { tool.inputSchema },
-                    needsApproval = { true },
+                    needsApproval = {
+                        me.rerere.rikkahub.data.ai.tools
+                            .ToolApprovalDefaults.requiresApproval(mcpToolName) ||
+                            tool.needsApproval
+                    },
                     execute = { args -> mcpManager.callTool(serverId, tool.name, args.jsonObject) },
                 )
             }
@@ -951,19 +946,19 @@ class ChatService(
             // dynamicToolsProvider, so the model can call any of them without having run
             // search_tools first. Overlapping names are deduplicated by GenerationHandler.
             val tools = buildList {
-                // ① Always inject the search_tools meta-tool first.
+                // Always inject the search_tools meta-tool first.
                 add(
                     toolSearchTool(
                         availableToolNames = discoverableTools.keys,
                     )
                 )
 
-                // ② Search tools (web search) - conditionally injected, unchanged.
-                if (settings.enableWebSearch) {
+                // Search tools (web search) - conditionally injected.
+                if (assistant.enableWebSearch) {
                     addAll(createSearchTools(settings))
                 }
 
-                // ③ Direct local tools - basic file/web/user interaction plus command execution.
+                // Direct local tools - basic file/web/user interaction plus command execution.
                 val directOptionToolNames = localTools.getTools(
                     assistant.localTools.filter { it in DIRECT_LOCAL_TOOL_OPTIONS },
                     baseInvocationCtx,
@@ -980,7 +975,7 @@ class ChatService(
                 // bash workarounds for basic needs like getting the current time.
                 addAll(allLocalTools.filter { it.name in ESSENTIAL_TOOL_NAMES })
 
-                // ④ Workspace tools - conditionally injected, unchanged.
+                // Workspace tools - conditionally injected.
                 addAll(
                     createWorkspaceToolsIfReady(
                         assistant.workspaceId?.toString(),
@@ -988,7 +983,7 @@ class ChatService(
                     )
                 )
 
-                // ⑤ Skill tools - conditionally injected, unchanged.
+                // Skill tools - conditionally injected.
                 if (assistant.enabledSkills.isNotEmpty()) {
                     addAll(
                         createSkillTools(
@@ -1013,9 +1008,9 @@ class ChatService(
                 systemAddendum = me.rerere.rikkahub.data.ai.tools
                     .ConversationSystemAddendum.get(conversationId),
                 isToolAutoApproved = { toolName ->
-                    // YOLO mode ("I AM STUPID" toggle in Settings -> Tool approvals): every
+                    // YOLO mode ("I AM STUPID" toggle in Settings → Tool approvals): every
                     // tool auto-approves. User opted into this explicitly. HARDLINE still
-                    // blocks rm -rf / et al - that check runs BEFORE auto-approval in
+                    // blocks rm -rf / et al — that check runs BEFORE auto-approval in
                     // GenerationHandler, so YOLO can't smuggle one through.
                     //
                     // Headless conversations (cron-driven) also auto-approve EVERY tool;
@@ -1026,11 +1021,11 @@ class ChatService(
                     // "Always Allow" (DataStore-backed, across the whole app). The
                     // Once-grant lives in the message itself as
                     // ToolApprovalState.Approved, so it's already handled by the regular
-                    // Pending -> Approved transition.
+                    // Pending → Approved transition.
                     //
                     // ask_user is a human-input request, NOT a permission gate. It must pause
                     // for the user whenever there's a surface to ask on (the in-app question card
-                    // or the Telegram clarify flow), so it ignores YOLO and the allow-lists -
+                    // or the Telegram clarify flow), so it ignores YOLO and the allow-lists —
                     // otherwise it auto-executes its placeholder body and returns
                     // ask_user_unavailable. In a headless run (cron / sub-agent) there's nobody to
                     // answer, so it still auto-approves there and falls through to that graceful
@@ -1461,7 +1456,11 @@ class ChatService(
     }
 
     private fun getLiveUpdateNotificationId(conversationId: Uuid): Int {
-        return conversationId.hashCode() + 10000
+        // +10000 keeps this space clear of the other fixed notification ids this app uses
+        // (generation-done = 1; WebServerService FGS = 2001; MediaPlaybackService FGS = 7001;
+        // TelegramBotService FGS = 0xA1B2 = 41394): the sequence would need >31,394 concurrently
+        // tracked conversations to reach the nearest of those, which never happens in practice.
+        return notificationSequenceFor(conversationId) + 10000
     }
 
     private fun sendLiveUpdateNotification(
@@ -1552,7 +1551,14 @@ class ChatService(
         }
         return PendingIntent.getActivity(
             context,
-            conversationId.hashCode(),
+            // +1_000_000 keeps this request-code space clear of NotificationTool.kt's own
+            // per-conversation sequence (also small ints starting at 1): both target the same
+            // RouteActivity with no action/data/categories set, so those intents are
+            // Intent.filterEquals-equal aside from extras, meaning the request code is the only
+            // thing that tells two PendingIntents apart. Sharing a small-int range would risk a
+            // notification-tool PendingIntent for one conversation overwriting a chat
+            // PendingIntent for a different one via FLAG_UPDATE_CURRENT.
+            notificationSequenceFor(conversationId) + 1_000_000,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )

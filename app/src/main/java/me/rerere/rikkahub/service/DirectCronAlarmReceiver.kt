@@ -22,9 +22,11 @@ import java.util.concurrent.Executor
  *
  * The receiver does not execute tools itself (broadcast time limits forbid it). It only
  * persists the immediate work request and keeps the broadcast pending until WorkManager
- * has committed the enqueue. This satisfies the contract: "Receiver 触发后不是普通延迟
- * WorkManager" — the work is expedited, 0-delay, and foreground-promoted, not a delayed
- * flexible enqueue.
+ * has committed the enqueue. If the enqueue fails (synchronously or the Operation
+ * completes with failure), a durable short-delay retry alarm reuses the same jobId + slot
+ * identity ([CronAlarmRetry]) instead of silently dropping the fire. Once the slot worker
+ * IS durably persisted, the exact-backend safety backup for this slot is cancelled so it
+ * never fires a duplicate. `pendingResult.finish()` runs on every path.
  */
 class DirectCronAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -32,6 +34,7 @@ class DirectCronAlarmReceiver : BroadcastReceiver() {
         val jobId = intent.getStringExtra(CronJobWorker.KEY_JOB_ID) ?: return
         val scheduledAtMs = intent.getLongExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, -1L)
         if (scheduledAtMs <= 0L) return
+        val attempt = intent.getIntExtra(CronAlarmRetry.KEY_RETRY_ATTEMPT, 0)
 
         val request = OneTimeWorkRequestBuilder<CronJobWorker>()
             .setInputData(
@@ -45,24 +48,65 @@ class DirectCronAlarmReceiver : BroadcastReceiver() {
             .build()
 
         val pendingResult = goAsync()
-        try {
-            val operation = WorkManager.getInstance(context).enqueueUniqueWork(
+        val operation = try {
+            WorkManager.getInstance(context).enqueueUniqueWork(
                 CronJobScheduler.directExecutionWorkName(jobId, scheduledAtMs),
                 ExistingWorkPolicy.KEEP,
                 request,
             )
-            operation.result.addListener(
-                {
-                    runCatching { operation.result.get() }
-                        .onFailure { Log.e(TAG, "Failed to persist direct fire for $jobId", it) }
-                    pendingResult.finish()
-                },
-                DIRECT_EXECUTOR,
-            )
         } catch (t: Throwable) {
+            // A synchronous enqueue failure must not silently drop the fire — arm a
+            // durable short-delay retry that reuses the same jobId + slot identity.
             Log.e(TAG, "Unable to enqueue direct fire for $jobId", t)
+            CronAlarmRetry.arm(
+                context, DirectCronAlarmReceiver::class.java, ACTION_FIRE,
+                jobId, scheduledAtMs, attempt,
+            )
             pendingResult.finish()
+            return
         }
+        operation.result.addListener(
+            {
+                val ok = runCatching { operation.result.get() }.isSuccess
+                if (!ok) {
+                    Log.e(TAG, "Failed to persist direct fire for $jobId")
+                    CronAlarmRetry.arm(
+                        context, DirectCronAlarmReceiver::class.java, ACTION_FIRE,
+                        jobId, scheduledAtMs, attempt,
+                    )
+                    pendingResult.finish()
+                } else {
+                    // The slot's durable worker is persisted — the safety backup for this
+                    // slot is now redundant. Wait for the backup-cancel Operation's
+                    // terminal state before finishing the broadcast (listeners run on
+                    // DIRECT_EXECUTOR, so no thread is ever blocked) so a backup that
+                    // would double-execute the slot is durably cancelled. A failed cancel
+                    // is only logged: the worker's at-most-once guard
+                    // (shouldSuppressBackupFire) is the backstop.
+                    val cancelOp = try {
+                        WorkManager.getInstance(context)
+                            .cancelUniqueWork(CronJobScheduler.backupWorkNameFor(jobId, scheduledAtMs))
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Unable to cancel slot backup for $jobId", t)
+                        null
+                    }
+                    if (cancelOp == null) {
+                        pendingResult.finish()
+                    } else {
+                        cancelOp.result.addListener(
+                            {
+                                if (runCatching { cancelOp.result.get() }.isFailure) {
+                                    Log.w(TAG, "Unable to cancel slot backup for $jobId")
+                                }
+                                pendingResult.finish()
+                            },
+                            DIRECT_EXECUTOR,
+                        )
+                    }
+                }
+            },
+            DIRECT_EXECUTOR,
+        )
     }
 
     companion object {

@@ -2,6 +2,7 @@ package me.rerere.rikkahub.ui.pages.setting.scheduledjobs
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,10 +35,26 @@ class ScheduledJobsViewModel(
 
     fun setEnabled(id: String, enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
-            val job = repository.getById(id) ?: return@launch
-            val updated = job.copy(enabled = enabled)
-            repository.update(updated)
-            if (enabled) scheduler.schedule(updated) else scheduler.cancel(id)
+            // The enabled flip + schedule/cancel transition must run as ONE linearized
+            // scheduler call — writing Room here first and scheduling/cancelling async
+            // afterwards would let a concurrent transition observe the half-updated state
+            // (e.g. a stale snapshot re-enabling a just-paused job).
+            try {
+                scheduler.setEnabled(id, enabled)
+            } catch (c: CancellationException) {
+                // ViewModel scope cancellation must propagate — never swallow it as a
+                // scheduling failure.
+                throw c
+            } catch (t: Throwable) {
+                // The enabled flip is persisted by setEnabled BEFORE the cancel/schedule, so
+                // a failed WorkManager operation leaves the database in the requested state.
+                // Log (observable) instead of crashing the UI scope; the boot reconcile
+                // worker retries the schedule/cancel.
+                android.util.Log.w(
+                    "ScheduledJobsViewModel",
+                    "setEnabled($id, $enabled): scheduler transition failed", t,
+                )
+            }
         }
     }
 

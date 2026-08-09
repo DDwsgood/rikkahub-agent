@@ -2,6 +2,7 @@ package me.rerere.rikkahub.service
 
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -162,6 +163,32 @@ class CronJobSchedulerTest {
     }
 
     @Test
+    fun `backup work name is stable per job slot`() {
+        // Slot-scoped identity: scheduling the NEXT slot's backup must replace a DIFFERENT
+        // unique work than the currently-running one (no self-cancel), while the same
+        // job+slot stays stable so a re-arm / receiver cancel addresses the exact work.
+        val first = CronJobScheduler.backupWorkNameFor("job-1", 1_000L)
+        assertEquals(first, CronJobScheduler.backupWorkNameFor("job-1", 1_000L))
+        assertTrue(
+            "different slots must yield different backup work names",
+            first != CronJobScheduler.backupWorkNameFor("job-1", 2_000L),
+        )
+        assertTrue(
+            "different jobs must yield different backup work names",
+            first != CronJobScheduler.backupWorkNameFor("job-2", 1_000L),
+        )
+    }
+
+    @Test
+    fun `backup work name is distinct from the execution identities`() {
+        val jobId = "job-1"
+        val slot = 1_000L
+        val backup = CronJobScheduler.backupWorkNameFor(jobId, slot)
+        assertTrue(backup != CronJobScheduler.exactExecutionWorkName(jobId, slot))
+        assertTrue(backup != CronJobScheduler.directExecutionWorkName(jobId, slot))
+    }
+
+    @Test
     fun `resolveBackendAfterArm returns desired backend on successful arm`() {
         assertEquals(
             CronJobScheduler.Backend.ALARM_CLOCK_DIRECT,
@@ -203,6 +230,124 @@ class CronJobSchedulerTest {
             CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
             CronJobScheduler.resolveBackendAfterArm(
                 CronJobScheduler.Backend.WORK_MANAGER_FALLBACK, armSucceeded = true,
+            ),
+        )
+    }
+
+    // ---------- duplicate-suppression guard: never override an advanced plan ----------
+
+    @Test
+    fun `hasScheduleAdvancedPastSlot - healthy future next means the plan already moved on`() {
+        assertTrue(
+            CronJobScheduler.hasScheduleAdvancedPastSlot(
+                enabled = true, nextRunAtMs = 5_000L, duplicateSlotMs = 1_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `hasScheduleAdvancedPastSlot - still parked at the duplicated slot is NOT advanced`() {
+        assertFalse(
+            CronJobScheduler.hasScheduleAdvancedPastSlot(
+                enabled = true, nextRunAtMs = 1_000L, duplicateSlotMs = 1_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `hasScheduleAdvancedPastSlot - a behind or absent next is NOT advanced`() {
+        assertFalse(
+            CronJobScheduler.hasScheduleAdvancedPastSlot(
+                enabled = true, nextRunAtMs = 999L, duplicateSlotMs = 1_000L,
+            ),
+        )
+        assertFalse(
+            CronJobScheduler.hasScheduleAdvancedPastSlot(
+                enabled = true, nextRunAtMs = null, duplicateSlotMs = 1_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `hasScheduleAdvancedPastSlot - a disabled job is never treated as advanced`() {
+        // advanceAfterSuppressedReplay no-ops on disabled jobs regardless of nextRunAtMs.
+        assertFalse(
+            CronJobScheduler.hasScheduleAdvancedPastSlot(
+                enabled = false, nextRunAtMs = 5_000L, duplicateSlotMs = 1_000L,
+            ),
+        )
+    }
+
+    // ---------- transition ordering contract (durable before teardown) ----------
+
+    @Test
+    fun `durable WorkManager path is always established before any alarm is cancelled`() {
+        // PINS the ordering for every backend: PERSIST_DURABLE_WM must precede
+        // CANCEL_STALE_ALARMS, so a failure or process death between the steps can never
+        // leave a zero-scheduling window. This is the anti-regression guard for a future
+        // "cancel before durable replacement" refactor.
+        for (backend in listOf(
+            CronJobScheduler.Backend.ALARM_CLOCK_DIRECT,
+            CronJobScheduler.Backend.EXACT_ALARM_LLM,
+            CronJobScheduler.Backend.WORK_MANAGER_FALLBACK,
+            CronJobScheduler.Backend.WORK_MANAGER,
+        )) {
+            val steps = scheduleTransitionSteps(backend, exactArmSucceeded = true)
+            assertTrue(
+                "durable path must come before alarm teardown for $backend (steps=$steps)",
+                steps.indexOf(ScheduleStep.PERSIST_DURABLE_WM)
+                    < steps.indexOf(ScheduleStep.CANCEL_STALE_ALARMS),
+            )
+        }
+    }
+
+    @Test
+    fun `exact backend arms the new alarm before cancelling stale alarms`() {
+        for (backend in listOf(
+            CronJobScheduler.Backend.ALARM_CLOCK_DIRECT,
+            CronJobScheduler.Backend.EXACT_ALARM_LLM,
+        )) {
+            val steps = scheduleTransitionSteps(backend, exactArmSucceeded = true)
+            assertEquals(
+                listOf(
+                    ScheduleStep.PERSIST_DURABLE_WM,
+                    ScheduleStep.ARM_EXACT_ALARM,
+                    ScheduleStep.CANCEL_STALE_ALARMS,
+                ),
+                steps,
+            )
+        }
+    }
+
+    @Test
+    fun `successful exact arm only cleans the other mode alarm - never this mode`() {
+        assertEquals(
+            AlarmCleanup.OTHER_MODE_ONLY,
+            decideAlarmCleanup(
+                CronJobScheduler.Backend.ALARM_CLOCK_DIRECT, exactArmSucceeded = true,
+            ),
+        )
+        assertEquals(
+            AlarmCleanup.OTHER_MODE_ONLY,
+            decideAlarmCleanup(
+                CronJobScheduler.Backend.EXACT_ALARM_LLM, exactArmSucceeded = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `failed exact arm and fallback clean both alarms`() {
+        // SecurityException race → the job runs through WorkManager, which has no alarm.
+        assertEquals(
+            AlarmCleanup.BOTH,
+            decideAlarmCleanup(
+                CronJobScheduler.Backend.EXACT_ALARM_LLM, exactArmSucceeded = false,
+            ),
+        )
+        assertEquals(
+            AlarmCleanup.BOTH,
+            decideAlarmCleanup(
+                CronJobScheduler.Backend.WORK_MANAGER_FALLBACK, exactArmSucceeded = true,
             ),
         )
     }

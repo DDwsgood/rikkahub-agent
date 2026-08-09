@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Log
 import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -122,6 +123,47 @@ internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
  * (which inherit the parent's tool set) don't use bash workarounds for basic needs.
  */
 internal val ESSENTIAL_TOOL_NAMES = setOf("get_time_info", "eval_javascript")
+
+/**
+ * Outcome of a single [ChatService.sendMessage] turn, delivered via the returned
+ * [CompletableDeferred] handle. Headless consumers (CronJobWorker) await this to observe
+ * the REAL success/failure — including provider/network/model exceptions that sendMessage
+ * catches internally and surfaces through [ChatService.addError] for the UI.
+ */
+data class SendMessageResult(
+    val success: Boolean,
+    val errorMessage: String? = null,
+)
+
+/**
+ * Production mapping from an internal send/generation exception to a failed
+ * [SendMessageResult]. The error message includes the exception type so cron history and
+ * failure notifications are diagnosable. Used by [ChatService.sendMessage]'s catch block;
+ * exposed for JVM tests so the contract is pinned against the real helper.
+ */
+internal fun sendFailureResult(t: Throwable): SendMessageResult = SendMessageResult(
+    success = false,
+    errorMessage = "${t::class.simpleName}: ${t.message.orEmpty()}",
+)
+
+/**
+ * Identity-safe completion guard for a [SendMessageResult] handle: if the handle has not
+ * been completed by the generation body (e.g. the app scope was cancelled right after
+ * [ChatService.sendMessage] launched, so the body never ran), complete it with a failure
+ * derived from [cause] so awaiters (cron) never hang. No-op when the body already
+ * completed the handle.
+ */
+internal fun ensureSendMessageResultCompleted(
+    handle: CompletableDeferred<SendMessageResult>,
+    cause: Throwable?,
+) {
+    if (handle.isCompleted) return
+    val detail = when {
+        cause == null -> "generation ended without a result"
+        else -> "generation cancelled: ${cause::class.simpleName}: ${cause.message}"
+    }
+    handle.complete(SendMessageResult(success = false, errorMessage = detail))
+}
 
 internal fun selectDirectLocalToolNames(
     enabledOptions: Set<LocalToolOption>,
@@ -439,8 +481,29 @@ class ChatService(
 
     // ---- 发送消息 ----
 
-    fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
-        if (content.isEmptyInputMessage()) return
+    /**
+     * Send a message and kick off the generation. Returns a [CompletableDeferred] handle
+     * that completes with the real [SendMessageResult] when the generation terminates —
+     * including failures that ChatService catches internally (provider/network/model
+     * exceptions are surfaced via [addError] for the UI AND reflected in the handle). This
+     * lets headless consumers such as [CronJobWorker] observe the true outcome instead of
+     * inferring success from the generation flow going null.
+     *
+     * Existing UI callers may ignore the returned handle: the error banner behavior is
+     * unchanged, and a failure never crashes the app scope.
+     */
+    fun sendMessage(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+        answer: Boolean = true,
+    ): CompletableDeferred<SendMessageResult> {
+        val result = CompletableDeferred<SendMessageResult>()
+        if (content.isEmptyInputMessage()) {
+            // Nothing was launched — surface the empty input as a failure so awaiters
+            // (cron) don't treat a no-op as a silent success.
+            result.complete(SendMessageResult(success = false, errorMessage = "empty input message"))
+            return result
+        }
 
         val session = getOrCreateSession(conversationId)
         val previousJob = session.getJob()
@@ -484,12 +547,28 @@ class ChatService(
                 }
 
                 _generationDoneFlow.emit(conversationId)
+                result.complete(SendMessageResult(success = true))
             } catch (e: Exception) {
                 e.printStackTrace()
-                addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
+                if (e is CancellationException) {
+                    // A newer sendMessage (or app teardown) cancelled this generation. The
+                    // UI already treats cancellation as a non-error (addError ignores it);
+                    // surface it on the handle so cron awaiters observe a failure instead
+                    // of hanging on a handle that would otherwise never complete.
+                    result.complete(SendMessageResult(success = false, errorMessage = "cancelled: ${e.message}"))
+                } else {
+                    addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
+                    result.complete(sendFailureResult(e))
+                }
             }
         }
+        // Identity-safe fallback: if the coroutine is cancelled before its body ever runs
+        // (e.g. appScope is torn down right after launch), neither the try nor the catch
+        // executes and the handle would never complete. This guard completes it exactly
+        // once, with the failure cause (or an Error that escaped the `catch (e: Exception)`).
+        job.invokeOnCompletion { cause -> ensureSendMessageResultCompleted(result, cause) }
         session.setJob(job)
+        return result
     }
 
     /**

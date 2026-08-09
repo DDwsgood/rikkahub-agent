@@ -350,8 +350,10 @@ fun pauseJobTool(repo: ScheduledJobRepository, scheduler: CronJobScheduler): Too
             ?: return@Tool textPart(errEnvelope("missing_id", "id is required"))
         val job = repo.getById(id)
             ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
-        repo.update(job.copy(enabled = false))
-        scheduler.cancel(id)
+        // Go through the scheduler's linearized "update enabled + cancel" transition —
+        // writing Room here first and cancelling async afterwards would let a concurrent
+        // schedule re-enable the job or leave a stale alarm armed.
+        scheduler.setEnabled(id, enabled = false)
         textPart(buildJsonObject { put("success", true); put("id", id) }.toString())
     },
 )
@@ -370,9 +372,8 @@ fun resumeJobTool(repo: ScheduledJobRepository, scheduler: CronJobScheduler): To
             ?: return@Tool textPart(errEnvelope("missing_id", "id is required"))
         val job = repo.getById(id)
             ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
-        val updated = job.copy(enabled = true)
-        repo.update(updated)
-        scheduler.schedule(updated)
+        // Linearized "update enabled + schedule" — see pause_job.
+        scheduler.setEnabled(id, enabled = true)
         textPart(buildJsonObject { put("success", true); put("id", id) }.toString())
     },
 )

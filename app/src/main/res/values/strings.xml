@@ -1943,6 +1943,8 @@
   <string name="setting_page_scheduled_jobs_exact_permission_grant">Grant access</string>
   <string name="scheduled_job_execution_notification_title">Scheduled job running</string>
   <string name="scheduled_job_execution_notification_preparing">Preparing scheduled job</string>
+  <string name="scheduled_job_reconcile_notification_title">Reconciling scheduled jobs</string>
+  <string name="scheduled_job_reconcile_notification_body">Restoring scheduled jobs after boot or a schedule change</string>
   <string name="assistant_page_context_message_limit">Context Message Limit</string>
   <string name="assistant_page_context_message_limit_desc">Caps how many recent messages are sent to the model. When the limit is exceeded, the context is trimmed down to about half in one step instead of dropping one message per turn, so the request prefix stays stable and prompt caching keeps working for many turns.</string>
   <string name="assistant_page_context_message_limit_count">Context message limit: %d</string>

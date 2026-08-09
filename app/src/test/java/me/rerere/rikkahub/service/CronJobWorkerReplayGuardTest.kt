@@ -22,8 +22,13 @@ import org.junit.Test
  *
  * The fix is twofold and both halves are tested here:
  *   1. [computeRunSlot]: manual fires stamp nowMs, not job.nextRunAtMs.
- *   2. [shouldSuppressAsReplay]: requires priorRow.startedAtMs within REPLAY_WINDOW_MS
- *      of nowMs, so a stale (>10 min old) prior row can never suppress a fresh fire.
+ *   2. [shouldSuppressSameSlotFire] (used by both [shouldSuppressAsReplay] and
+ *      [shouldSuppressBackupFire]): the source-aware rule — a row whose startedAtMs is at
+ *      or after its scheduledAtMs is a REAL execution and suppresses duplicates at ANY age
+ *      (late primaries, backups and retries with backoff beyond any window must never
+ *      double-execute a slot); a legacy manual row (startedAtMs BEFORE its stamped future
+ *      slot) only suppresses within REPLAY_WINDOW_MS, so a stale 16h-old row can never
+ *      suppress a fresh fire.
  */
 class CronJobWorkerReplayGuardTest {
 
@@ -119,6 +124,122 @@ class CronJobWorkerReplayGuardTest {
     fun `skipped_catchup prior row never suppresses`() {
         val prior = row(scheduledAtMs = 1_000L, startedAtMs = 1_000L, outcome = "skipped_catchup")
         assertFalse(shouldSuppressAsReplay(prior, slotMs = 1_000L, nowMs = 1_001L))
+    }
+
+    // ---------- backup at-most-once (shouldSuppressBackupFire) ----------
+
+    @Test
+    fun `backup suppresses on a same-slot natural row of ANY age - not a fragile short window`() {
+        // The old replay window (10 min) is shorter than the backup grace (20 min): a
+        // backup arriving 20 min after a slot whose side effects already happened must
+        // still be suppressed. A REAL execution (startedAtMs >= scheduledAtMs) suppresses
+        // at any age; only legacy manual rows (started BEFORE the slot) keep the window.
+        val slot = 1_000_000L
+        val prior = row(scheduledAtMs = slot, startedAtMs = slot)
+        val backupFiresAt = slot + 20L * 60_000L
+        assertTrue(
+            "a backup 20min after the slot must NOT re-execute it (at-most-once)",
+            shouldSuppressBackupFire(prior, nowMs = backupFiresAt),
+        )
+        assertTrue(
+            "even a real same-slot execution many hours later suppresses the backup",
+            shouldSuppressBackupFire(
+                row(scheduledAtMs = slot, startedAtMs = slot + 3L * 60 * 60 * 1_000L),
+                nowMs = backupFiresAt,
+            ),
+        )
+    }
+
+    @Test
+    fun `backup executes when the slot never ran - permission revoked before the alarm`() {
+        // Nothing ever executed this slot (the exact alarm was deleted by a permission
+        // revoke before it could fire): the backup IS the first execution.
+        assertFalse(shouldSuppressBackupFire(priorNonSkipRow = null, nowMs = 1_000L))
+    }
+
+    @Test
+    fun `newer concurrent_skip does not mask the real same-slot row`() {
+        // The DAO's getMostRecentNonSkipForSlot excludes concurrent_skip rows, so the
+        // "most recent" row seen by the guard is the REAL same-slot run row even when a
+        // concurrent_skip was written later. The backup must suppress against that real row.
+        val slot = 1_000L
+        val realRow = row(scheduledAtMs = slot, startedAtMs = slot, outcome = "running")
+        // (The concurrent_skip row itself is separately asserted to never suppress below.)
+        assertTrue(shouldSuppressBackupFire(realRow, nowMs = slot + 60_000L))
+        // A non-backup natural fire (window rule) also suppresses against the real row.
+        assertTrue(shouldSuppressAsReplay(realRow, slotMs = slot, nowMs = slot + 60_000L))
+        // And the concurrent_skip row can never suppress anything (it is excluded upstream).
+        val skipRow = row(scheduledAtMs = slot, startedAtMs = slot + 5_000L, outcome = "concurrent_skip")
+        assertFalse(shouldSuppressAsReplay(skipRow, slotMs = slot, nowMs = slot + 60_000L))
+    }
+
+    // ---------- unified source-aware rule (shouldSuppressSameSlotFire) ----------
+
+    @Test
+    fun `real natural row suppresses a duplicate even 20 minutes later`() {
+        // WorkManager retry backoff can exceed the old 10-min window. The real execution
+        // (startedAtMs >= scheduledAtMs) suppresses its duplicate at any age.
+        val slot = 1_000L
+        val prior = row(scheduledAtMs = slot, startedAtMs = slot)
+        assertTrue(shouldSuppressAsReplay(prior, slotMs = slot, nowMs = slot + 20L * 60_000L))
+    }
+
+    @Test
+    fun `real natural row suppresses a duplicate even hours later`() {
+        val slot = 1_000L
+        val prior = row(scheduledAtMs = slot, startedAtMs = slot)
+        assertTrue(shouldSuppressAsReplay(prior, slotMs = slot, nowMs = slot + 5L * 60 * 60 * 1_000L))
+    }
+
+    @Test
+    fun `backup-first then late primary still suppresses - both racing directions`() {
+        // The safety backup fires at slot + EXACT_BACKUP_GRACE_MS and executes the slot; the
+        // exact-alarm primary can arrive much later (WorkManager backoff / process death).
+        // It must NOT re-execute the slot.
+        val slot = 1_000L
+        val backupRow = row(scheduledAtMs = slot, startedAtMs = slot + 20L * 60_000L)
+        val latePrimaryNow = slot + 3L * 60 * 60 * 1_000L
+        assertTrue(
+            "a primary arriving hours after the backup executed the slot must be suppressed",
+            shouldSuppressAsReplay(backupRow, slotMs = slot, nowMs = latePrimaryNow),
+        )
+        // And the reverse: a primary that executed first suppresses a backup arriving later.
+        val primaryRow = row(scheduledAtMs = slot, startedAtMs = slot)
+        assertTrue(
+            "a backup arriving after the primary executed the slot must be suppressed",
+            shouldSuppressBackupFire(primaryRow, nowMs = slot + 20L * 60_000L),
+        )
+    }
+
+    @Test
+    fun `backup never suppresses on a skip row`() {
+        // Skip outcomes never participate (the DAO already excludes them); this pins the
+        // pure rule's totality for the backup wrapper too.
+        val skip = row(scheduledAtMs = 1_000L, startedAtMs = 1_000L, outcome = "concurrent_skip")
+        assertFalse(shouldSuppressBackupFire(skip, nowMs = 1_001L))
+    }
+
+    @Test
+    fun `legacy manual row only suppresses within the window for the backup too`() {
+        // A legacy manual row (startedAtMs BEFORE its stamped future slot) must not suppress
+        // a fire that arrives much later — the same source-aware rule as the natural path.
+        val slot = 1_778_907_600_000L
+        val legacyManualRow = row(scheduledAtMs = slot, startedAtMs = slot - 16L * 60 * 60 * 1_000L)
+        assertFalse(shouldSuppressBackupFire(legacyManualRow, nowMs = slot))
+        // A fresh legacy-style row inside the window still suppresses (a genuine replay of
+        // the manual fire's own slot-stamped run).
+        val fresh = row(scheduledAtMs = slot, startedAtMs = slot - 5L * 60_000L)
+        assertTrue(shouldSuppressBackupFire(fresh, nowMs = slot))
+    }
+
+    @Test
+    fun `16h old legacy manual row still does not suppress a non-backup natural fire`() {
+        // Compatibility protection preserved: a legacy row from the old buggy version that
+        // stamped the future slot into a manual fire must not suppress today's real natural
+        // fire (non-backup path keeps the recency window).
+        val slot = 1_778_907_600_000L
+        val legacyManualRow = row(scheduledAtMs = slot, startedAtMs = slot - 16L * 60 * 60 * 1_000L)
+        assertFalse(shouldSuppressAsReplay(legacyManualRow, slotMs = slot, nowMs = slot))
     }
 
     // ---------- composition: the actual bug end-to-end (pure-function form) ----------

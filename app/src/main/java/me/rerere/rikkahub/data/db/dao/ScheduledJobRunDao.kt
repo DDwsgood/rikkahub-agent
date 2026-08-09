@@ -48,6 +48,22 @@ interface ScheduledJobRunDao {
     suspend fun getMostRecent(jobId: String): ScheduledJobRunEntity?
 
     /**
+     * Most-recent run row for a job whose scheduled slot is EXACTLY [slotMs] and whose
+     * outcome is not a skip record ('concurrent_skip' / 'skipped_catchup'). Skip rows are
+     * excluded so a newer concurrent_skip can never mask the real same-slot run row.
+     * Used by the worker's duplicate-fire guard: for a natural slot, ANY such row means the
+     * slot already executed (or is in flight), so a re-fire — in particular the exact-
+     * backend safety backup, which may arrive well outside the short replay window — must
+     * not execute the slot a second time.
+     */
+    @Query(
+        "SELECT * FROM scheduled_job_runs WHERE jobId = :jobId AND scheduledAtMs = :slotMs " +
+            "AND outcome NOT IN ('concurrent_skip', 'skipped_catchup') " +
+            "ORDER BY startedAtMs DESC LIMIT 1"
+    )
+    suspend fun getMostRecentNonSkipForSlot(jobId: String, slotMs: Long): ScheduledJobRunEntity?
+
+    /**
      * Count of rows with outcome='success' for a job.
      * Used as the authoritative source of max_runs progress — immune to replay race because
      * the row is inserted optimistically and updated to 'success' atomically before we read.

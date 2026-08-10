@@ -130,14 +130,14 @@ Passwords and API keys never hit log files. Cloud backups skip saved credentials
 
 ## What's different in this fork
 
-This fork adds an on-device agent layer on top of upstream RikkaHub. Everything above describes this fork's combined feature set; this section lists what is **not** in upstream (as of the 2.4.5 merge) and how it changed over time.
+This fork adds an on-device agent layer on top of upstream RikkaHub. Everything above describes this fork's combined feature set; this section records what differs from upstream (as of the 2.4.5 merge) — both capabilities upstream lacks and behavior that was changed on top of upstream functionality.
 
 ### Fork-only capabilities (absent upstream)
 
 | Capability | What it adds |
 |---|---|
 | **Embedded Termux runtime** | A self-contained Termux bootstrap ships inside the APK (debug + release, aarch64 + x86_64), installed on first launch. `termux_run_command` gives the AI a real Linux shell on the host without a separate Termux app. Built by CI, embedded at build time. |
-| **Scheduled agent jobs** | `CronJobScheduler`/`CronJobWorker` — persistent jobs in two modes: `llm` (prompt-based, exact alarms + durable WorkManager) and `direct` (pre-baked `actionsJson`, `setAlarmClock` for precise delivery). Upstream has no scheduling. Includes boot recovery, replay guards, catch-up chains, and an exact-alarm permission fallback. |
+| **Scheduled agent jobs** | Upstream ships a WorkManager-based cron scheduler. This fork reworks its delivery: jobs run in two modes — `llm` (prompt-based, `setExactAndAllowWhileIdle` exact alarms + foreground-promoted WorkManager) and `direct` (pre-baked `actionsJson` fired via `setAlarmClock` for precise, user-visible delivery). Includes boot recovery, replay guards, catch-up chains, and an exact-alarm permission fallback. |
 | **stdio MCP servers** | Local MCP servers running inside the Workspace Linux environment (`type: stdio`), alongside the upstream SSE/Streamable-HTTP transports. See [MCP Servers](#mcp-servers). |
 | **ToolSearch** | `search_tools` + `ToolRegistry.search()`: multi-keyword AND matching, relevance scoring, Levenshtein fuzzy fallback for typos, and optional category browsing. Lets the model discover capabilities whose names it doesn't know. |
 | **System prompt rewrite** | Rewrote the core `agent-core` skill (SOUL/HEARTBEAT/TOOLS.md), removed the old `autonomous-agent` skill, added a lazy `code-agent` skill. Initial prompt dropped from ~5,137 to ~3,155 tokens. |
@@ -149,7 +149,7 @@ This fork adds an on-device agent layer on top of upstream RikkaHub. Everything 
 
 - **Browser runs headless, permanently** — `isHeadlessInvocation()` always returns `true`; the foreground browser Activity path was removed. The screenshot tooling (`browser_screenshot`, `take_screenshot`, streamers) was **deleted** — do not expect them back. 20 browser tools remain (navigation, DOM/text, cookies, dialogs, viewport, click-and-read).
 - **Per-turn wall-clock limit removed** — a single user request no longer force-ends after 10 minutes of cumulative tool execution. Each individual tool still has its own timeout (plus a 300s per-tool execution cap in the generation loop), and `maxSteps` + the loop guard still bound runaway turns.
-- **Workspace (Linux) environment** — the proot-based workspace in the Features section is a fork addition; upstream does not ship a Linux rootfs environment. `workspace_shell`, background tasks, and stdio MCP all depend on it.
+- **Workspace (Linux) environment** — the proot-based workspace in the Features section is upstream functionality, not a fork addition. This fork builds on it: `ManagedWorkspaceProcess` (structured `command`+`args` spawning, process-tree teardown, lifecycle-lock registration) powers stdio MCP servers inside the workspace, and background-task management was hardened.
 - **Tool guidance in the system prompt** is a single stable line pointing at `search_tools`; no hardcoded tool names are injected.
 
 ### Post-merge fixes (upstream 2.4.5 → this branch)
@@ -162,7 +162,7 @@ These fixes are specific to this fork's history after merging upstream 2.4.5:
 
 ### Open-source note
 
-The fork's own additions (stdio MCP, scheduling, ToolSearch, embedded Termux, the rewritten skills, CI signing) are original work layered on the upstream AGPL-3.0 codebase. See [Credits](#credits) and [License](#license).
+The fork's own additions (stdio MCP, the scheduler rework, ToolSearch, embedded Termux, the rewritten skills, CI signing) are original work layered on the upstream AGPL-3.0 codebase. See [Credits](#credits) and [License](#license).
 
 ---
 

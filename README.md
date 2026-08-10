@@ -33,7 +33,7 @@ Tell it what to do in plain language. The phone runs it in the background while 
 > *"If my home server's disk fills up, ping me."*
 > *"Watch my notifications. If anything from my boss comes in, forward it to Telegram."*
 > *"Find the PDF on my phone that mentions 'invoice' and read me the first paragraph."*
-> *"Take a screenshot every 30 minutes for the next 4 hours so I can see what I actually did all afternoon."*
+> *"Every 30 minutes for the next 4 hours, save the top of my WhatsApp to a file so I can review my afternoon later."*
 > *"Use Termux to build me a webpage listing everything you can do, then open it in my browser."*
 > *"When I plug in headphones at home WiFi after 7pm, start my evening playlist."*
 > *"Open my router's admin page, sign in with the saved password, and tell me which devices are eating the most bandwidth right now."*
@@ -47,7 +47,7 @@ Each of those is a one-line setup.
 
 ### Device Control
 
-Tap, swipe, scroll, type, take screenshots, open apps, adjust brightness/volume, post notifications, check battery/WiFi/signal/location/sensors, read contacts & SMS, send SMS, set wallpaper, read/write NFC tags, sign and encrypt data with the Android Keystore, access external storage and SD cards, and manage ZIP archives. **80+ tools**, all built into Android. Each one stays off until you flip it on.
+Tap, swipe, scroll, type, open apps, adjust brightness/volume, post notifications, check battery/WiFi/signal/location/sensors, read contacts & SMS, send SMS, set wallpaper, read/write NFC tags, sign and encrypt data with the Android Keystore, access external storage and SD cards, and manage ZIP archives. **80+ tools**, all built into Android. Each one stays off until you flip it on.
 
 ### Workflows & Schedules
 
@@ -61,7 +61,7 @@ Talk to your assistant from anywhere. Send a question, photo, PDF, or voice note
 
 ### In-App Browser
 
-A real browser built into the app. The AI clicks through cookie banners, fills search boxes, scrolls, and reads pages back to you. Streams fresh screenshots to your chat after every step. Floating chat pill lets you keep talking to the AI without leaving the page. Built-in article extraction and diff-after-action keep token costs low.
+A real browser built into the app. The AI clicks through cookie banners, fills search boxes, scrolls, and reads pages back to you. Runs headless in the background — no visible window, no screenshot stream. Built-in article extraction and diff-after-action keep token costs low. 20 browser tools: navigation, DOM/text reading, cookies, dialogs, viewport control, click-and-read, and more.
 
 ### Web Search & Fetch
 
@@ -108,6 +108,10 @@ A built-in health checkup. Runs a full audit of permissions, background services
 
 Connect [Model Context Protocol](https://modelcontextprotocol.io) servers and the AI gains whatever tools they expose. The AI can add, update, and manage MCP connections itself — every change is approval-gated.
 
+Three transports supported:
+- **SSE** (`type: sse`) and **Streamable HTTP** (`type: streamable_http`) for remote servers, with OAuth 2.1 authorization built in
+- **stdio** (`type: stdio`) for local MCP servers running inside a [Workspace](#workspace) Linux environment — `command` + `args` run in the workspace rootfs, so `npx`, `uvx`, or a Python script can serve as an MCP server on-device. stdio servers are bound to a fixed workspace, only start when that workspace is ready, never require OAuth, and their command arguments pass through the hardline command guard.
+
 ### Notifications & External Triggers
 
 The AI can read, summarize, and forward incoming notifications from apps you choose. The whitelist starts empty. Notifications the agent posts deep-link back to the conversation that produced them, so a tap opens the full reply even from a cold start. Other apps (Tasker, automation tools, ADB) can hand the agent tasks through the External Automation Intent API.
@@ -121,6 +125,44 @@ Three layers of protection:
 3. **HARDLINE floor** — Genuinely dangerous commands (wipe, reboot, fork bombs, system file destruction) are blocked unconditionally.
 
 Passwords and API keys never hit log files. Cloud backups skip saved credentials. The Telegram bot ignores everyone except your allowlist. Web fetches are refused at DNS resolution if they resolve to a private network address, so the assistant cannot be talked into probing your LAN or a cloud metadata endpoint.
+
+---
+
+## What's different in this fork
+
+This fork adds an on-device agent layer on top of upstream RikkaHub. Everything above describes this fork's combined feature set; this section lists what is **not** in upstream (as of the 2.4.5 merge) and how it changed over time.
+
+### Fork-only capabilities (absent upstream)
+
+| Capability | What it adds |
+|---|---|
+| **Embedded Termux runtime** | A self-contained Termux bootstrap ships inside the APK (debug + release, aarch64 + x86_64), installed on first launch. `termux_run_command` gives the AI a real Linux shell on the host without a separate Termux app. Built by CI, embedded at build time. |
+| **Scheduled agent jobs** | `CronJobScheduler`/`CronJobWorker` — persistent jobs in two modes: `llm` (prompt-based, exact alarms + durable WorkManager) and `direct` (pre-baked `actionsJson`, `setAlarmClock` for precise delivery). Upstream has no scheduling. Includes boot recovery, replay guards, catch-up chains, and an exact-alarm permission fallback. |
+| **stdio MCP servers** | Local MCP servers running inside the Workspace Linux environment (`type: stdio`), alongside the upstream SSE/Streamable-HTTP transports. See [MCP Servers](#mcp-servers). |
+| **ToolSearch** | `search_tools` + `ToolRegistry.search()`: multi-keyword AND matching, relevance scoring, Levenshtein fuzzy fallback for typos, and optional category browsing. Lets the model discover capabilities whose names it doesn't know. |
+| **System prompt rewrite** | Rewrote the core `agent-core` skill (SOUL/HEARTBEAT/TOOLS.md), removed the old `autonomous-agent` skill, added a lazy `code-agent` skill. Initial prompt dropped from ~5,137 to ~3,155 tokens. |
+| **Essential tools for sub-agents** | `get_time_info` + `eval_javascript` are always injected into every assistant (including sub-agents) regardless of tool config, so basic needs never fall back to shell workarounds. |
+| **WebServerHealthWorker** | 30-minute periodic health probe for the embedded web server, mirroring the Telegram bot's health check. |
+| **CI signing & release pipeline** | Fixed debug signing keystore (via GitHub Actions secrets) for consistent in-place updates; a release APK workflow; `build-info.txt` carries version + signing fingerprint + bootstrap hashes. |
+
+### Behavior changes vs upstream
+
+- **Browser runs headless, permanently** — `isHeadlessInvocation()` always returns `true`; the foreground browser Activity path was removed. The screenshot tooling (`browser_screenshot`, `take_screenshot`, streamers) was **deleted** — do not expect them back. 20 browser tools remain (navigation, DOM/text, cookies, dialogs, viewport, click-and-read).
+- **Per-turn wall-clock limit removed** — a single user request no longer force-ends after 10 minutes of cumulative tool execution. Each individual tool still has its own timeout (plus a 300s per-tool execution cap in the generation loop), and `maxSteps` + the loop guard still bound runaway turns.
+- **Workspace (Linux) environment** — the proot-based workspace in the Features section is a fork addition; upstream does not ship a Linux rootfs environment. `workspace_shell`, background tasks, and stdio MCP all depend on it.
+- **Tool guidance in the system prompt** is a single stable line pointing at `search_tools`; no hardcoded tool names are injected.
+
+### Post-merge fixes (upstream 2.4.5 → this branch)
+
+These fixes are specific to this fork's history after merging upstream 2.4.5:
+
+- **Room schema v29** — the 2.4.5 merge accidentally stamped two different v28 schemas (fork's `schedulePrecision` column vs upstream's query indices), crashing upgrades with an identity-hash mismatch. Bumped to v29 with an auto-migration; historical `N.json` schemas preserved.
+- **WorkManager foreground-service declaration** — the `SystemForegroundService` `specialUse` declaration was lost in the merge, crashing every scheduled task with `foregroundServiceType 0x40000000 is not a subset of ...`. Restored and covered by a manifest test.
+- **Cron alarm receivers** — `DirectCronAlarmReceiver`/`ExactCronAlarmReceiver` manifest declarations were lost in the merge; without them AlarmManager broadcasts went nowhere and scheduled jobs never fired in the background. Restored (with the `CronBootReceiver` rescheduling actions) and covered by a manifest test.
+
+### Open-source note
+
+The fork's own additions (stdio MCP, scheduling, ToolSearch, embedded Termux, the rewritten skills, CI signing) are original work layered on the upstream AGPL-3.0 codebase. See [Credits](#credits) and [License](#license).
 
 ---
 

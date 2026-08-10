@@ -176,7 +176,7 @@ val dataSourceModule = module {
     single { AgentRunRepository(get()) }
     single { AgentRunBootRecovery(context = get(), repository = get()) }
 
-    single { McpManager(settingsStore = get(), appScope = get(), filesManager = get(), appEventBus = get()) }
+    single { McpManager(settingsStore = get(), appScope = get(), filesManager = get(), workspaceRepository = get(), appEventBus = get()) }
 
     single {
         GenerationHandler(

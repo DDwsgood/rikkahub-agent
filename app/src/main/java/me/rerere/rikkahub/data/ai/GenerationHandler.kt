@@ -23,6 +23,7 @@ import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -124,9 +125,13 @@ private const val TAG_GH_LOOP = "GenHandlerLoop"
  */
 private const val LOOP_GUARD_REPEAT_THRESHOLD = 3
 
-// The per-turn wall-clock budget was hardcoded here (most recently 10 min). It now lives in
-// ToolRuntimeLimits.turnBudgetMs (default 10 min), user-configurable via Settings -> Termux;
-// every read site below uses that holder directly.
+// There is no per-turn wall-clock budget anymore (historically hardcoded here at 10 min,
+// then configurable via a runtime holder / Settings -> Termux; both are gone). A single user
+// turn terminates when the model finishes or one of the bounded guards fires: the per-tool
+// execution timeout (each tool call is hard-capped at
+// ToolRuntimeLimits.perToolExecutionTimeoutMs so a hanging tool can't stall the turn),
+// maxToolSteps (model loop cap), the loop guard (identical-call detection), or user
+// Stop / coroutine cancellation.
 
 /**
  * Max number of times the loop guard can trip in a single turn before we force-end the
@@ -241,6 +246,59 @@ internal object LoopGuard {
     }
 }
 
+/** Result of a single tool execution under the per-tool execution timeout. */
+internal sealed interface ToolExecutionOutcome {
+    /** The tool produced output within the timeout. */
+    data class Completed(val output: List<UIMessagePart>) : ToolExecutionOutcome
+
+    /** The tool did not finish within [timeoutMs] and was cancelled. */
+    data class TimedOut(val timeoutMs: Long) : ToolExecutionOutcome
+}
+
+/**
+ * Execute a single tool with a hard per-tool execution timeout. If the tool doesn't complete
+ * within [timeoutMs] it is cancelled and [ToolExecutionOutcome.TimedOut] is returned, so a
+ * hanging tool (e.g. fused location awaiting a fix) can't stall the turn indefinitely. This
+ * is a per-tool cap, independent of the (removed) per-turn wall-clock budget: a turn may run
+ * many tool calls, each individually bounded by [timeoutMs].
+ *
+ * The default reads [ToolRuntimeLimits.perToolExecutionTimeoutMs] live so a runtime change
+ * takes effect on the next call. Extracted from [GenerationHandler.generateText] so the
+ * timeout behavior can be unit-tested without an Android Context.
+ */
+internal suspend fun executeToolWithTimeout(
+    toolDef: Tool,
+    args: JsonElement,
+    timeoutMs: Long = ToolRuntimeLimits.perToolExecutionTimeoutMs,
+): ToolExecutionOutcome =
+    when (val result = withTimeoutOrNull(timeoutMs) { toolDef.execute(args) }) {
+        null -> ToolExecutionOutcome.TimedOut(timeoutMs)
+        else -> ToolExecutionOutcome.Completed(result)
+    }
+
+/**
+ * Structured "tool_cancelled_timeout" envelope returned to the model when a single tool hits
+ * the per-tool execution timeout (same JSON style as the old wall-clock envelope). Built by
+ * the caller so the `withTimeoutOrNull` path itself stays free of Android calls and remains
+ * JVM-unit-testable.
+ */
+internal fun buildToolCancelledTimeoutEnvelope(json: Json, timeoutMs: Long): List<UIMessagePart> =
+    listOf(
+        UIMessagePart.Text(
+            json.encodeToString(
+                buildJsonObject {
+                    put("error", JsonPrimitive("tool_cancelled_timeout"))
+                    put(
+                        "detail",
+                        JsonPrimitive(
+                            "tool execution exceeded the ${timeoutMs / 1000}s single-tool timeout"
+                        )
+                    )
+                }
+            )
+        )
+    )
+
 class GenerationHandler(
     private val context: Context,
     private val providerManager: ProviderManager,
@@ -306,20 +364,9 @@ class GenerationHandler(
             if (newParts == msg.parts) msg else msg.copy(parts = newParts)
         }
 
-        val turnStartMs = android.os.SystemClock.elapsedRealtime()
         var loopGuardTripCount = 0
 
         for (stepIndex in 0 until maxSteps) {
-            // Wall-clock cap: any single user turn that has been running longer than the
-            // budget is force-ended, regardless of whether the model wants more steps.
-            // This is the second line of defence after maxSteps; without it a model that
-            // discovers many distinct tool calls (each within the loop guard) can still
-            // run for hours.
-            val elapsedMs = android.os.SystemClock.elapsedRealtime() - turnStartMs
-            if (elapsedMs > ToolRuntimeLimits.turnBudgetMs) {
-                Log.w(TAG, "generateText: wall-clock cap (${ToolRuntimeLimits.turnBudgetMs}ms) hit at step #$stepIndex; force-ending turn")
-                break
-            }
             // Repeated loop-guard trips mean the model is flailing: it bumps into the
             // guard, picks a different tool, that one also gets guarded, and so on. After
             // N trips we just stop — the model is not going to recover, and every extra
@@ -759,32 +806,22 @@ class GenerationHandler(
                                     emit(GenerationChunk.Messages(messages))
                                 }
                             }
-                            // Hard-cap individual tool execution at the remaining wall-clock
-                            // budget so a single tool with its OWN long timeout (camera 5min,
-                            // ssh_exec timeout_seconds=300) can't carry the turn past the
-                            // global ${ToolRuntimeLimits.turnBudgetMs}ms cap. If the budget is
-                            // already blown when we start the tool, return a structured
-                            // wall-clock envelope instead of even attempting.
-                            val remainingMs = ToolRuntimeLimits.turnBudgetMs -
-                                (android.os.SystemClock.elapsedRealtime() - turnStartMs)
-                            val result = if (remainingMs <= 0L) {
-                                Log.w(TAG, "generateText: ${toolDef.name} skipped — wall-clock budget already exceeded")
-                                listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
-                                    put("error", JsonPrimitive("tool_cancelled_wall_clock"))
-                                    put("detail", JsonPrimitive("turn budget exceeded before tool started"))
-                                })))
-                            } else {
-                                withTimeoutOrNull(remainingMs) { toolDef.execute(args) }
-                                    ?: run {
-                                        Log.w(TAG, "generateText: ${toolDef.name} cancelled — wall-clock budget exhausted mid-execution")
-                                        listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
-                                            put("error", JsonPrimitive("tool_cancelled_wall_clock"))
-                                            put(
-                                                "detail",
-                                                JsonPrimitive("tool execution exceeded the ${ToolRuntimeLimits.turnBudgetMs / 1000}s turn budget")
-                                            )
-                                        })))
-                                    }
+                            // Execute the tool, hard-capped by the per-tool execution timeout
+                            // so a hanging tool (e.g. fused location awaiting a fix) can't
+                            // stall the turn indefinitely. This is per-tool, independent of
+                            // the (removed) per-turn wall-clock budget. The remaining
+                            // termination guarantees are: maxToolSteps (model loop cap), the
+                            // loop guard (identical-call detection), and user Stop /
+                            // coroutine cancellation (still interrupts execution mid-tool).
+                            val result = when (val outcome = executeToolWithTimeout(toolDef, args)) {
+                                is ToolExecutionOutcome.Completed -> outcome.output
+                                is ToolExecutionOutcome.TimedOut -> {
+                                    Log.w(
+                                        TAG,
+                                        "generateText: ${toolDef.name} cancelled — per-tool execution timeout (${outcome.timeoutMs}ms) exceeded"
+                                    )
+                                    buildToolCancelledTimeoutEnvelope(json, outcome.timeoutMs)
+                                }
                             }
                             // Upstream tool-output truncation: when the workspace shell is
                             // available, oversized text output is spilled to /tool_outputs/
@@ -796,6 +833,12 @@ class GenerationHandler(
                                 output = maybeTruncateToolOutput(tool.toolCallId, result, hasShellAccess)
                             )
                         }.onFailure {
+                            // Honour cancellation verbatim: runCatching catches Throwable
+                            // including CancellationException (user Stop / turn teardown),
+                            // and rethrowing it here keeps the coroutine's cancellation
+                            // semantics intact instead of turning Stop into a "tool_failed"
+                            // envelope the model would retry against.
+                            if (it is CancellationException) throw it
                             // Stack trace stays in logcat for debugging; the JSON envelope
                             // sent BACK to the LLM gets just the exception's message and a
                             // short class hint. Stuffing the full multi-frame R8-obfuscated

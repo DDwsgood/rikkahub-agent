@@ -25,7 +25,9 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
+import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.JsonInstant
+import me.rerere.workspace.WorkspaceShellStatus
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import kotlin.io.encoding.Base64
@@ -41,6 +43,7 @@ class McpManager(
     private val settingsStore: SettingsStore,
     private val appScope: AppScope,
     private val filesManager: FilesManager,
+    private val workspaceRepository: WorkspaceRepository,
     appEventBus: AppEventBus,
 ) {
     private val okHttpClient = OkHttpClient.Builder()
@@ -79,6 +82,7 @@ class McpManager(
         httpClient = httpClient,
         oauthCoordinator = oauthCoordinator,
         statusStore = statusStore,
+        workspaceRepository = workspaceRepository,
     )
 
     init {
@@ -87,6 +91,34 @@ class McpManager(
                 .map { settings -> settings.mcpServers }
                 .distinctUntilChanged()
                 .collect(sessionRegistry::reconcile)
+        }
+        appScope.launch {
+            // rootfs 安装/重装只改 Room 的 shellStatus, 不触发 mcpServers 的 reconcile;
+            // 若不观察 workspace 状态, stdio 会话会永久停在 WaitingForWorkspace。这里在
+            // 被 stdio MCP 引用的 workspace 进入 READY 时强制连接, READY→INSTALLING/
+            // BROKEN/删除 的反向变化时强制重连 (connectSession 会关闭连接并回到
+            // WaitingForWorkspace)。
+            var lastStatuses: Map<String, String>? = null
+            workspaceRepository.listFlow()
+                .map { workspaces -> workspaces.associate { it.id to it.shellStatus } }
+                .distinctUntilChanged()
+                .collect { statuses ->
+                    val previous = lastStatuses
+                    lastStatuses = statuses
+                    if (previous == null) return@collect // 首帧只建立基线, 不触发任何重连
+                    settingsStore.settingsFlow.value.mcpServers
+                        .filterIsInstance<McpServerConfig.StdioTransportServer>()
+                        .filter { it.commonOptions.enable && it.commonOptions.name.isNotBlank() }
+                        .forEach { server ->
+                            val oldStatus = previous[server.workspaceId]
+                            val newStatus = statuses[server.workspaceId]
+                            // 任何状态变化都强制重连: → READY 时 connectSession 走连接路径,
+                            // → INSTALLING/BROKEN/DISABLED/删除 时走 WaitingForWorkspace 路径
+                            if (oldStatus != newStatus) {
+                                appScope.launch { sessionRegistry.forceResync(server.id) }
+                            }
+                        }
+                }
         }
     }
 
@@ -100,8 +132,11 @@ class McpManager(
     fun getAllAvailableTools(): List<Triple<Uuid, String, McpTool>> {
         val settings = settingsStore.settingsFlow.value
         val assistant = settings.getCurrentAssistant()
+        // 只暴露当前真正 Connected 的 server 工具: 断线 / WaitingForWorkspace / rootfs
+        // 重装期间, 持久化配置里的旧工具不得再注入模型 (调用会失败或指向已关闭的进程)。
+        val connectedServers = sessionRegistry.getConnectedServerIds()
         return settings.mcpServers
-            .filter { it.commonOptions.enable && it.id in assistant.mcpServers }
+            .filter { it.commonOptions.enable && it.id in assistant.mcpServers && it.id in connectedServers }
             .flatMap { server ->
                 server.commonOptions.tools
                     .filter { tool -> tool.enable }

@@ -91,6 +91,27 @@ sealed class McpServerConfig {
             return copy(id = id, commonOptions = commonOptions)
         }
     }
+
+    @Serializable
+    @SerialName("stdio")
+    data class StdioTransportServer(
+        override val id: Uuid = Uuid.random(),
+        override val commonOptions: McpCommonOptions = McpCommonOptions(),
+        /** 目标 workspace 的实体 id: rootfs 就绪(READY)后在此 workspace 内启动 MCP server 进程 */
+        val workspaceId: String = "",
+        /** 在 workspace rootfs 内执行的命令（绝对路径或 PATH 可解析名称） */
+        val command: String = "",
+        /** 结构化 argv，不经 shell 拼接 */
+        val args: List<String> = emptyList(),
+        /** rootfs 内工作目录（相对 /workspace 的路径），空则默认 /workspace */
+        val cwd: String = "",
+        /** 附加环境变量，覆盖基础 HOME/PATH/TERM/LANG 环境 */
+        val env: Map<String, String> = emptyMap(),
+    ) : McpServerConfig() {
+        override fun clone(id: Uuid, commonOptions: McpCommonOptions): McpServerConfig {
+            return copy(id = id, commonOptions = commonOptions)
+        }
+    }
 }
 
 /** MCP Server 的连接地址（作为 OAuth 的 canonical resource 标识）。 */
@@ -98,4 +119,5 @@ val McpServerConfig.serverUrl: String
     get() = when (this) {
         is McpServerConfig.SseTransportServer -> url
         is McpServerConfig.StreamableHTTPServer -> url
+        is McpServerConfig.StdioTransportServer -> "stdio:$command"
     }

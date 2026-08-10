@@ -15,6 +15,28 @@ interface WorkspaceShellRunner {
      * Throws IllegalStateException on setup failure (rootfs / proot / loader missing).
      */
     fun start(context: WorkspaceShellContext): Process
+
+    /**
+     * Launch [context.command] (the executable) with a structured argv list — no shell
+     * evaluation — merging [extraEnv] into the process environment. Used by long-lived
+     * duplex processes (e.g. stdio MCP servers) where the parent reads/writes the
+     * child's stdin/stdout as a byte channel. [context.command] must resolve either as
+     * an absolute path or via the child's PATH. Throws IllegalStateException on setup
+     * failure (rootfs / proot / loader missing).
+     *
+     * The default implementation execs the command directly on the host.
+     * [ProotShellRunner] overrides it to run inside the proot rootfs.
+     */
+    fun startStructured(
+        context: WorkspaceShellContext,
+        args: List<String>,
+        extraEnv: Map<String, String>,
+    ): Process =
+        ProcessBuilder(listOf(context.command) + args)
+            .directory(context.workingDir)
+            .redirectErrorStream(false)
+            .apply { extraEnv.forEach { (k, v) -> environment()[k] = v } }
+            .start()
 }
 
 data class WorkspaceShellContext(

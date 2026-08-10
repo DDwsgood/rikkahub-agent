@@ -17,17 +17,10 @@ object TermuxDefaults {
     /** Hard ceiling: 10 min (600 s). Same as BrowserToolDefaults' per-tool max. */
     const val MAX_COMMAND_TIMEOUT_MS     = 600_000L  // 10 min
 
-    // --- Per-turn wall-clock budget (app-wide) ---------------------------------------------
-    // Default is 10 min matching the constant that was in GenerationHandler.kt.
-    /** Default per-turn wall-clock budget in ms. */
-    const val DEFAULT_TURN_BUDGET_MS = 10L * 60L * 1_000L  // 10 min
-    const val MIN_TURN_BUDGET_MS     =  1L * 60L * 1_000L  //  1 min
-    const val MAX_TURN_BUDGET_MS     = 60L * 60L * 1_000L  // 60 min
-
     // --- Per-turn tool-call step cap (app-wide) --------------------------------------------
-    // Default is the 32 that used to be GenerationHandler's hardcoded maxSteps. The ceiling is
-    // the backstop: the wall-clock turn budget is the primary limit, so this only has to stop a
-    // runaway loop from iterating without bound.
+    // Default is the 32 that used to be GenerationHandler's hardcoded maxSteps. This is now
+    // the primary hard bound on turn length (the wall-clock budget was removed); combined
+    // with the loop guard it stops a runaway loop from iterating without bound.
     const val DEFAULT_MAX_TOOL_STEPS = 32
     const val MIN_MAX_TOOL_STEPS     =  1
     const val MAX_MAX_TOOL_STEPS     = 500
@@ -61,9 +54,6 @@ object TermuxDefaults {
 
     fun clampCommandTimeoutMs(ms: Long): Long =
         ms.coerceIn(MIN_COMMAND_TIMEOUT_MS, MAX_COMMAND_TIMEOUT_MS)
-
-    fun clampTurnBudgetMs(ms: Long): Long =
-        ms.coerceIn(MIN_TURN_BUDGET_MS, MAX_TURN_BUDGET_MS)
 
     fun clampMaxToolSteps(steps: Int): Int =
         steps.coerceIn(MIN_MAX_TOOL_STEPS, MAX_MAX_TOOL_STEPS)

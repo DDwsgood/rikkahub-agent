@@ -339,6 +339,43 @@ class HardlineCommandGuardTest {
     }
 
     // -----------------------------------------------------------------------
+    // argv-aware check (structured exec, e.g. stdio MCP servers)
+    // -----------------------------------------------------------------------
+
+    @Test fun `argv check blocks shell -c reboot`() {
+        // 拼接成文本是 "/bin/sh -c reboot", SHELL_EVAL_OPEN 要求 -c 后有引号, 识别不了;
+        // argv-aware 检查必须逐元素 + shell -c 脚本识别都命中
+        assertArgvBlocked("/bin/sh", listOf("-c", "reboot"))
+        assertArgvBlocked("sh", listOf("-c", "reboot"))
+        assertArgvBlocked("bash", listOf("-c", "shutdown -h now"))
+        assertArgvBlocked("busybox", listOf("sh", "-c", "poweroff"))
+    }
+
+    @Test fun `argv check blocks bash -c mkfs`() {
+        assertArgvBlocked("bash", listOf("-c", "mkfs.ext4 /dev/sdb1"))
+        assertArgvBlocked("sh", listOf("-c", "mkfs /dev/sdb1"))
+    }
+
+    @Test fun `argv check blocks rm via shell -c script`() {
+        assertArgvBlocked("bash", listOf("-c", "rm -rf /"))
+        // 脚本被拆成多个 argv 元素: 逐元素检查漏掉, 靠 -c 脚本重组兜住
+        assertArgvBlocked("sh", listOf("-c", "rm", "-rf", "/"))
+    }
+
+    @Test fun `argv check blocks dangerous standalone executable or arg`() {
+        assertArgvBlocked("/usr/sbin/shutdown", listOf("-h", "now"))
+        assertArgvBlocked("reboot", emptyList())
+        // 编码负载管道进 shell: 作为单个 argv 也会被命中
+        assertArgvBlocked("sh", listOf("-c", "echo cm0gLXJmIC8= | base64 -d | sh"))
+    }
+
+    @Test fun `argv check allows benign servers`() {
+        assertArgvAllowed("node", listOf("/usr/bin/mcp-server.js"))
+        assertArgvAllowed("python3", listOf("-m", "mcp_server", "--port", "8080"))
+        assertArgvAllowed("ls", listOf("/var/log"))
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 
@@ -351,6 +388,23 @@ class HardlineCommandGuardTest {
         val reason = HardlineCommandGuard.checkCommand(cmd)
         assertEquals(
             "expected '$cmd' NOT to match any hardline pattern, but matched: $reason",
+            null,
+            reason
+        )
+    }
+
+    private fun assertArgvBlocked(command: String, args: List<String>) {
+        val reason = HardlineCommandGuard.checkCommandArgv(command, args)
+        assertNotNull(
+            "expected argv '$command ${args.joinToString(" ")}' to match a hardline pattern",
+            reason
+        )
+    }
+
+    private fun assertArgvAllowed(command: String, args: List<String>) {
+        val reason = HardlineCommandGuard.checkCommandArgv(command, args)
+        assertEquals(
+            "expected argv '$command ${args.joinToString(" ")}' NOT to match any hardline pattern, but matched: $reason",
             null,
             reason
         )

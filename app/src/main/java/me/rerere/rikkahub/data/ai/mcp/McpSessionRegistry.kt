@@ -6,6 +6,7 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.util.StringValues
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.client.SseClientTransport
+import io.modelcontextprotocol.kotlin.sdk.client.StdioClientTransport
 import io.modelcontextprotocol.kotlin.sdk.client.StreamableHttpClientTransport
 import io.modelcontextprotocol.kotlin.sdk.shared.AbstractTransport
 import io.modelcontextprotocol.kotlin.sdk.shared.RequestOptions
@@ -13,6 +14,8 @@ import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.ListToolsRequest
+import io.modelcontextprotocol.kotlin.sdk.types.PaginatedRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
@@ -33,10 +36,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.io.asSink
+import kotlinx.io.asSource
+import kotlinx.io.buffered
 import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.InputSchema
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.workspace.ManagedWorkspaceProcess
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
@@ -45,6 +54,9 @@ private const val TAG = "McpSessionRegistry"
 private const val MAX_RECONNECT_ATTEMPTS = 5
 private const val BASE_RECONNECT_DELAY_MS = 1000L
 private const val MAX_RECONNECT_DELAY_MS = 30000L
+
+/** tools/list 分页安全上限: 防止恶意/异常 server 返回无限 nextCursor 死循环 */
+private const val MAX_TOOL_LIST_PAGES = 10
 
 /** 单个 MCP Server 的全部运行时状态。 */
 private class McpSession(initialConfig: McpServerConfig) {
@@ -57,6 +69,10 @@ private class McpSession(initialConfig: McpServerConfig) {
     @Volatile
     var connectedConfig: McpServerConfig? = null
 
+    /** stdio 传输对应的托管进程; 传输关闭时由会话负责回收。 */
+    @Volatile
+    var managedProcess: ManagedWorkspaceProcess? = null
+
     val lifecycleMutex = Mutex()
     var reconnectJob: Job? = null
     var reconnectAttempt: Int = 0
@@ -67,6 +83,9 @@ private sealed interface ConnectResult {
     data object Stale : ConnectResult
     data object NeedsAuthorization : ConnectResult
     data object Failed : ConnectResult
+
+    /** workspace 未 READY, 本次不连接; 不触发重连退避, 等下一次 sync/reconcile 再试。 */
+    data object WaitingForWorkspace : ConnectResult
 }
 
 internal class McpClientUnavailableException(message: String) : IllegalStateException(message)
@@ -99,10 +118,24 @@ internal class McpSessionRegistry(
     private val httpClient: HttpClient,
     private val oauthCoordinator: McpOAuthCoordinator,
     private val statusStore: McpStatusStore,
+    private val workspaceRepository: WorkspaceRepository,
 ) {
     private val sessions = ConcurrentHashMap<Uuid, McpSession>()
 
     fun getClient(configId: Uuid): Client? = sessions[configId]?.client
+
+    /**
+     * 当前真正已连接 (有 client 且状态为 Connected) 的 server id 集合。
+     * 运行时工具表 (McpManager.getAllAvailableTools) 只暴露这些 server 的工具 ——
+     * 断线 / Waiting / workspace 重装期间持久化配置里的旧工具仍在, 但不能注入模型。
+     */
+    fun getConnectedServerIds(): Set<Uuid> {
+        val connected = statusStore.status.value
+        return sessions.entries
+            .asSequence()
+            .filter { (id, session) -> session.client != null && connected[id] == McpStatus.Connected }
+            .mapTo(mutableSetOf()) { it.key }
+    }
 
     fun getStatus(configId: Uuid): Flow<McpStatus> = statusStore.get(configId)
 
@@ -260,23 +293,40 @@ internal class McpSessionRegistry(
                 return@withLock ConnectResult.Success
             }
 
+            // stdio 依赖的 workspace 未就绪: 不启动进程, 关闭已有连接, 标记 WaitingForWorkspace。
+            // 下次 reconcile / syncAll / mcp_test 时 workspace 若已 READY 会自动连接。
+            if (config is McpServerConfig.StdioTransportServer &&
+                !workspaceRepository.isStdioWorkspaceReady(config.workspaceId)
+            ) {
+                val idleClient = session.client
+                session.client = null
+                session.connectedConfig = null
+                idleClient?.let { closeClient(it, config.commonOptions.name) }
+                closeManagedProcess(session)
+                statusStore.update(config.id, McpStatus.WaitingForWorkspace)
+                return@withLock ConnectResult.WaitingForWorkspace
+            }
+
             statusStore.update(config.id, McpStatus.Connecting)
             val oldClient = session.client
             session.client = null
             session.connectedConfig = null
             oldClient?.let { closeClient(it, config.commonOptions.name) }
+            // 兜底: 即使旧 transport 的 onClose 没有触发, 也要回收旧的 stdio 进程
+            closeManagedProcess(session)
 
             val sdkClient = createSdkClient(config)
-            val transport = createTransport(config)
-            installTransportCallbacks(config, sdkClient, transport)
-
             try {
+                val transport = createTransport(config, session)
+                installTransportCallbacks(config, sdkClient, transport, session)
+
                 sdkClient.connect(transport)
                 val syncedConfig = syncTools(session, sdkClient, config)
                 if (sessions[config.id] !== session ||
                     !hasSameConnectionParameters(config, syncedConfig)
                 ) {
                     closeClient(sdkClient, config.commonOptions.name)
+                    closeManagedProcess(session)
                     return@withLock ConnectResult.Stale
                 }
 
@@ -289,9 +339,11 @@ internal class McpSessionRegistry(
                 ConnectResult.Success
             } catch (e: CancellationException) {
                 closeClient(sdkClient, config.commonOptions.name)
+                closeManagedProcess(session)
                 throw e
             } catch (e: Exception) {
                 closeClient(sdkClient, config.commonOptions.name)
+                closeManagedProcess(session)
                 Log.e(TAG, "Failed to connect MCP server ${config.id}", e)
                 if (oauthCoordinator.needsAuthorization(config, e)) {
                     statusStore.update(config.id, McpStatus.NeedsAuthorization)
@@ -345,7 +397,7 @@ internal class McpSessionRegistry(
         sdkClient: Client,
         connectionConfig: McpServerConfig,
     ): McpServerConfig {
-        val serverTools = sdkClient.listTools().tools
+        val serverTools = listAllTools(sdkClient)
         Log.i(TAG, "Synced ${serverTools.size} tools from ${connectionConfig.id}")
         var updatedConfig = connectionConfig
         settingsStore.update { old ->
@@ -362,12 +414,38 @@ internal class McpSessionRegistry(
         return updatedConfig
     }
 
+    /**
+     * 拉取 server 的全部工具, 自动翻页 (ListToolsResult.nextCursor)。
+     * 翻页循环是防环的: 重复 cursor 立即失败, 超过 MAX_TOOL_LIST_PAGES 页仍有 nextCursor
+     * 时明确抛错 (由调用方转成 Error 状态) 而不是静默截断, 防止模型拿到不完整工具表。
+     */
+    private suspend fun listAllTools(sdkClient: Client): List<Tool> =
+        paginateTools { cursor ->
+            val page = if (cursor == null) {
+                sdkClient.listTools()
+            } else {
+                sdkClient.listTools(ListToolsRequest(PaginatedRequestParams(cursor = cursor)))
+            }
+            ToolListPage(tools = page.tools, nextCursor = page.nextCursor)
+        }
+
     private fun installTransportCallbacks(
         config: McpServerConfig,
         sdkClient: Client,
         transport: AbstractTransport,
+        session: McpSession,
     ) {
+        // stdio 进程的生命周期挂在 transport 的 onClose 上: 无论传输是主动关闭
+        // (closeClient/closeSession) 还是进程自然退出导致 EOF, 都在这里回收进程。
+        // 这里捕获"本 transport 安装时挂到 session 上的那个进程", 并只在 session 当前
+        // 仍持有同一进程时才回收 —— 旧传输延迟触发的 onClose 绝不能误杀重连后的新进程
+        // (重连临界区 session.client 为 null, 不能用作唯一判断依据)。
+        val installedProcess = session.managedProcess
         transport.onClose {
+            if (session.managedProcess === installedProcess) {
+                session.managedProcess = null
+                installedProcess?.close()
+            }
             Log.i(TAG, "Transport closed for ${config.id} (${config.commonOptions.name})")
             requestReconnect(config.id, sdkClient)
         }
@@ -375,6 +453,13 @@ internal class McpSessionRegistry(
             Log.e(TAG, "Transport error for ${config.id}: ${error.message}")
             if (!isSseStreamGiveUpError(error)) requestReconnect(config.id, sdkClient)
         }
+    }
+
+    /** 无条件关闭并清空 session 的托管进程 (会话拆除 / 重连前清理用)。 */
+    private fun closeManagedProcess(session: McpSession) {
+        val process = session.managedProcess ?: return
+        session.managedProcess = null
+        process.close()
     }
 
     /** 合并重复的 onError/onClose 通知，并保证每个 Session 最多只有一个重连任务。 */
@@ -399,6 +484,7 @@ internal class McpSessionRegistry(
                     session.client = null
                     session.connectedConfig = null
                     failedClient?.let { closeClient(it, session.config.commonOptions.name) }
+                    closeManagedProcess(session)
                     statusStore.update(configId, McpStatus.Error("连接断开，已达最大重连次数"))
                     return@withLock
                 }
@@ -451,6 +537,7 @@ internal class McpSessionRegistry(
             session.client = null
             session.connectedConfig = null
             sdkClient?.let { closeClient(it, session.config.commonOptions.name) }
+            closeManagedProcess(session)
         }
     }
 
@@ -463,7 +550,14 @@ internal class McpSessionRegistry(
         clientInfo = Implementation(name = config.commonOptions.name, version = "1.0")
     )
 
-    private fun createTransport(config: McpServerConfig): AbstractTransport = when (config) {
+    /** 检查 stdio 配置依赖的 workspace 是否已就绪 (存在且 shellStatus == READY)。 */
+    private suspend fun isStdioWorkspaceReady(workspaceId: String): Boolean =
+        workspaceRepository.isStdioWorkspaceReady(workspaceId)
+
+    private suspend fun createTransport(
+        config: McpServerConfig,
+        session: McpSession,
+    ): AbstractTransport = when (config) {
         is McpServerConfig.SseTransportServer -> SseClientTransport(
             urlString = config.url,
             client = httpClient,
@@ -474,6 +568,41 @@ internal class McpSessionRegistry(
             url = config.url,
             client = httpClient,
             requestBuilder = { appendResolvedHeaders(config) },
+        )
+
+        is McpServerConfig.StdioTransportServer -> createStdioTransport(config, session)
+    }
+
+    /**
+     * 在 workspace rootfs 内启动 stdio MCP server 进程并包装为 SDK 传输。
+     * 进程挂到 [session.managedProcess], 由传输 onClose 统一回收。
+     */
+    private suspend fun createStdioTransport(
+        config: McpServerConfig.StdioTransportServer,
+        session: McpSession,
+    ): StdioClientTransport {
+        // 纵深防御: 从备份/导入恢复的 settings.json 也可能带恶意 command, 启动前再过一次
+        // argv-aware 硬线检查 (逐元素 + shell -c 脚本识别, 防 `/bin/sh -c reboot` 拼接绕过)
+        val blocked = HardlineCommandGuard.checkCommandArgv(config.command, config.args)
+        if (blocked != null) {
+            throw IllegalStateException("stdio command blocked by hardline guard: $blocked")
+        }
+        // 启动 + 向 session 安装所有权是不可取消的原子交接: 进程一旦在 WorkspaceManager
+        // 注册, 即使外层协程在结果交还前被取消, 也必须先挂到 session.managedProcess 让
+        // 会话的取消/拆除路径能回收它, 否则调用方拿不到引用而泄漏进程。
+        val process = withContext(NonCancellable) {
+            workspaceRepository.startManagedMcpProcess(
+                workspaceId = config.workspaceId,
+                command = config.command,
+                args = config.args,
+                cwd = config.cwd,
+                env = config.env,
+            ).also { session.managedProcess = it }
+        }
+        return StdioClientTransport(
+            input = process.inputStream.asSource().buffered(),
+            output = process.outputStream.asSink().buffered(),
+            error = process.errorStream.asSource().buffered(),
         )
     }
 
@@ -502,16 +631,31 @@ internal data class McpConnectionKey(
     val serverUrl: String,
     val clientName: String,
     val headers: List<Pair<String, String>>,
+    /** stdio 传输专用: argv 变化会触发重连 */
+    val stdioArgs: List<String> = emptyList(),
+    /** stdio 传输专用: 工作目录变化会触发重连 */
+    val stdioCwd: String = "",
+    /** stdio 传输专用: 环境变量变化会触发重连 (key 排序后的稳定视图) */
+    val stdioEnv: List<Pair<String, String>> = emptyList(),
 )
 
 internal fun McpServerConfig.connectionKey(): McpConnectionKey = McpConnectionKey(
     transportType = when (this) {
         is McpServerConfig.SseTransportServer -> "sse"
         is McpServerConfig.StreamableHTTPServer -> "streamable_http"
+        is McpServerConfig.StdioTransportServer -> "stdio"
     },
     serverUrl = serverUrl,
     clientName = commonOptions.name,
     headers = resolvedHeaders(),
+    stdioArgs = (this as? McpServerConfig.StdioTransportServer)?.args ?: emptyList(),
+    stdioCwd = (this as? McpServerConfig.StdioTransportServer)?.cwd ?: "",
+    stdioEnv = (this as? McpServerConfig.StdioTransportServer)
+        ?.env
+        ?.entries
+        ?.sortedBy { it.key }
+        ?.map { it.key to it.value }
+        ?: emptyList(),
 )
 
 private fun hasSameConnectionParameters(
@@ -530,9 +674,49 @@ private fun McpServerConfig.resolvedHeaders(): List<Pair<String, String>> {
     }
 }
 
-private fun mergeTools(storedTools: List<McpTool>, serverTools: List<Tool>): List<McpTool> {
+/** tools/list 翻页的一个页面。 */
+internal data class ToolListPage(
+    val tools: List<Tool>,
+    val nextCursor: String?,
+)
+
+/**
+ * 防环的翻页循环: 维护 seenCursors, 重复 cursor 立即失败; 达到 [MAX_TOOL_LIST_PAGES]
+ * 页上限仍有 nextCursor 时抛错 (明确标记而非静默 partial)。抽成纯函数便于单测。
+ */
+internal suspend fun paginateTools(fetchPage: suspend (cursor: String?) -> ToolListPage): List<Tool> {
+    val seenCursors = HashSet<String>()
+    var cursor: String? = null
+    val tools = mutableListOf<Tool>()
+    var pages = 0
+    while (true) {
+        if (pages >= MAX_TOOL_LIST_PAGES) {
+            throw IllegalStateException(
+                "MCP server paginated beyond $MAX_TOOL_LIST_PAGES pages; aborting tools/list"
+            )
+        }
+        if (cursor != null && !seenCursors.add(cursor)) {
+            throw IllegalStateException(
+                "MCP server repeated a pagination cursor (${cursor.take(32)}…); aborting tools/list"
+            )
+        }
+        val page = fetchPage(cursor)
+        tools += page.tools
+        cursor = page.nextCursor
+        pages++
+        if (cursor.isNullOrBlank()) break
+    }
+    return tools
+}
+
+internal fun mergeTools(storedTools: List<McpTool>, serverTools: List<Tool>): List<McpTool> {
     val toolsByName = storedTools.associateBy { it.name }
-    return serverTools.map { serverTool ->
+    // 同一 server 返回重复名工具时保留第一个, 丢弃后续重复项, 避免运行时工具表出现同名冲突
+    val seenNames = HashSet<String>()
+    return serverTools.mapNotNull { serverTool ->
+        if (!seenNames.add(serverTool.name)) {
+            return@mapNotNull null
+        }
         toolsByName[serverTool.name]?.copy(
             description = serverTool.description,
             inputSchema = serverTool.inputSchema.toSchema(),

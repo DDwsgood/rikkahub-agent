@@ -16,18 +16,17 @@ class SettingTermuxViewModel(
 ) : ViewModel() {
 
     /**
-     * Combined settings state. Nested [combine] calls stay within the 5-argument typed
-     * overloads to avoid the intersection-type warning from the vararg overload.
+     * Combined settings state. Nested [combine] calls stay within the typed overloads (max 5
+     * args) to avoid the intersection-type warning from the vararg overload.
      */
     val config: StateFlow<TermuxRuntimeConfig> = combine(
         combine(
             prefs.commandTimeoutFlow(),
-            prefs.turnBudgetFlow(),
             prefs.verifyTimeoutFlow(),
             prefs.defaultWorkingDirFlow(),
             prefs.maxStdoutFlow(),
-        ) { commandTimeout, turnBudget, verifyTimeout, workingDir, maxStdout ->
-            Partial(commandTimeout, turnBudget, verifyTimeout, workingDir, maxStdout)
+        ) { commandTimeout, verifyTimeout, workingDir, maxStdout ->
+            Partial(commandTimeout, verifyTimeout, workingDir, maxStdout)
         },
         prefs.maxStderrFlow(),
         prefs.aptWrapEnabledFlow(),
@@ -35,7 +34,6 @@ class SettingTermuxViewModel(
     ) { partial, maxStderr, aptWrap, maxToolSteps ->
         TermuxRuntimeConfig(
             commandTimeoutMs  = partial.commandTimeoutMs,
-            turnBudgetMs      = partial.turnBudgetMs,
             maxToolSteps      = maxToolSteps,
             verifyTimeoutMs   = partial.verifyTimeoutMs,
             defaultWorkingDir = partial.defaultWorkingDir,
@@ -48,7 +46,6 @@ class SettingTermuxViewModel(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = TermuxRuntimeConfig(
             commandTimeoutMs  = TermuxDefaults.DEFAULT_COMMAND_TIMEOUT_MS,
-            turnBudgetMs      = TermuxDefaults.DEFAULT_TURN_BUDGET_MS,
             maxToolSteps      = TermuxDefaults.DEFAULT_MAX_TOOL_STEPS,
             verifyTimeoutMs   = TermuxDefaults.DEFAULT_VERIFY_TIMEOUT_MS,
             defaultWorkingDir = TermuxDefaults.DEFAULT_WORKING_DIR,
@@ -63,11 +60,6 @@ class SettingTermuxViewModel(
     /** [seconds] is the UI display unit for command timeout. Clamping in [TermuxPreferences]. */
     fun setCommandTimeoutSeconds(seconds: Long) {
         viewModelScope.launch { prefs.setCommandTimeoutMs(seconds * 1_000L) }
-    }
-
-    /** [minutes] is the UI display unit for turn budget. Clamping in [TermuxPreferences]. */
-    fun setTurnBudgetMinutes(minutes: Long) {
-        viewModelScope.launch { prefs.setTurnBudgetMs(minutes * 60_000L) }
     }
 
     /** Tool-call iterations allowed in one turn (issue #22). Clamping in [TermuxPreferences]. */
@@ -99,7 +91,6 @@ class SettingTermuxViewModel(
     // Private intermediate holder to avoid 7-flow combine vararg.
     private data class Partial(
         val commandTimeoutMs: Long,
-        val turnBudgetMs: Long,
         val verifyTimeoutMs: Long,
         val defaultWorkingDir: String,
         val maxStdoutBytes: Int,

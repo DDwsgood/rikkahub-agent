@@ -28,4 +28,7 @@ sealed class McpStatus {
 
     /** 正在进行 OAuth 授权流程（等待浏览器回调 / 交换令牌）。 */
     data object Authorizing : McpStatus()
+
+    /** stdio 传输依赖的 workspace 尚未 READY（rootfs 未安装），等待其就绪后自动连接。 */
+    data object WaitingForWorkspace : McpStatus()
 }

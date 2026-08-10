@@ -8,10 +8,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.BackgroundStatus
+import me.rerere.workspace.ManagedWorkspaceProcess
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.WorkspaceCommandResult
@@ -119,6 +121,9 @@ class WorkspaceRepository(
     ): Boolean {
         val workspace = dao.getById(id) ?: return false
         updateShellState(workspace, WorkspaceShellStatus.INSTALLING.name)
+        // 重装会替换整个 rootfs: 先杀掉该 workspace 内所有托管进程 (stdio MCP server),
+        // 避免它们继续持有即将被替换的旧 rootfs 的 fd
+        manager.closeAllManagedProcesses(workspace.root)
         try {
             // runInterruptible 让协程取消转成线程中断, 打断 install 内阻塞的下载/解压循环
             runInterruptible(Dispatchers.IO) {
@@ -308,6 +313,42 @@ class WorkspaceRepository(
         }
     }
 
+    /** stdio MCP 依赖的 workspace 是否就绪: 存在且 shellStatus == READY (rootfs 已安装)。 */
+    suspend fun isStdioWorkspaceReady(workspaceId: String): Boolean {
+        if (workspaceId.isBlank()) return false
+        val workspace = dao.getById(workspaceId) ?: return false
+        return workspace.shellStatus == WorkspaceShellStatus.READY.name
+    }
+
+    /**
+     * 在 [workspaceId] 的 rootfs 内启动一个长生命周期双工进程 (stdio MCP server)。
+     * 要求 workspace 存在且 shellStatus == READY, 否则抛 [IllegalStateException]。
+     * 返回的 [ManagedWorkspaceProcess] 由调用方负责读写与 close。
+     */
+    suspend fun startManagedMcpProcess(
+        workspaceId: String,
+        command: String,
+        args: List<String>,
+        cwd: String,
+        env: Map<String, String>,
+    ): ManagedWorkspaceProcess {
+        val workspace = dao.getById(workspaceId) ?: error("Workspace not found: $workspaceId")
+        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
+            throw IllegalStateException(
+                "Workspace ${workspace.name} is not ready (shellStatus=${workspace.shellStatus}); " +
+                    "install the rootfs before starting a stdio MCP server"
+            )
+        }
+        // 启动+注册是不可取消的原子交接: runInterruptible 会在进程已启动并注册到
+        // WorkspaceManager 之后、结果交还调用方之前, 因外层协程取消抛出 CancellationException,
+        // 调用方永远拿不到 ManagedWorkspaceProcess, session.managedProcess 不会被设置, 进程
+        // 泄漏。NonCancellable 让启动+注册要么完整发生, 要么未发生; Dispatchers.IO 仍只负责
+        // 把阻塞的进程启动挪到后台线程。
+        return withContext(NonCancellable + Dispatchers.IO) {
+            manager.startManagedProcess(workspace.root, command, args, cwd, env)
+        }
+    }
+
     suspend fun backgroundStatus(id: String, taskId: String): BackgroundStatus? {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         return withContext(Dispatchers.IO) {
@@ -336,6 +377,10 @@ class WorkspaceRepository(
             manager.deleteWorkspace(workspace.root)
         }
         cleanupAssistantReferences(id)
+        // workspace 已删除: 引用它的 stdio MCP 配置从此不可能连接, 禁用它们, 避免永久
+        // 悬空配置 (会话停在 WaitingForWorkspace) 和残留的旧工具表。禁用会触发 McpManager
+        // 的 settings reconcile 关闭对应会话。
+        disableStdioMcpServersForWorkspace(id)
         return true
     }
 
@@ -350,6 +395,23 @@ class WorkspaceRepository(
                     }
                 }
             )
+        }
+    }
+
+    /** 禁用所有引用 [workspaceId] 且当前启用的 stdio MCP 配置。 */
+    private suspend fun disableStdioMcpServersForWorkspace(workspaceId: String) {
+        settingsStore.update { settings ->
+            val updated = settings.mcpServers.map { server ->
+                if (server is McpServerConfig.StdioTransportServer &&
+                    server.workspaceId == workspaceId &&
+                    server.commonOptions.enable
+                ) {
+                    server.clone(commonOptions = server.commonOptions.copy(enable = false))
+                } else {
+                    server
+                }
+            }
+            settings.copy(mcpServers = updated)
         }
     }
 

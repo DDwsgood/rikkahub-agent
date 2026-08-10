@@ -37,13 +37,16 @@ object McpApprovalRenderer {
     private fun renderAdd(args: JsonObject): String {
         val name = args["name"]?.jsonPrimitive?.contentOrNull ?: "(unnamed)"
         val transport = args["transport"]?.jsonPrimitive?.contentOrNull ?: "(unknown)"
-        val url = args["url"]?.jsonPrimitive?.contentOrNull ?: "(no url)"
         val enabled = args["enabled"]?.jsonPrimitive?.booleanOrNull ?: true
         val headers = parseHeadersForDisplay(args)
         return buildString {
             append("Add MCP server \"$name\"\n\n")
             append("Transport: $transport\n")
-            append("URL: $url\n")
+            if (transport.equals("stdio", ignoreCase = true)) {
+                appendStdioBlock(this, args)
+            } else {
+                append("URL: ").append(args["url"]?.jsonPrimitive?.contentOrNull ?: "(no url)").append('\n')
+            }
             appendHeadersBlock(this, headers)
             append("\nEnabled: ${if (enabled) "yes" else "no"}")
         }
@@ -52,16 +55,49 @@ object McpApprovalRenderer {
     private fun renderUpdate(args: JsonObject): String {
         val name = args["name"]?.jsonPrimitive?.contentOrNull ?: "(unnamed)"
         val transport = args["transport"]?.jsonPrimitive?.contentOrNull ?: "(unknown)"
-        val url = args["url"]?.jsonPrimitive?.contentOrNull ?: "(no url)"
         val enabled = args["enabled"]?.jsonPrimitive?.booleanOrNull ?: true
         val headers = parseHeadersForDisplay(args)
         return buildString {
             append("Update MCP server \"$name\"\n\n")
             append("Transport: $transport\n")
-            append("URL: $url\n")
+            if (transport.equals("stdio", ignoreCase = true)) {
+                appendStdioBlock(this, args)
+            } else {
+                append("URL: ").append(args["url"]?.jsonPrimitive?.contentOrNull ?: "(no url)").append('\n')
+            }
             appendHeadersBlock(this, headers)
             append("\nEnabled: ${if (enabled) "yes" else "no"}")
         }
+    }
+
+    /**
+     * stdio 审批块: 展示 workspace/command/args/cwd, 环境变量只列 key, 值一律 `***`
+     * (与 header 脱敏同一策略 — 值会随配置持久化, 但绝不能出现在审批提示里)。
+     */
+    private fun appendStdioBlock(out: StringBuilder, args: JsonObject) {
+        val workspaceId = args["workspace_id"]?.jsonPrimitive?.contentOrNull ?: "(none)"
+        val command = args["command"]?.jsonPrimitive?.contentOrNull ?: "(none)"
+        val argsList = runCatching { args["args"]?.jsonArray }.getOrNull()
+        val cwd = args["cwd"]?.jsonPrimitive?.contentOrNull
+        val envObj = runCatching { args["env"]?.jsonObject }.getOrNull()
+        out.append("Workspace: ").append(workspaceId).append('\n')
+        out.append("Command: ").append(command)
+        if (!argsList.isNullOrEmpty()) {
+            out.append("\nArgs:")
+            argsList.forEach { arg ->
+                out.append("\n  ").append(arg.jsonPrimitive.contentOrNull ?: "")
+            }
+        }
+        if (!cwd.isNullOrBlank()) {
+            out.append("\nWorking dir: ").append(cwd)
+        }
+        if (!envObj.isNullOrEmpty()) {
+            out.append("\nEnv:")
+            envObj.keys.sorted().forEach { key ->
+                out.append("\n  ").append(key).append(" = ***")
+            }
+        }
+        out.append('\n')
     }
 
     private fun renderDelete(args: JsonObject): String {

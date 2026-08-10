@@ -50,7 +50,7 @@ import org.koin.androidx.compose.koinViewModel
  *
  *  1. Status — integration indicators with tap actions (Termux installed, RUN_COMMAND
  *     permission request, Open Termux, verify smoke test).
- *  2. Timeouts — command timeout, per-turn budget (all tools), verify smoke-test timeout.
+ *  2. Timeouts — command timeout, max tool steps per turn, verify smoke-test timeout.
  *  3. Defaults & limits — working directory, stdout/stderr caps, apt-wrap toggle.
  *  4. Help — expandable setup instructions for allow-external-apps=true.
  */
@@ -243,17 +243,6 @@ fun SettingTermuxPage(
                             currentValue = config.commandTimeoutMs / 1_000L,
                             unitLabel = stringResource(R.string.setting_termux_unit_seconds),
                             onCommit = vm::setCommandTimeoutSeconds,
-                        )
-                    },
-                )
-                item(
-                    headlineContent = { Text(stringResource(R.string.setting_termux_turn_budget)) },
-                    supportingContent = { Text(stringResource(R.string.setting_termux_turn_budget_desc)) },
-                    trailingContent = {
-                        TimeoutInput(
-                            currentValue = config.turnBudgetMs / 60_000L,
-                            unitLabel = stringResource(R.string.setting_termux_unit_minutes),
-                            onCommit = vm::setTurnBudgetMinutes,
                         )
                     },
                 )

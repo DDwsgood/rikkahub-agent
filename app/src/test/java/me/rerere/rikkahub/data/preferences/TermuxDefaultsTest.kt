@@ -41,31 +41,6 @@ class TermuxDefaultsTest {
             TermuxDefaults.clampCommandTimeoutMs(TermuxDefaults.MAX_COMMAND_TIMEOUT_MS))
     }
 
-    // --- clampTurnBudgetMs ----------------------------------------------------------------
-
-    @Test
-    fun turnBudget_belowFloor_snapsToMin() {
-        assertEquals(TermuxDefaults.MIN_TURN_BUDGET_MS,
-            TermuxDefaults.clampTurnBudgetMs(0L))
-        assertEquals(TermuxDefaults.MIN_TURN_BUDGET_MS,
-            TermuxDefaults.clampTurnBudgetMs(TermuxDefaults.MIN_TURN_BUDGET_MS - 1L))
-    }
-
-    @Test
-    fun turnBudget_aboveCeiling_snapsToMax() {
-        assertEquals(TermuxDefaults.MAX_TURN_BUDGET_MS,
-            TermuxDefaults.clampTurnBudgetMs(Long.MAX_VALUE))
-        assertEquals(TermuxDefaults.MAX_TURN_BUDGET_MS,
-            TermuxDefaults.clampTurnBudgetMs(TermuxDefaults.MAX_TURN_BUDGET_MS + 1L))
-    }
-
-    @Test
-    fun turnBudget_inRange_passesThrough() {
-        assertEquals(TermuxDefaults.DEFAULT_TURN_BUDGET_MS,
-            TermuxDefaults.clampTurnBudgetMs(TermuxDefaults.DEFAULT_TURN_BUDGET_MS))
-        assertEquals(5L * 60_000L, TermuxDefaults.clampTurnBudgetMs(5L * 60_000L))
-    }
-
     // --- clampVerifyTimeoutMs -------------------------------------------------------------
 
     @Test
@@ -148,21 +123,12 @@ class TermuxDefaultsTest {
     fun defaults_areWithinTheirOwnBounds() {
         assertEquals(TermuxDefaults.DEFAULT_COMMAND_TIMEOUT_MS,
             TermuxDefaults.clampCommandTimeoutMs(TermuxDefaults.DEFAULT_COMMAND_TIMEOUT_MS))
-        assertEquals(TermuxDefaults.DEFAULT_TURN_BUDGET_MS,
-            TermuxDefaults.clampTurnBudgetMs(TermuxDefaults.DEFAULT_TURN_BUDGET_MS))
         assertEquals(TermuxDefaults.DEFAULT_VERIFY_TIMEOUT_MS,
             TermuxDefaults.clampVerifyTimeoutMs(TermuxDefaults.DEFAULT_VERIFY_TIMEOUT_MS))
         assertEquals(TermuxDefaults.DEFAULT_MAX_STDOUT,
             TermuxDefaults.clampMaxStdout(TermuxDefaults.DEFAULT_MAX_STDOUT))
         assertEquals(TermuxDefaults.DEFAULT_MAX_STDERR,
             TermuxDefaults.clampMaxStderr(TermuxDefaults.DEFAULT_MAX_STDERR))
-    }
-
-    @Test
-    fun turnBudget_defaultIs10Minutes() {
-        // Pin that the default matches the original GenerationHandler constant (10 min),
-        // not the spec's 5 min — per the task override instruction.
-        assertEquals(10L * 60L * 1_000L, TermuxDefaults.DEFAULT_TURN_BUDGET_MS)
     }
 
     @Test

@@ -21,9 +21,8 @@ import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
 private val Context.termuxDataStore by preferencesDataStore(name = "termux_prefs")
 
 /**
- * DataStore-backed settings store for Termux-specific knobs, plus the app-wide per-turn
- * wall-clock budget (surfaced here because GitHub issue #5 requested it alongside the
- * Termux timeouts). Mirrors [me.rerere.rikkahub.browser.BrowserPreferences] in shape.
+ * DataStore-backed settings store for Termux-specific knobs. Mirrors
+ * [me.rerere.rikkahub.browser.BrowserPreferences] in shape.
  *
  * The [init] block pushes persisted values into the runtime holders ([TermuxRuntime] and
  * [ToolRuntimeLimits]) immediately on construction so all non-suspend callers (TermuxTool,
@@ -37,7 +36,6 @@ class TermuxPreferences(private val context: Context) {
     private val store = context.termuxDataStore
 
     private val commandTimeoutKey       = longPreferencesKey("command_timeout_ms")
-    private val turnBudgetKey           = longPreferencesKey("turn_budget_ms")
     private val maxToolStepsKey         = intPreferencesKey("max_tool_steps")
     private val verifyTimeoutKey        = longPreferencesKey("verify_timeout_ms")
     private val workingDirKey           = stringPreferencesKey("working_dir")
@@ -66,7 +64,6 @@ class TermuxPreferences(private val context: Context) {
         TermuxRuntime.aptWrapEnabled        = initial.aptWrapEnabled
         TermuxRuntime.embeddedTermuxInstalled = initial.embeddedTermuxInstalled
         TermuxRuntime.embeddedTermuxVersion   = initial.embeddedTermuxVersion
-        ToolRuntimeLimits.turnBudgetMs      = initial.turnBudgetMs
         ToolRuntimeLimits.maxToolSteps      = initial.maxToolSteps
         // Issue #14: restore the "verified/connected" indicator across app restarts. Without
         // this, TermuxIntegration.lastVerifiedOkAtMs starts at 0 every launch and the user
@@ -88,12 +85,6 @@ class TermuxPreferences(private val context: Context) {
             commandTimeoutFlow()
                 .distinctUntilChanged()
                 .onEach { TermuxRuntime.commandTimeoutMs = it }
-                .collect {}
-        }
-        scope.launch {
-            turnBudgetFlow()
-                .distinctUntilChanged()
-                .onEach { ToolRuntimeLimits.turnBudgetMs = it }
                 .collect {}
         }
         scope.launch {
@@ -154,12 +145,6 @@ class TermuxPreferences(private val context: Context) {
         )
     }
 
-    fun turnBudgetFlow(): Flow<Long> = store.data.map { prefs ->
-        TermuxDefaults.clampTurnBudgetMs(
-            prefs[turnBudgetKey] ?: TermuxDefaults.DEFAULT_TURN_BUDGET_MS
-        )
-    }
-
     fun maxToolStepsFlow(): Flow<Int> = store.data.map { prefs ->
         TermuxDefaults.clampMaxToolSteps(
             prefs[maxToolStepsKey] ?: TermuxDefaults.DEFAULT_MAX_TOOL_STEPS
@@ -206,10 +191,6 @@ class TermuxPreferences(private val context: Context) {
 
     suspend fun setCommandTimeoutMs(ms: Long) {
         store.edit { it[commandTimeoutKey] = TermuxDefaults.clampCommandTimeoutMs(ms) }
-    }
-
-    suspend fun setTurnBudgetMs(ms: Long) {
-        store.edit { it[turnBudgetKey] = TermuxDefaults.clampTurnBudgetMs(ms) }
     }
 
     suspend fun setMaxToolSteps(steps: Int) {
@@ -262,7 +243,6 @@ class TermuxPreferences(private val context: Context) {
         val prefs = store.data.first()
         return TermuxRuntimeConfig(
             commandTimeoutMs        = TermuxDefaults.clampCommandTimeoutMs(prefs[commandTimeoutKey] ?: TermuxDefaults.DEFAULT_COMMAND_TIMEOUT_MS),
-            turnBudgetMs            = TermuxDefaults.clampTurnBudgetMs(prefs[turnBudgetKey]         ?: TermuxDefaults.DEFAULT_TURN_BUDGET_MS),
             maxToolSteps            = TermuxDefaults.clampMaxToolSteps(prefs[maxToolStepsKey]        ?: TermuxDefaults.DEFAULT_MAX_TOOL_STEPS),
             verifyTimeoutMs         = TermuxDefaults.clampVerifyTimeoutMs(prefs[verifyTimeoutKey]    ?: TermuxDefaults.DEFAULT_VERIFY_TIMEOUT_MS),
             defaultWorkingDir       = TermuxDefaults.clampWorkingDir(prefs[workingDirKey]            ?: TermuxDefaults.DEFAULT_WORKING_DIR),
@@ -281,11 +261,10 @@ class TermuxPreferences(private val context: Context) {
 
 /**
  * Immutable snapshot of all Termux preferences, used by the ViewModel to expose a single
- * combined state flow instead of seven separate ones.
+ * combined state flow instead of many separate ones.
  */
 data class TermuxRuntimeConfig(
     val commandTimeoutMs: Long,
-    val turnBudgetMs: Long,
     val maxToolSteps: Int,
     val verifyTimeoutMs: Long,
     val defaultWorkingDir: String,

@@ -80,6 +80,8 @@ internal class McpOAuthCoordinator(
      * 按 serverId 串行刷新。获得锁后重新读取配置，避免并发工具调用重复使用同一个 refresh token。
      */
     suspend fun ensureFreshToken(configInput: McpServerConfig): McpServerConfig {
+        // stdio 传输没有 HTTP 端点, 不存在令牌刷新
+        if (configInput is McpServerConfig.StdioTransportServer) return configInput
         val lock = refreshLocks.computeIfAbsent(configInput.id) { Mutex() }
         return lock.withLock {
             val config = settingsStore.settingsFlow.value.mcpServers.find { it.id == configInput.id }
@@ -118,6 +120,8 @@ internal class McpOAuthCoordinator(
     }
 
     suspend fun needsAuthorization(config: McpServerConfig, error: Throwable): Boolean {
+        // stdio 传输没有 HTTP/401 语义
+        if (config is McpServerConfig.StdioTransportServer) return false
         if (!looksUnauthorized(error)) return false
         if (config.commonOptions.oauth?.enabled == true) return true
         if (config.commonOptions.headers.any { it.first.equals("Authorization", ignoreCase = true) }) {

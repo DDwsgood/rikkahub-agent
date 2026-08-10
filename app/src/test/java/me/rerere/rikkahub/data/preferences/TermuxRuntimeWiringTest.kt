@@ -79,17 +79,6 @@ class TermuxRuntimeWiringTest {
         assertEquals(true, TermuxRuntime.aptWrapEnabled)
     }
 
-    @Test
-    fun toolRuntimeLimits_turnBudget_writeIsVisibleImmediately() {
-        val prev = me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits.turnBudgetMs
-        try {
-            me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits.turnBudgetMs = 5L * 60_000L
-            assertEquals(5L * 60_000L, me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits.turnBudgetMs)
-        } finally {
-            me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits.turnBudgetMs = prev
-        }
-    }
-
     // --- Issue #14: lastVerifiedOkAtMs persistence wiring -------------------------------
     //
     // Same rationale as the class doc: DataStore itself needs an Android runtime, so we pin

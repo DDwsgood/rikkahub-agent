@@ -313,6 +313,7 @@ fun McpPicker(
                         McpStatus.Authorizing -> CircularProgressIndicator(
                             modifier = Modifier.size(24.dp)
                         )
+                        McpStatus.WaitingForWorkspace -> Icon(HugeIcons.Icon1stBracket, null)
                     }
                     Column(
                         modifier = Modifier.weight(1f),
@@ -331,6 +332,7 @@ fun McpPicker(
                                 is McpStatus.Error -> "Error: ${s.message}"
                                 is McpStatus.NeedsAuthorization -> "Needs authorization"
                                 is McpStatus.Authorizing -> "Authorizing"
+                                is McpStatus.WaitingForWorkspace -> "Waiting for workspace ready"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = LocalContentColor.current.copy(alpha = 0.8f),

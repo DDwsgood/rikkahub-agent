@@ -25,6 +25,7 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpStatus
 import me.rerere.rikkahub.data.ai.mcp.McpTool
+import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import kotlin.uuid.Uuid
 
@@ -45,6 +46,7 @@ import kotlin.uuid.Uuid
  */
 private const val DEFAULT_CONNECT_TIMEOUT_SECONDS = 15
 private const val MAX_CONNECT_TIMEOUT_SECONDS = 60
+private const val MAX_STDIO_ENV = 32
 
 /** ---------- Shared helpers ---------- */
 
@@ -89,17 +91,27 @@ private fun serverViewEnvelope(
             }
         }
     }
+    if (config is McpServerConfig.StdioTransportServer) {
+        put("workspace_id", config.workspaceId)
+        put("command", config.command)
+        putJsonArray("args") { config.args.forEach { add(it) } }
+        put("cwd", config.cwd)
+        // env 值不返回给 LLM, 只暴露 key 集合 (与审批渲染一致)
+        putJsonArray("env_keys") { config.env.keys.sorted().forEach { add(it) } }
+    }
     builder()
 }
 
 private fun transportLabel(config: McpServerConfig): String = when (config) {
     is McpServerConfig.SseTransportServer -> "sse"
     is McpServerConfig.StreamableHTTPServer -> "streamable_http"
+    is McpServerConfig.StdioTransportServer -> "stdio"
 }
 
 private fun urlOf(config: McpServerConfig): String = when (config) {
     is McpServerConfig.SseTransportServer -> config.url
     is McpServerConfig.StreamableHTTPServer -> config.url
+    is McpServerConfig.StdioTransportServer -> config.command
 }
 
 private fun renderStatus(enabled: Boolean, status: McpStatus?): Pair<String, String?> {
@@ -111,6 +123,7 @@ private fun renderStatus(enabled: Boolean, status: McpStatus?): Pair<String, Str
         is McpStatus.Error -> "ERROR" to status.message
         McpStatus.Authorizing -> "CONNECTING" to "authorizing"
         McpStatus.NeedsAuthorization -> "ERROR" to "needs authorization"
+        McpStatus.WaitingForWorkspace -> "CONNECTING" to "waiting for workspace ready"
     }
 }
 
@@ -151,6 +164,11 @@ private fun buildConfig(
     enabled: Boolean,
     headers: List<Pair<String, String>>,
     existingTools: List<McpTool> = emptyList(),
+    workspaceId: String = "",
+    command: String = "",
+    args: List<String> = emptyList(),
+    cwd: String = "",
+    env: Map<String, String> = emptyMap(),
 ): McpServerConfig {
     val common = McpCommonOptions(
         enable = enabled,
@@ -161,9 +179,96 @@ private fun buildConfig(
     return when (transport) {
         "sse" -> McpServerConfig.SseTransportServer(id = id, commonOptions = common, url = url)
         "streamable_http" -> McpServerConfig.StreamableHTTPServer(id = id, commonOptions = common, url = url)
+        "stdio" -> McpServerConfig.StdioTransportServer(
+            id = id,
+            commonOptions = common,
+            workspaceId = workspaceId,
+            command = command,
+            args = args,
+            cwd = cwd,
+            env = env,
+        )
         else -> error("unsupported transport (validation should have caught this earlier): $transport")
     }
 }
+
+/** stdio 特有的参数校验: workspace/command 必填, env 上限, 拒绝注入字符, 过 hardline 命令底线。 */
+private fun validateStdioFields(
+    workspaceId: String,
+    command: String,
+    args: List<String>,
+    env: Map<String, String>,
+): McpControlValidation.Result<Unit> {
+    if (workspaceId.isBlank()) {
+        return McpControlValidation.Result.Reject(
+            "invalid_workspace",
+            "workspace_id is required for stdio transport"
+        )
+    }
+    if (command.isBlank()) {
+        return McpControlValidation.Result.Reject(
+            "invalid_command",
+            "command is required for stdio transport"
+        )
+    }
+    if (env.size > MAX_STDIO_ENV) {
+        return McpControlValidation.Result.Reject(
+            "too_many_env",
+            "env exceeds $MAX_STDIO_ENV entries (got ${env.size})"
+        )
+    }
+    for ((key, value) in env) {
+        if (key.isBlank()) {
+            return McpControlValidation.Result.Reject("invalid_env_key", "env key may not be blank")
+        }
+        if (key.contains('\r') || key.contains('\n') || value.contains('\r') || value.contains('\n')) {
+            return McpControlValidation.Result.Reject(
+                "invalid_env_value",
+                "env key/value may not contain CR or LF"
+            )
+        }
+    }
+    // 命令将直接 exec 在 workspace rootfs 内, 过一遍 argv-aware 硬线命令底线
+    // (逐元素 + shell -c 脚本识别, 防 `/bin/sh -c reboot` 拼接绕过)
+    val blocked = HardlineCommandGuard.checkCommandArgv(command, args)
+    if (blocked != null) {
+        return McpControlValidation.Result.Reject(
+            "hardline_blocked",
+            "stdio command blocked by hardline guard: $blocked"
+        )
+    }
+    return McpControlValidation.Result.Ok(Unit)
+}
+
+/** 解析 mcp_add / mcp_update 的 stdio 参数为结构化字段。 */
+private fun parseStdioParams(
+    params: JsonObject,
+): StdioFields {
+    val args = runCatching { params["args"]?.jsonArray }
+        .getOrNull()
+        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        ?: emptyList()
+    val env = runCatching { params["env"]?.jsonObject }
+        .getOrNull()
+        ?.mapNotNull { (k, v) -> k to (v.jsonPrimitive.contentOrNull ?: "") }
+        ?.toMap()
+        ?: emptyMap()
+    return StdioFields(
+        workspaceId = params["workspace_id"]?.jsonPrimitive?.contentOrNull?.trim() ?: "",
+        command = params["command"]?.jsonPrimitive?.contentOrNull?.trim() ?: "",
+        args = args,
+        cwd = params["cwd"]?.jsonPrimitive?.contentOrNull?.trim() ?: "",
+        env = env,
+    )
+}
+
+private data class StdioFields(
+    val workspaceId: String,
+    val command: String,
+    val args: List<String>,
+    val cwd: String,
+    val env: Map<String, String>,
+)
 
 /**
  * Wait until the manager reports a terminal status (Connected or Error) for [serverId], or
@@ -305,10 +410,13 @@ fun mcpGetTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
 fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
     name = "mcp_add",
     description = """
-        Add a new MCP server. Pass transport="sse" or "streamable_http", a unique name (≤60
-        chars), an http(s) url, optional enabled (default true), and optional headers as a
-        list of {name, value} pairs (max 32 entries; sensitive values like Authorization or
-        X-Api-Key are redacted in display layers but stored verbatim).
+        Add a new MCP server. Pass transport="sse" or "streamable_http" with an http(s)
+        url, or transport="stdio" to run a local server process inside a workspace rootfs
+        (pass workspace_id, command, and optional args as a string array, cwd, and env as
+        an object of string-to-string). A unique name (≤60 chars), optional enabled
+        (default true), and optional headers as a list of {name, value} pairs (max 32
+        entries; sensitive values like Authorization or X-Api-Key are redacted in display
+        layers but stored verbatim).
 
         After registering, the tool waits up to connect_timeout_seconds (default 15, max 60)
         for the first sync to complete and returns the resulting status. If still CONNECTING
@@ -317,7 +425,8 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
         Typical flow: install your MCP server in Termux or on a remote box, expose it over
         HTTP/SSE (e.g. via mcp-proxy), then mcp_add with the URL. Loopback URLs (localhost,
         127.x.x.x, ::1) are accepted only in interactive contexts — scheduled jobs and other
-        headless callers cannot wire up loopback servers.
+        headless callers cannot wire up loopback servers. Stdio servers require an
+        interactive context and a workspace whose rootfs is installed (READY).
 
         "Always Allow" is INTENTIONALLY not offered for this tool — a hostile MCP server can
         exfiltrate everything the assistant has access to, so each install is per-call confirmed.
@@ -327,7 +436,7 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
             properties = buildJsonObject {
                 put("transport", buildJsonObject {
                     put("type", "string")
-                    put("description", "Either 'sse' or 'streamable_http'. Stdio is intentionally unsupported.")
+                    put("description", "Either 'sse', 'streamable_http', or 'stdio' (local process in a workspace rootfs).")
                 })
                 put("name", buildJsonObject {
                     put("type", "string")
@@ -335,7 +444,29 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
                 })
                 put("url", buildJsonObject {
                     put("type", "string")
-                    put("description", "http:// or https:// URL of the MCP endpoint. Other schemes are rejected.")
+                    put("description", "http:// or https:// URL of the MCP endpoint (required for sse/streamable_http). Other schemes are rejected.")
+                })
+                put("workspace_id", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Workspace entity id whose rootfs runs the server (required for stdio).")
+                })
+                put("command", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Executable to launch inside the workspace rootfs (required for stdio).")
+                })
+                put("args", buildJsonObject {
+                    put("type", "array")
+                    put("description", "Optional argv passed to the stdio command without shell evaluation.")
+                    put("items", buildJsonObject { put("type", "string") })
+                })
+                put("cwd", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Optional working directory relative to the workspace files dir.")
+                })
+                put("env", buildJsonObject {
+                    put("type", "object")
+                    put("description", "Optional environment variables (string keys/values) merged over the base rootfs env.")
+                    put("additionalProperties", buildJsonObject { put("type", "string") })
                 })
                 put("enabled", buildJsonObject {
                     put("type", "boolean")
@@ -343,7 +474,7 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
                 })
                 put("headers", buildJsonObject {
                     put("type", "array")
-                    put("description", "Optional HTTP headers as [{name, value}, ...]. Max 32 entries.")
+                    put("description", "Optional HTTP headers as [{name, value}, ...]. Max 32 entries. Ignored for stdio.")
                     put("items", buildJsonObject {
                         put("type", "object")
                         put("properties", buildJsonObject {
@@ -358,18 +489,18 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
                     put("description", "How long to wait for the first sync. Default 15, max 60.")
                 })
             },
-            required = listOf("transport", "name", "url"),
+            required = listOf("transport", "name"),
         )
     },
     needsApproval = { true },
     execute = { args ->
         val params = args.jsonObject
         val transport = params["transport"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
-            ?: return@Tool errEnv("invalid_transport", "transport is required and must be 'sse' or 'streamable_http'")
-        if (transport != "sse" && transport != "streamable_http") {
+            ?: return@Tool errEnv("invalid_transport", "transport is required and must be 'sse', 'streamable_http', or 'stdio'")
+        if (transport != "sse" && transport != "streamable_http" && transport != "stdio") {
             return@Tool errEnv(
                 "unsupported_transport",
-                "unsupported transport: $transport. Supported: sse, streamable_http"
+                "unsupported transport: $transport. Supported: sse, streamable_http, stdio"
             )
         }
         val rawName = params["name"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -379,9 +510,29 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
         val timeoutSec = (params["connect_timeout_seconds"]?.jsonPrimitive?.intOrNull ?: DEFAULT_CONNECT_TIMEOUT_SECONDS)
             .coerceIn(1, MAX_CONNECT_TIMEOUT_SECONDS)
 
-        val urlCheck = McpUrlGuard.check(rawUrl, headless = McpUrlGuard.currentlyHeadless())
-        if (urlCheck is McpUrlGuard.Result.Reject) {
-            return@Tool errEnv(urlCheck.error, urlCheck.detail)
+        if (transport == "stdio") {
+            if (McpUrlGuard.currentlyHeadless()) {
+                return@Tool errEnv(
+                    "stdio_requires_interactive",
+                    "stdio MCP servers require an interactive context (the user must be present); " +
+                        "this call is running headless"
+                )
+            }
+        } else {
+            if (rawUrl.isBlank()) {
+                return@Tool errEnv("invalid_url", "url is required for $transport transport")
+            }
+            val urlCheck = McpUrlGuard.check(rawUrl, headless = McpUrlGuard.currentlyHeadless())
+            if (urlCheck is McpUrlGuard.Result.Reject) {
+                return@Tool errEnv(urlCheck.error, urlCheck.detail)
+            }
+        }
+        val stdio = if (transport == "stdio") parseStdioParams(params) else null
+        if (stdio != null) {
+            val stdioCheck = validateStdioFields(stdio.workspaceId, stdio.command, stdio.args, stdio.env)
+            if (stdioCheck is McpControlValidation.Result.Reject) {
+                return@Tool errEnv(stdioCheck.error, stdioCheck.detail)
+            }
         }
         val existing = settingsStore.settingsFlow.value.mcpServers
         val nameCheck = McpControlValidation.validateName(rawName, existing, excludingId = null)
@@ -401,6 +552,11 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
             url = rawUrl.trim(),
             enabled = enabled,
             headers = headers,
+            workspaceId = stdio?.workspaceId ?: "",
+            command = stdio?.command ?: "",
+            args = stdio?.args ?: emptyList(),
+            cwd = stdio?.cwd ?: "",
+            env = stdio?.env ?: emptyMap(),
         )
         settingsStore.update { old -> old.copy(mcpServers = old.mcpServers + config) }
         if (enabled) {
@@ -423,7 +579,9 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
                 extra = mapOf(
                     "raw_error" to kotlinx.serialization.json.JsonPrimitive(finalStatus.message),
                     "name" to kotlinx.serialization.json.JsonPrimitive(name),
-                    "url" to kotlinx.serialization.json.JsonPrimitive(rawUrl.trim()),
+                    "url" to kotlinx.serialization.json.JsonPrimitive(
+                        if (transport == "stdio") (stdio?.command ?: "") else rawUrl.trim()
+                    ),
                 ),
             )
         }
@@ -438,8 +596,9 @@ fun mcpUpdateTool(settingsStore: SettingsStore, manager: McpManager): Tool = Too
     description = """
         Replace an existing MCP server's configuration in one shot. Body matches mcp_add plus
         an `id` field. Internally tears down the old client and adds the new one to ensure
-        transport / URL / header changes take effect. The tool list is preserved across
-        the update; sync runs automatically after re-add.
+        transport / URL / command changes take effect. The tool list is preserved across
+        the update; sync runs automatically after re-add. For stdio servers pass
+        workspace_id + command (plus optional args/cwd/env) instead of url.
 
         Like mcp_add, "Always Allow" is intentionally NOT offered: a hostile updated config
         could exfiltrate everything the assistant has access to.
@@ -451,6 +610,17 @@ fun mcpUpdateTool(settingsStore: SettingsStore, manager: McpManager): Tool = Too
                 put("transport", buildJsonObject { put("type", "string") })
                 put("name", buildJsonObject { put("type", "string") })
                 put("url", buildJsonObject { put("type", "string") })
+                put("workspace_id", buildJsonObject { put("type", "string") })
+                put("command", buildJsonObject { put("type", "string") })
+                put("args", buildJsonObject {
+                    put("type", "array")
+                    put("items", buildJsonObject { put("type", "string") })
+                })
+                put("cwd", buildJsonObject { put("type", "string") })
+                put("env", buildJsonObject {
+                    put("type", "object")
+                    put("additionalProperties", buildJsonObject { put("type", "string") })
+                })
                 put("enabled", buildJsonObject { put("type", "boolean") })
                 put("headers", buildJsonObject {
                     put("type", "array")
@@ -465,7 +635,7 @@ fun mcpUpdateTool(settingsStore: SettingsStore, manager: McpManager): Tool = Too
                 })
                 put("connect_timeout_seconds", buildJsonObject { put("type", "integer") })
             },
-            required = listOf("id", "transport", "name", "url"),
+            required = listOf("id", "transport", "name"),
         )
     },
     needsApproval = { true },
@@ -476,7 +646,7 @@ fun mcpUpdateTool(settingsStore: SettingsStore, manager: McpManager): Tool = Too
             ?: return@Tool errEnv("invalid_id", "id is required and must be a valid UUID; got '$rawId'")
         val transport = params["transport"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
             ?: return@Tool errEnv("invalid_transport", "transport is required")
-        if (transport != "sse" && transport != "streamable_http") {
+        if (transport != "sse" && transport != "streamable_http" && transport != "stdio") {
             return@Tool errEnv("unsupported_transport", "unsupported transport: $transport")
         }
         val rawName = params["name"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -489,9 +659,29 @@ fun mcpUpdateTool(settingsStore: SettingsStore, manager: McpManager): Tool = Too
         val all = settingsStore.settingsFlow.value.mcpServers
         val old = all.firstOrNull { it.id == serverId }
             ?: return@Tool errEnv("unknown_mcp_server_id", "no MCP server registered with id $serverId")
-        val urlCheck = McpUrlGuard.check(rawUrl, headless = McpUrlGuard.currentlyHeadless())
-        if (urlCheck is McpUrlGuard.Result.Reject) {
-            return@Tool errEnv(urlCheck.error, urlCheck.detail)
+        if (transport == "stdio") {
+            if (McpUrlGuard.currentlyHeadless()) {
+                return@Tool errEnv(
+                    "stdio_requires_interactive",
+                    "stdio MCP servers require an interactive context (the user must be present); " +
+                        "this call is running headless"
+                )
+            }
+        } else {
+            if (rawUrl.isBlank()) {
+                return@Tool errEnv("invalid_url", "url is required for $transport transport")
+            }
+            val urlCheck = McpUrlGuard.check(rawUrl, headless = McpUrlGuard.currentlyHeadless())
+            if (urlCheck is McpUrlGuard.Result.Reject) {
+                return@Tool errEnv(urlCheck.error, urlCheck.detail)
+            }
+        }
+        val stdio = if (transport == "stdio") parseStdioParams(params) else null
+        if (stdio != null) {
+            val stdioCheck = validateStdioFields(stdio.workspaceId, stdio.command, stdio.args, stdio.env)
+            if (stdioCheck is McpControlValidation.Result.Reject) {
+                return@Tool errEnv(stdioCheck.error, stdioCheck.detail)
+            }
         }
         val nameCheck = McpControlValidation.validateName(rawName, all, excludingId = serverId.toString())
         if (nameCheck is McpControlValidation.Result.Reject) {
@@ -510,6 +700,11 @@ fun mcpUpdateTool(settingsStore: SettingsStore, manager: McpManager): Tool = Too
             enabled = enabled,
             headers = headers,
             existingTools = old.commonOptions.tools, // preserve known tools across update
+            workspaceId = stdio?.workspaceId ?: "",
+            command = stdio?.command ?: "",
+            args = stdio?.args ?: emptyList(),
+            cwd = stdio?.cwd ?: "",
+            env = stdio?.env ?: emptyMap(),
         )
         manager.removeClient(old)
         settingsStore.update { s ->
@@ -591,6 +786,15 @@ fun mcpSetEnabledTool(settingsStore: SettingsStore, manager: McpManager): Tool =
         val all = settingsStore.settingsFlow.value.mcpServers
         val old = all.firstOrNull { it.id == serverId }
             ?: return@Tool errEnv("unknown_mcp_server_id", "no MCP server registered with id $serverId")
+        // 与 mcp_add/mcp_update 一致: headless (定时任务/子代理/工作流) 下禁止启用 stdio
+        // 本地进程 —— 它会无提示地拉起一个 workspace rootfs 内的进程
+        if (enabled && old is McpServerConfig.StdioTransportServer && McpUrlGuard.currentlyHeadless()) {
+            return@Tool errEnv(
+                "stdio_requires_interactive",
+                "stdio MCP servers require an interactive context (the user must be present); " +
+                    "this call is running headless"
+            )
+        }
         if (old.commonOptions.enable == enabled) {
             // No-op: still return the current view so the LLM knows.
             return@Tool listOf(

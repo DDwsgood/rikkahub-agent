@@ -133,6 +133,58 @@ object HardlineCommandGuard {
         return null
     }
 
+    /** shell `-c` 的候选解释器 (busybox 前缀单独处理)。 */
+    private val SHELL_EVAL_INTERPRETERS = setOf("sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh", "ash")
+
+    /**
+     * argv-aware hardline check for commands that are exec'd directly with a structured
+     * argv list (no shell evaluation), e.g. stdio MCP servers.
+     *
+     * The raw-text [checkCommand] can't see structured argv: `/bin/sh -c reboot` joined
+     * into a string is `/bin/sh -c reboot`, where `reboot` is neither at command position
+     * nor inside the `-c "…"` quotes the SHELL_EVAL_OPEN regex requires — so the joined
+     * text slips through. Checking each argv element individually (as if it were at
+     * command position) closes that gap, and recognising `sh/bash/dash/zsh -c <script>`
+     * lets us also reassemble the script text and check it (catching scripts split
+     * across elements).
+     *
+     * Returns the block reason, or null if safe.
+     */
+    fun checkCommandArgv(command: String, args: List<String>): String? {
+        val segments = listOf(command.trim()) + args
+        // 逐元素检查: 每个 argv 元素独立作为"命令位置"文本过底线
+        for (segment in segments) {
+            if (segment.isBlank()) continue
+            checkCommand(segment)?.let { return it }
+        }
+        // 显式识别 shell -c: -c 之后到末尾拼回脚本文本, 整段再过一遍底线, 兜住元素级
+        // 检查漏掉的拆分场景 (例如脚本被拆成多个 argv 元素)
+        val cIndex = shellEvalScriptStart(segments) ?: return null
+        val script = segments.drop(cIndex + 1).joinToString(" ")
+        return checkCommand(script)
+    }
+
+    /**
+     * 若 [segments] 是 `sh/bash/dash/zsh… -c …`(允许 `busybox sh -c …` 前缀), 返回 `-c`
+     * 的下标; 否则返回 null。只认结构化 argv 中的字面 `-c`, 不会误判普通参数。
+     */
+    private fun shellEvalScriptStart(segments: List<String>): Int? {
+        if (segments.size < 3) return null
+        val first = segments[0]
+        val base = first.substringAfterLast('/')
+        val interpreter = when {
+            base == "busybox" -> segments.getOrNull(1)?.substringAfterLast('/')
+            else -> base
+        } ?: return null
+        if (interpreter !in SHELL_EVAL_INTERPRETERS) return null
+        val cIndex = segments.indexOfFirst { it == "-c" }
+        if (cIndex < 0) return null
+        // `-c` 必须出现在 shell 之后 (busybox 形式时在 busybox+shell 之后)
+        val shellEnd = if (base == "busybox") 2 else 1
+        if (cIndex < shellEnd) return null
+        return cIndex
+    }
+
     /**
      * Tool-aware entrypoint: pull whichever arg of [toolName] carries shell content and
      * run it through [checkCommand]. Returns the block reason or null. Tools that don't

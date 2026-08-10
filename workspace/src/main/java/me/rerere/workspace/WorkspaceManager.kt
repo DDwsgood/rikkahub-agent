@@ -5,6 +5,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
 
 class WorkspaceManager(
     private val baseDir: File,
@@ -15,9 +16,19 @@ class WorkspaceManager(
     private val fileSystem = WorkspaceFileSystem(config)
     private val background = WorkspaceBackgroundProcesses()
 
-    // 让 startBackground 的启动+注册 与 deleteWorkspace 的 killAll+删除 互斥:
-    // 要么启动先完成(随后被 killAll 杀掉), 要么删除先完成(随后 shellRunner.start 因 rootfs
-    // 缺失而失败并抛出), 不会出现"进程活着但 workspace 目录已删"的孤儿进程
+    // 长生命周期双工进程（stdio MCP server）注册表: root -> 存活进程集合。
+    // 与 WorkspaceBackgroundProcesses 不同, 这些进程由调用方(MCP 会话层)直接读写
+    // stdin/stdout 并负责生命周期, 这里只保留一份兜底引用, 保证 workspace 删除或
+    // rootfs 重装时能无条件杀掉, 不会残留孤儿 proot 进程。
+    private val managedProcesses = ConcurrentHashMap<String, MutableSet<ManagedWorkspaceProcess>>()
+
+    // 让 startBackground / startManagedProcess 的启动+注册 与 deleteWorkspace /
+    // closeAllManagedProcesses 的 killAll+移除注册表+关闭 互斥: 要么启动先完成(随后被
+    // killAll/closeAll 杀掉), 要么删除先完成(随后 start 因 rootfs 缺失而失败并抛出),
+    // 不会出现"进程活着但 workspace 目录已删"的孤儿进程。startManagedProcess 也走这把锁:
+    // 否则启动线程在"检查 rootfs → start → 注册"期间, 删除线程可能已完成"从 map 移除 →
+    // 遍历关闭", 新进程会加入一个已被移除的 Set, 永远不被关闭。installRootfs 的重装关闭
+    // (closeAllManagedProcesses) 同样走这把锁, 与启动互斥。
     private val backgroundLifecycleLock = Any()
 
     // 按 target 长度降序, 保证 /a/b 优先于 /a 匹配
@@ -51,6 +62,7 @@ class WorkspaceManager(
     fun deleteWorkspace(root: String): Boolean = synchronized(backgroundLifecycleLock) {
         // 先杀掉该 workspace 所有后台进程, 再删目录, 避免进程仍持有已删除目录下的 fd
         killAllBackground(root)
+        closeAllManagedProcesses(root)
         workspaceDir(root).deleteRecursively()
     }
 
@@ -246,6 +258,75 @@ class WorkspaceManager(
     fun killBackground(root: String, id: String): Boolean = background.kill(root, id)
 
     fun killAllBackground(root: String) = background.killAll(root)
+
+    /**
+     * Starts [command] (with structured [args], no shell evaluation) as a long-lived
+     * duplex process inside [root]'s rootfs. The caller owns reading/writing the
+     * returned streams and must call [ManagedWorkspaceProcess.close] when done; the
+     * process is also registered so [deleteWorkspace] / [closeAllManagedProcesses] can
+     * kill it unconditionally. [env] is merged over the base HOME/PATH/TERM/LANG env
+     * inside the rootfs. [cwd] is a path relative to the workspace files dir.
+     * Throws [IllegalStateException] if the rootfs is not installed.
+     */
+    fun startManagedProcess(
+        root: String,
+        command: String,
+        args: List<String> = emptyList(),
+        cwd: String = "",
+        env: Map<String, String> = emptyMap(),
+    ): ManagedWorkspaceProcess {
+        require(command.isNotBlank()) { "Command is required" }
+        // 与 deleteWorkspace / closeAllManagedProcesses 共享同一把生命周期锁, 把
+        // "检查 rootfs → 启动 → 注册到 map"做成不可分割的事务。否则删除线程可能在
+        // "检查"与"注册"之间完成"从 map 移除 → 遍历关闭 → 删目录", 新进程会注册进
+        // 一个已被移除的 Set 并永远不被关闭。
+        return synchronized(backgroundLifecycleLock) {
+            require(hasRootfs(root)) { "Rootfs is not installed for workspace: $root" }
+            val workingDir = resolveCommandWorkingDir(root, cwd)
+
+            val process = shellRunner.startStructured(
+                WorkspaceShellContext(
+                    root = root,
+                    command = command,
+                    cwd = cwd,
+                    filesDir = filesDir(root),
+                    linuxDir = linuxDir(root),
+                    tempDir = tempDir(root),
+                    workingDir = workingDir,
+                    timeoutMillis = 0L,
+                    bindMounts = bindMounts,
+                ),
+                args = args,
+                extraEnv = env,
+            )
+            val managed = ManagedWorkspaceProcess(
+                inputStream = process.inputStream,
+                outputStream = process.outputStream,
+                errorStream = BoundedTailInputStream(process.errorStream),
+                process = process,
+            )
+            // 清理该 workspace 已退出的托管进程, 再登记新进程, 避免注册表无限增长
+            managedProcesses.computeIfAbsent(root) { ConcurrentHashMap.newKeySet() }.apply {
+                removeIf { it.isClosed }
+                add(managed)
+            }
+            managed
+        }
+    }
+
+    /**
+     * Kills every managed (stdio duplex) process for [root]. Called on workspace
+     * deletion and rootfs reinstall — after this, no process can hold fds into a
+     * rootfs that is about to be removed or replaced.
+     */
+    fun closeAllManagedProcesses(root: String) {
+        // 与 startManagedProcess 的"检查 rootfs → 启动 → 注册"互斥: 从注册表移除和关闭
+        // 必须是同一事务, 否则启动线程可能把新进程注册进一个刚被移除的 Set。synchronized
+        // 可重入, deleteWorkspace 已在锁内调用这里也没问题。
+        synchronized(backgroundLifecycleLock) {
+            managedProcesses.remove(root)?.forEach { it.close() }
+        }
+    }
 
     private fun resolveCommandWorkingDir(root: String, cwd: String): File {
         val workingDir = fileSystem.resolve(filesDir(root), cwd)

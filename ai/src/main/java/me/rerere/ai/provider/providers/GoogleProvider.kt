@@ -772,6 +772,9 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
 
     private fun UIMessagePart.Tool.toFunctionCallPart() = buildJsonObject {
         put("functionCall", buildJsonObject {
+            if (toolCallId.isNotBlank()) {
+                put("id", toolCallId)
+            }
             put("name", toolName)
             put("args", inputAsJson())
         })
@@ -782,6 +785,9 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
 
     private fun UIMessagePart.Tool.toFunctionResponsePart() = buildJsonObject {
             put("functionResponse", buildJsonObject {
+                if (toolCallId.isNotBlank()) {
+                    put("id", toolCallId)
+                }
                 put("name", toolName)
 
                 // 1. 拆分出纯文本部分

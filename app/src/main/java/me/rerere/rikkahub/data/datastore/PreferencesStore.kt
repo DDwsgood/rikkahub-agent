@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.datastore
 
 import android.content.Context
 import android.util.Log
+import androidx.datastore.core.DataStore
 import androidx.datastore.core.IOException
 import androidx.datastore.preferences.SharedPreferencesMigration
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -9,11 +10,15 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.pebbletemplates.pebble.PebbleEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.sync.withLock
@@ -102,10 +107,18 @@ private val Context.settingsStore by preferencesDataStore(
     }
 )
 
-class SettingsStore(
-    context: Context,
-    scope: AppScope,
+class SettingsStore internal constructor(
+    private val dataStore: DataStore<Preferences>?,
+    scope: CoroutineScope,
+    private val settingsFlowRawOverride: Flow<Settings>?,
 ) : KoinComponent {
+
+    constructor(context: Context, scope: AppScope) : this(
+        dataStore = context.settingsStore,
+        scope = scope,
+        settingsFlowRawOverride = null,
+    )
+
     companion object {
         // 版本号
         val VERSION = intPreferencesKey("data_version")
@@ -195,9 +208,7 @@ class SettingsStore(
         val SPONSOR_ALERT_DISMISSED_AT = intPreferencesKey("sponsor_alert_dismissed_at")
     }
 
-    private val dataStore = context.settingsStore
-
-    val settingsFlowRaw = dataStore.data
+    val settingsFlowRaw = settingsFlowRawOverride ?: dataStore!!.data
         .catch { exception ->
             if (exception is IOException) {
                 emit(emptyPreferences())
@@ -539,6 +550,14 @@ class SettingsStore(
         .distinctUntilChanged()
         .toMutableStateFlow(scope, Settings.dummy())
 
+    /** 返回已加载的真实设置；冷启动时 settingsFlow 仍为 dummy 则挂起等待 DataStore 首个真实值。 */
+    /** 返回已加载的真实设置；冷启动时 settingsFlow 仍为 dummy 则挂起等待 DataStore 首个真实值。 */
+    suspend fun awaitLoadedSettings(): Settings {
+        val cached = settingsFlow.value
+        if (!cached.init) return cached
+        return settingsFlowRaw.first()
+    }
+
     suspend fun update(settings: Settings) {
         if(settings.init) {
             Log.w(TAG, "Cannot update dummy settings")
@@ -557,7 +576,7 @@ class SettingsStore(
      * back on the next app launch.
      */
     private suspend fun updateInternal(settings: Settings) {
-        dataStore.edit { preferences ->
+        dataStore!!.edit { preferences ->
             preferences[DYNAMIC_COLOR] = settings.dynamicColor
             preferences[THEME_ID] = settings.themeId
             preferences[CUSTOM_THEMES] = JsonInstant.encodeToString(settings.customThemes)
@@ -650,7 +669,7 @@ class SettingsStore(
     }
 
     suspend fun updateAssistant(assistantId: Uuid) {
-        dataStore.edit { preferences ->
+        dataStore!!.edit { preferences ->
             preferences[SELECT_ASSISTANT] = assistantId.toString()
         }
     }

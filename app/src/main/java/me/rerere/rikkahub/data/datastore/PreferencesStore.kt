@@ -551,7 +551,6 @@ class SettingsStore internal constructor(
         .toMutableStateFlow(scope, Settings.dummy())
 
     /** 返回已加载的真实设置；冷启动时 settingsFlow 仍为 dummy 则挂起等待 DataStore 首个真实值。 */
-    /** 返回已加载的真实设置；冷启动时 settingsFlow 仍为 dummy 则挂起等待 DataStore 首个真实值。 */
     suspend fun awaitLoadedSettings(): Settings {
         val cached = settingsFlow.value
         if (!cached.init) return cached

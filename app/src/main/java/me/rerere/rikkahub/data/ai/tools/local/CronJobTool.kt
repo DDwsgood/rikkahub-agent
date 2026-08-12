@@ -38,6 +38,17 @@ private fun errEnvelope(code: String, detail: String, extra: JsonObject? = null)
     }.toString()
 
 /**
+ * Tools that require a foreground Activity and cannot run headless. Blocking them in
+ * direct-mode scheduled jobs prevents a silent runtime failure — the user gets a clear
+ * validation error at schedule time instead. `share_file` opens a Sharesheet Activity;
+ * `share` (text/URL) also needs a foreground context but its headless behavior is out
+ * of scope for this change (per the share_file task requirements).
+ */
+internal val DIRECT_MODE_BLOCKED_TOOLS: Set<String> = setOf(
+    "share_file",
+)
+
+/**
  * Pure validator for schedule_job inputs. Returns null on success, a structured error
  * on the first failed check. Order of checks matters — we want to return the most
  * specific error possible (e.g. invalid_cron before bounds_inverted, since a malformed
@@ -89,6 +100,10 @@ object ScheduleJobValidator {
                         ?: return ValidationError("missing_args", "action $idx missing args object")
                     if (toolName !in knownToolNames)
                         return ValidationError("unknown_tool", "tool '$toolName' not registered for assistant")
+                    // Interactive-only tools cannot run headless — block them in direct mode
+                    // so the user gets a clear validation error instead of a silent runtime failure.
+                    if (toolName in DIRECT_MODE_BLOCKED_TOOLS)
+                        return ValidationError("interactive_only", "action $idx: tool '$toolName' is interactive-only and cannot be used in direct-mode actions")
                     val hardline = HardlineCommandGuard.checkTool(toolName, args.toString())
                     if (hardline != null)
                         return ValidationError("hardline_blocked", "action $idx: $hardline")

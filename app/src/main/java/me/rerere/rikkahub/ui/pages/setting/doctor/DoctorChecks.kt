@@ -115,6 +115,7 @@ private fun LocalToolOption.shortName(): String = when (this) {
     LocalToolOption.Files -> "Files"
     LocalToolOption.Browser -> "Browser"
     LocalToolOption.SmsSend -> "SMS send"
+    LocalToolOption.ShareFile -> "Share file"
     LocalToolOption.Wallpaper -> "Wallpaper"
     LocalToolOption.Keystore -> "Keystore"
     LocalToolOption.Nfc -> "NFC"

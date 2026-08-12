@@ -527,6 +527,7 @@ class CronJobWorker(
             me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                 callerAssistantId = assistantUuid.toString(),
                 callerConversationId = null,  // direct-mode has no conversation
+                callerWorkspaceId = assistant.workspaceId?.toString(),
                 isHeadless = true,
             ),
         )

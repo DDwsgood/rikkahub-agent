@@ -1793,5 +1793,7 @@
   <string name="assistant_page_context_message_limit_count">Лимит сообщений контекста: %d</string>
   <string name="assistant_page_context_message_limit_unlimited">Неограниченные сообщения контекста</string>
   <string name="assistant_page_context_message_limit_warning">Ограничение контекста аннулирует кэш промпта каждый раз, когда контекст усекается. Больший лимит усекает реже; безлимитный не усекает никогда и сохраняет кэш полностью нетронутым.</string>
+  <string name="assistant_page_local_tools_share_file_title">Поделиться файлом</string>
+  <string name="assistant_page_local_tools_share_file_desc">Открытие системного меню «Поделиться» для отправки одного файла в другие приложения. Поддерживает пути AgentWorkspace, общедоступного хранилища, рабочей области и Termux.</string>
 </resources>
 

@@ -215,6 +215,7 @@ class WorkflowEngine(
             me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                 callerAssistantId = authoringAssistant.id.toString(),
                 callerConversationId = null,  // headless workflow fire — no conv
+                callerWorkspaceId = authoringAssistant.workspaceId?.toString(),
                 isHeadless = true,
             ),
         )

@@ -606,6 +606,7 @@ class ChatService(
             me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                 callerAssistantId = assistant.id.toString(),
                 callerConversationId = conversationId.toString(),
+                callerWorkspaceId = assistant.workspaceId?.toString(),
                 isHeadless = false,  // gated above
             ),
         )
@@ -956,6 +957,7 @@ class ChatService(
             val baseInvocationCtx = ToolInvocationContext(
                 callerAssistantId = assistant.id.toString(),
                 callerConversationId = conversationId.toString(),
+                callerWorkspaceId = assistant.workspaceId?.toString(),
                 isHeadless = me.rerere.rikkahub.data.ai.tools.HeadlessConversations
                     .isHeadless(conversationId),
                 modelCanSeeImages = Modality.IMAGE in model.inputModalities,

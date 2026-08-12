@@ -192,6 +192,8 @@ val appModule = module {
             okHttpClient = get(),
             keyboardApiClient = get(),
             embeddedTermuxRunner = get(),
+            workspaceRepository = get(),
+            termuxEnvironment = get(),
         )
     }
 

@@ -73,6 +73,7 @@ object ToolApprovalDefaults {
         "speech_to_text",    // activates the microphone + uploads audio to recognizer
         "verify_fingerprint",
         "share",
+        "share_file",         // exfiltrates a file from the device via Sharesheet — NO_ALWAYS_ALLOW below
         "set_torch",
         "vibrate",
         "set_brightness",
@@ -285,6 +286,10 @@ object ToolApprovalDefaults {
         "keystore_decrypt",
         "nfc_write_tag",
         "grant_directory_access",
+        // share_file exfiltrates a file from the device to an arbitrary target app chosen
+        // by the user at share time. The file may contain PII / secrets / credentials, so
+        // every invocation gets a per-call confirmation — no blanket "Always Allow".
+        "share_file",
     )
 
     fun allowsAlwaysAllow(toolName: String): Boolean = toolName !in NO_ALWAYS_ALLOW

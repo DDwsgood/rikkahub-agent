@@ -20,6 +20,10 @@ import me.rerere.ai.core.Tool
  *    paths know it from their respective entity's assistant id.
  *  - [callerConversationId]: the conversation-uuid of the user-facing chat (interactive)
  *    or the headless conversation (cron / workflow / sub-agent / external-automation).
+ *  - [callerWorkspaceId]: the workspace UUID (string form) bound to the calling assistant,
+ *    if any. `share_file` uses this to resolve `/workspace/...` paths via the correct
+ *    proot rootfs. Null when the assistant has no bound workspace — workspace-source
+ *    shares are refused with a structured error in that case.
  *  - [isHeadless]: true when the dispatch is happening from a system flow rather than the
  *    user typing in a chat. Sub-agents, cron jobs, workflows, and external-automation
  *    runs all set this to true so the recursion guard fires.
@@ -37,6 +41,7 @@ import me.rerere.ai.core.Tool
 data class ToolInvocationContext(
     val callerAssistantId: String? = null,
     val callerConversationId: String? = null,
+    val callerWorkspaceId: String? = null,
     val isHeadless: Boolean = false,
     val modelCanSeeImages: Boolean = true,
     val dynamicToolsProvider: (() -> List<Tool>)? = null,

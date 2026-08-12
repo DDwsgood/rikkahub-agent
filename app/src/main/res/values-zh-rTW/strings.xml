@@ -1791,5 +1791,7 @@
   <string name="assistant_page_context_message_limit_count">上下文訊息限制：%d</string>
   <string name="assistant_page_context_message_limit_unlimited">無限上下文訊息</string>
   <string name="assistant_page_context_message_limit_warning">限制上下文會在每次上下文被裁減時使提示詞快取失效。較大的限制裁減頻率較低；無限則永不裁減並保持快取完整。</string>
+  <string name="assistant_page_local_tools_share_file_title">分享檔案</string>
+  <string name="assistant_page_local_tools_share_file_desc">開啟系統分享面板，將單一檔案傳送到其他應用程式。支援 AgentWorkspace、公共儲存、Workspace 和 Termux 路徑。</string>
 </resources>
 

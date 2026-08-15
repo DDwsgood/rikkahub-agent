@@ -345,16 +345,24 @@ class ResponseAPI(
                                 val reasoningMetadata = part.metadataAs<OpenAIReasoningMetadata>()
                                 add(buildJsonObject {
                                     put("type", "reasoning")
+                                    val encryptedContent = reasoningMetadata?.encryptedContent
                                     reasoningMetadata?.reasoningId?.let {
                                         put("id", it)
                                     }
-                                    put("summary", buildJsonArray {
-                                        add(buildJsonObject {
-                                            put("type", "summary_text")
-                                            put("text", part.reasoning)
+                                    // When the encrypted form is available, never replay the
+                                    // plaintext reasoning (even as a summary): the fork's
+                                    // UIMessagePart.Reasoning has a single text field, so an
+                                    // encrypted reasoning item with non-empty text would leak
+                                    // the plaintext back into the request.
+                                    if (encryptedContent == null && part.reasoning.isNotEmpty()) {
+                                        put("summary", buildJsonArray {
+                                            add(buildJsonObject {
+                                                put("type", "summary_text")
+                                                put("text", part.reasoning)
+                                            })
                                         })
-                                    })
-                                    reasoningMetadata?.encryptedContent?.let {
+                                    }
+                                    encryptedContent?.let {
                                         put("encrypted_content", it)
                                     }
                                 })

@@ -122,8 +122,7 @@ internal class McpOAuthCoordinator(
     suspend fun needsAuthorization(config: McpServerConfig, error: Throwable): Boolean {
         // stdio 传输没有 HTTP/401 语义
         if (config is McpServerConfig.StdioTransportServer) return false
-        if (!looksUnauthorized(error)) return false
-        if (config.commonOptions.oauth?.enabled == true) return true
+        if (looksUnauthorized(error) && config.commonOptions.oauth?.enabled == true) return true
         if (config.commonOptions.headers.any { it.first.equals("Authorization", ignoreCase = true) }) {
             return false
         }

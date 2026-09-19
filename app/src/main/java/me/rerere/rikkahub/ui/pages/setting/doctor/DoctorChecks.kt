@@ -1204,8 +1204,8 @@ class DoctorChecks(
                         else ->
                             "${authorized.size} authorised device(s): " +
                                 authorized.joinToString(", ") { it.serial } + "." +
-                                if (localAuthorized) " This device (127.0.0.1) is connected."
-                                else " This device (127.0.0.1) is not connected.",
+                                (if (localAuthorized) " This device (127.0.0.1) is connected."
+                                 else " This device (127.0.0.1) is not connected.")
                     },
                     severity = when {
                         devices == null -> Severity.INFO

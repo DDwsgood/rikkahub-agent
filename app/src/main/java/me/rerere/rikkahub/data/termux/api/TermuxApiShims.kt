@@ -19,13 +19,18 @@ import java.io.File
 object TermuxApiShims {
     private const val TAG = "TermuxApiShims"
 
-    /** Phase 1 投放的命令集合；与 [buildTermuxApiHandlers] 保持一致。 */
+    /** 投放的命令集合；与 [buildTermuxApiHandlers] 保持一致。 */
     val commands: List<String> = listOf(
         "termux-notification",
         "termux-toast",
         "termux-vibrate",
         "termux-torch",
         "termux-battery-status",
+        "termux-clipboard-set",
+        "termux-clipboard-get",
+        "termux-tts-speak",
+        "termux-notification-remove",
+        "termux-volume",
     )
 
     /**
@@ -82,6 +87,37 @@ while [ "${'$'}i" -lt "${'$'}{#rest[@]}" ]; do
   esac
 done
 if [ "${'$'}{#text_args[@]}" -eq 0 ]; then
+  t=""
+  IFS= read -t 3 -r -d '' t || true
+  if [ -n "${'$'}t" ]; then set -- "${'$'}@" "${'$'}t"; fi
+fi
+""".trimIndent()
+
+            // 官方行为：无位置参数时从 stdin 读剪贴板文本（3s 超时）。
+            "termux-clipboard-set" -> """
+if [ "${'$'}#" -eq 0 ]; then
+  clip=""
+  IFS= read -t 3 -r -d '' clip || true
+  if [ -n "${'$'}clip" ]; then set -- "${'$'}clip"; fi
+fi
+""".trimIndent()
+
+            // 官方行为：无位置参数（文本）时从 stdin 读待朗读文本（3s 超时）。
+            "termux-tts-speak" -> """
+text_args=()
+rest=("${'$'}@")
+i=0
+while [ "${'$'}i" -lt "${'$'}{#rest[@]}" ]; do
+  case "${'$'}{rest[${'$'}i]}" in
+    -e|-l|-n|-v|-p|-r|-s) i=$((i+2));;
+    -h) i=$((i+1));;
+    --) i=$((i+1)); while [ "${'$'}i" -lt "${'$'}{#rest[@]}" ]; do text_args+=("${'$'}{rest[${'$'}i]}"); i=$((i+1)); done;;
+    *) text_args+=("${'$'}{rest[${'$'}i]}"); i=$((i+1));;
+  esac
+done
+want_help=0
+for a in "${'$'}@"; do [ "${'$'}a" = "-h" ] && want_help=1; done
+if [ "${'$'}want_help" -eq 0 ] && [ "${'$'}{#text_args[@]}" -eq 0 ]; then
   t=""
   IFS= read -t 3 -r -d '' t || true
   if [ -n "${'$'}t" ]; then set -- "${'$'}@" "${'$'}t"; fi

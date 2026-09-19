@@ -2,6 +2,8 @@ package me.rerere.rikkahub.data.termux.api
 
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -11,20 +13,35 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.utils.NotificationUtil
+import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlin.math.round
 
@@ -520,6 +537,385 @@ private fun batteryStatusHandler(context: Context, args: List<String>): TermuxAp
 }
 
 // ---------------------------------------------------------------------------
+// termux-clipboard-set / termux-clipboard-get
+// ---------------------------------------------------------------------------
+
+internal fun parseClipboardSetArgs(args: List<String>): ParsedArgs<String> {
+    for ((i, opt) in args.withIndex()) {
+        when {
+            opt == "-h" -> return ParsedArgs.Help
+            opt == "--" -> return ParsedArgs.Ok(args.subList(i + 1, args.size).joinToString(" "))
+            opt.startsWith("-") && opt.length > 1 -> return ParsedArgs.Invalid("illegal option $opt")
+            // getopts 在首个非选项参数处停止：其后一律视为剪贴板文本。
+            else -> return ParsedArgs.Ok(args.subList(i, args.size).joinToString(" "))
+        }
+    }
+    return ParsedArgs.Ok("")
+}
+
+internal fun parseClipboardGetArgs(args: List<String>): ParsedArgs<Unit> {
+    if (args.isEmpty()) return ParsedArgs.Ok(Unit)
+    val first = args[0]
+    return when {
+        first == "-h" -> ParsedArgs.Help
+        first == "--" ->
+            if (args.size == 1) ParsedArgs.Ok(Unit) else ParsedArgs.Invalid("too many arguments")
+
+        first.startsWith("-") && first.length > 1 -> ParsedArgs.Invalid("illegal option $first")
+        else -> ParsedArgs.Invalid("too many arguments")
+    }
+}
+
+private fun clipboardSetHandler(context: Context, args: List<String>): TermuxApiResult =
+    parseClipboardSetArgs(args).intoResult("termux-clipboard-set", CLIPBOARD_SET_USAGE) { text ->
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+            ?: return@intoResult TermuxApiResult(
+                exitCode = TermuxApiServer.EXIT_ERROR,
+                stderr = "termux-clipboard-set: clipboard service unavailable\n",
+            )
+        runCatching {
+            // Android 13+ 系统会自动弹出"已复制"预览，与官方行为一致。
+            clipboard.setPrimaryClip(ClipData.newPlainText("", text))
+        }.onFailure {
+            return@intoResult TermuxApiResult(
+                exitCode = TermuxApiServer.EXIT_ERROR,
+                stderr = "termux-clipboard-set: failed to set clipboard: ${it.message}\n",
+            )
+        }
+        TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK)
+    }
+
+private fun clipboardGetHandler(context: Context, args: List<String>): TermuxApiResult =
+    parseClipboardGetArgs(args).intoResult("termux-clipboard-get", CLIPBOARD_GET_USAGE) {
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+            ?: return@intoResult TermuxApiResult(
+                exitCode = TermuxApiServer.EXIT_ERROR,
+                stderr = "termux-clipboard-get: clipboard service unavailable\n",
+            )
+        // Android 10+ 限制后台读取剪贴板：app 不在前台时拿到空 clip，
+        // 与官方一致输出空内容、不报错。读取异常同样按空处理。
+        val text = runCatching {
+            val clip = clipboard.primaryClip ?: return@runCatching ""
+            buildString {
+                for (i in 0 until clip.itemCount) {
+                    val itemText = clip.getItemAt(i).coerceToText(context)
+                    if (!itemText.isNullOrEmpty()) append(itemText)
+                }
+            }
+        }.getOrDefault("")
+        TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK, stdout = text)
+    }
+
+// ---------------------------------------------------------------------------
+// termux-tts-speak
+// ---------------------------------------------------------------------------
+
+internal data class TtsOptions(
+    val engine: String?,
+    val language: String?,
+    val region: String?,
+    val variant: String?,
+    val pitch: Float,
+    val rate: Float,
+    val stream: Int,
+    val text: String,
+)
+
+private fun ttsStreamConstant(name: String): Int = when (name) {
+    "NOTIFICATION" -> AudioManager.STREAM_NOTIFICATION
+    "ALARM" -> AudioManager.STREAM_ALARM
+    "RING" -> AudioManager.STREAM_RING
+    "SYSTEM" -> AudioManager.STREAM_SYSTEM
+    "VOICE_CALL" -> AudioManager.STREAM_VOICE_CALL
+    // 官方对未知 stream 不报错，静默回退 MUSIC（实现默认流）。
+    else -> AudioManager.STREAM_MUSIC
+}
+
+internal fun parseTtsArgs(args: List<String>): ParsedArgs<TtsOptions> {
+    var engine: String? = null
+    var language: String? = null
+    var region: String? = null
+    var variant: String? = null
+    var pitch = 1.0f
+    var rate = 1.0f
+    var stream = AudioManager.STREAM_MUSIC
+
+    fun options(text: String) =
+        TtsOptions(engine, language, region, variant, pitch, rate, stream, text)
+
+    var i = 0
+    while (i < args.size) {
+        when (val opt = args[i]) {
+            "-h" -> return ParsedArgs.Help
+            "-e", "-l", "-n", "-v", "-s" -> when (val r = optionValue(args, i, opt)) {
+                is ParsedArgs.Ok -> {
+                    when (opt) {
+                        "-e" -> engine = r.value.first
+                        "-l" -> language = r.value.first
+                        "-n" -> region = r.value.first
+                        "-v" -> variant = r.value.first
+                        "-s" -> stream = ttsStreamConstant(r.value.first)
+                    }
+                    i = r.value.second
+                }
+
+                else -> return r.mapError()
+            }
+
+            "-p", "-r" -> when (val r = optionValue(args, i, opt)) {
+                is ParsedArgs.Ok -> {
+                    val name = if (opt == "-p") "pitch" else "rate"
+                    val v = r.value.first.toFloatOrNull()
+                        ?: return ParsedArgs.Invalid("invalid $name '${r.value.first}'")
+                    if (opt == "-p") {
+                        if (v !in 0.1f..2.0f) {
+                            return ParsedArgs.Invalid("pitch '$v' out of range (0.1-2.0)")
+                        }
+                        pitch = v
+                    } else {
+                        if (v !in 0.1f..4.0f) {
+                            return ParsedArgs.Invalid("rate '$v' out of range (0.1-4.0)")
+                        }
+                        rate = v
+                    }
+                    i = r.value.second
+                }
+
+                else -> return r.mapError()
+            }
+
+            "--" -> return ParsedArgs.Ok(options(args.subList(i + 1, args.size).joinToString(" ")))
+            else -> {
+                // getopts 在首个非选项参数处停止：其后一律视为待朗读文本。
+                if (opt.startsWith("-") && opt.length > 1) {
+                    return ParsedArgs.Invalid("illegal option $opt")
+                }
+                return ParsedArgs.Ok(options(args.subList(i, args.size).joinToString(" ")))
+            }
+        }
+    }
+    return ParsedArgs.Ok(options(""))
+}
+
+private const val TTS_INIT_TIMEOUT_MS = 10_000L
+
+private fun ttsSpeakHandler(context: Context, args: List<String>): TermuxApiResult =
+    parseTtsArgs(args).intoResult("termux-tts-speak", TTS_USAGE) { opts ->
+        // handler 是同步签名；TTS 初始化与 utterance 完成都是异步回调，
+        // 在 Dispatchers.IO 上 runBlocking 挂起等待（不占用主线程）。
+        runBlocking { speakText(context, opts) }
+    }
+
+private suspend fun speakText(context: Context, opts: TtsOptions): TermuxApiResult {
+    // TextToSpeech 需要在有 Looper 的线程上构造（回调经 main executor 分发），
+    // 放在主线程创建，挂起等待不阻塞线程。
+    val tts = withContext(Dispatchers.Main) {
+        withTimeoutOrNull(TTS_INIT_TIMEOUT_MS) {
+            suspendCancellableCoroutine<TextToSpeech?> { cont ->
+                val holder = arrayOfNulls<TextToSpeech>(1)
+                // invokeOnCancellation 必须先于任何 resume 注册，故用 holder 延迟取值。
+                cont.invokeOnCancellation { holder[0]?.let { runCatching { it.shutdown() } } }
+                try {
+                    holder[0] = TextToSpeech(context, { status ->
+                        cont.resume(if (status == TextToSpeech.SUCCESS) holder[0] else null)
+                    }, opts.engine)
+                } catch (_: Throwable) {
+                    cont.resume(null)
+                }
+            }
+        }
+    } ?: return TermuxApiResult(
+        exitCode = TermuxApiServer.EXIT_ERROR,
+        stderr = "termux-tts-speak: TTS engine unavailable\n",
+    )
+    try {
+        if (opts.language != null) {
+            // 官方仅在引擎不支持该语言时记日志，不报错。
+            tts.setLanguage(
+                when {
+                    opts.variant != null -> Locale(opts.language, opts.region ?: "", opts.variant)
+                    opts.region != null -> Locale(opts.language, opts.region)
+                    else -> Locale(opts.language)
+                }
+            )
+        }
+        tts.setPitch(opts.pitch)
+        tts.setSpeechRate(opts.rate)
+
+        // 官方逐行 QUEUE_ADD，等待全部非空行的 utterance 完成（onDone/onError 都算完成）。
+        val lines = opts.text.lines().filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK)
+
+        // expected = -1 表示 speak() 尚未全部提交，避免首条 utterance 提前回调
+        // 导致 finished >= expected 误判而 shutdown 未播队列。
+        val expected = AtomicInteger(-1)
+        val finished = AtomicInteger(0)
+        val resumed = AtomicBoolean(false)
+        suspendCancellableCoroutine<Unit> { cont ->
+            fun tryFinish() {
+                val exp = expected.get()
+                if (exp >= 0 && finished.get() >= exp && resumed.compareAndSet(false, true)) {
+                    cont.resume(Unit)
+                }
+            }
+            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+
+                override fun onDone(utteranceId: String?) {
+                    finished.incrementAndGet()
+                    tryFinish()
+                }
+
+                @Deprecated("Deprecated in Android API")
+                override fun onError(utteranceId: String?) {
+                    finished.incrementAndGet()
+                    tryFinish()
+                }
+            })
+            cont.invokeOnCancellation { runCatching { tts.stop() } }
+            var submitted = 0
+            lines.forEachIndexed { index, line ->
+                val utteranceId = "rikkahub-tts-$index"
+                val params = Bundle().apply {
+                    putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, opts.stream)
+                    putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                }
+                if (tts.speak(line, TextToSpeech.QUEUE_ADD, params, utteranceId) == TextToSpeech.SUCCESS) {
+                    submitted++
+                }
+            }
+            expected.set(submitted)
+            // submitted == 0（全部 speak() 同步失败）或回调已全部到达时立即返回。
+            tryFinish()
+        }
+        return TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK)
+    } finally {
+        runCatching { tts.shutdown() }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// termux-notification-remove
+// ---------------------------------------------------------------------------
+
+internal fun parseNotificationRemoveArgs(args: List<String>): ParsedArgs<String> {
+    if (args.isEmpty()) return ParsedArgs.Invalid("no notification id specified")
+    val first = args[0]
+    return when {
+        first == "-h" -> ParsedArgs.Help
+        first == "--" ->
+            if (args.size == 2) ParsedArgs.Ok(args[1])
+            else ParsedArgs.Invalid("no notification id specified")
+
+        first.startsWith("-") && first.length > 1 -> ParsedArgs.Invalid("illegal option $first")
+        args.size == 1 -> ParsedArgs.Ok(first)
+        else -> ParsedArgs.Invalid("no notification id specified")
+    }
+}
+
+private fun notificationRemoveHandler(context: Context, args: List<String>): TermuxApiResult =
+    parseNotificationRemoveArgs(args).intoResult("termux-notification-remove", NOTIFICATION_REMOVE_USAGE) { id ->
+        // termux-notification 以 tag=id、id=0 发布，按同键取消。
+        runCatching {
+            NotificationManagerCompat.from(context).cancel(id, 0)
+        }.onFailure {
+            return@intoResult TermuxApiResult(
+                exitCode = TermuxApiServer.EXIT_ERROR,
+                stderr = "termux-notification-remove: failed to remove notification: ${it.message}\n",
+            )
+        }
+        TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK)
+    }
+
+// ---------------------------------------------------------------------------
+// termux-volume
+// ---------------------------------------------------------------------------
+
+internal sealed interface VolumeRequest {
+    data object Query : VolumeRequest
+    data class Set(val stream: String, val volume: Int) : VolumeRequest
+}
+
+internal fun parseVolumeArgs(args: List<String>): ParsedArgs<VolumeRequest> = when {
+    args.isEmpty() -> ParsedArgs.Ok(VolumeRequest.Query)
+    args.size != 2 -> ParsedArgs.Invalid("Invalid argument count")
+    args[1].isEmpty() || !args[1].all { it.isDigit() } ->
+        ParsedArgs.Invalid("ERROR: Volume must be a number")
+
+    else -> ParsedArgs.Ok(VolumeRequest.Set(args[0], args[1].toInt()))
+}
+
+// 官方 SparseArray 按 key 升序迭代，输出顺序为 call/system/ring/music/alarm/notification。
+private val VOLUME_STREAMS = listOf(
+    AudioManager.STREAM_VOICE_CALL to "call",
+    AudioManager.STREAM_SYSTEM to "system",
+    AudioManager.STREAM_RING to "ring",
+    AudioManager.STREAM_MUSIC to "music",
+    AudioManager.STREAM_ALARM to "alarm",
+    AudioManager.STREAM_NOTIFICATION to "notification",
+)
+
+// 官方 ResultJsonWriter 使用两空格缩进。
+private val VOLUME_JSON = Json { prettyPrint = true; prettyPrintIndent = "  " }
+
+private fun volumeHandler(context: Context, args: List<String>): TermuxApiResult =
+    when (val parsed = parseVolumeArgs(args)) {
+        // 官方脚本把错误与 usage 输出到 stdout 并以 0 退出，保持一致。
+        is ParsedArgs.Invalid -> TermuxApiResult(
+            exitCode = TermuxApiServer.EXIT_OK,
+            stdout = "${parsed.message}\n$VOLUME_USAGE",
+        )
+
+        ParsedArgs.Help -> TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK, stdout = VOLUME_USAGE)
+        is ParsedArgs.Ok -> when (val request = parsed.value) {
+            VolumeRequest.Query -> {
+                val audioManager = context.getSystemService(AudioManager::class.java)
+                    ?: return TermuxApiResult(
+                        exitCode = TermuxApiServer.EXIT_ERROR,
+                        stderr = "termux-volume: audio service unavailable\n",
+                    )
+                val json = buildJsonArray {
+                    for ((stream, name) in VOLUME_STREAMS) {
+                        add(
+                            buildJsonObject {
+                                put("stream", name)
+                                put("volume", audioManager.getStreamVolume(stream))
+                                put("max_volume", audioManager.getStreamMaxVolume(stream))
+                            }
+                        )
+                    }
+                }
+                TermuxApiResult(
+                    exitCode = TermuxApiServer.EXIT_OK,
+                    stdout = VOLUME_JSON.encodeToString(JsonElement.serializer(), json) + "\n",
+                )
+            }
+
+            is VolumeRequest.Set -> {
+                val stream = VOLUME_STREAMS.firstOrNull { it.second == request.stream }?.first
+                    // 官方服务端把未知 stream 错误打到 stdout 且 exit 0。
+                    ?: return TermuxApiResult(
+                        exitCode = TermuxApiServer.EXIT_OK,
+                        stdout = "ERROR: Unknown stream: ${request.stream}\n",
+                    )
+                val audioManager = context.getSystemService(AudioManager::class.java)
+                    ?: return TermuxApiResult(
+                        exitCode = TermuxApiServer.EXIT_ERROR,
+                        stderr = "termux-volume: audio service unavailable\n",
+                    )
+                val volume = request.volume.coerceIn(0, audioManager.getStreamMaxVolume(stream))
+                runCatching { audioManager.setStreamVolume(stream, volume, 0) }.onFailure {
+                    return TermuxApiResult(
+                        exitCode = TermuxApiServer.EXIT_ERROR,
+                        stderr = "termux-volume: failed to set volume: ${it.message}\n",
+                    )
+                }
+                TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK)
+            }
+        }
+    }
+
+// ---------------------------------------------------------------------------
 // 命令表与 usage 文本
 // ---------------------------------------------------------------------------
 
@@ -529,6 +925,11 @@ fun buildTermuxApiHandlers(context: Context): Map<String, TermuxApiHandler> = ma
     "termux-vibrate" to { args: List<String> -> vibrateHandler(context, args) },
     "termux-torch" to { args: List<String> -> torchHandler(context, args) },
     "termux-battery-status" to { args: List<String> -> batteryStatusHandler(context, args) },
+    "termux-clipboard-set" to { args: List<String> -> clipboardSetHandler(context, args) },
+    "termux-clipboard-get" to { args: List<String> -> clipboardGetHandler(context, args) },
+    "termux-tts-speak" to { args: List<String> -> ttsSpeakHandler(context, args) },
+    "termux-notification-remove" to { args: List<String> -> notificationRemoveHandler(context, args) },
+    "termux-volume" to { args: List<String> -> volumeHandler(context, args) },
 )
 
 private const val NOTIFICATION_USAGE = """Usage: termux-notification [options]
@@ -569,4 +970,40 @@ Toggle LED Torch on device
 
 private const val BATTERY_USAGE = """Usage: termux-battery-status
 Get the status of the device battery.
+"""
+
+private const val CLIPBOARD_SET_USAGE = """Usage: termux-clipboard-set [text]
+Set the system clipboard text. The text to set is either supplied as arguments or read from stdin if no arguments are given.
+"""
+
+private const val CLIPBOARD_GET_USAGE = """Usage: termux-clipboard-get
+Get the system clipboard text.
+"""
+
+private const val TTS_USAGE = """Usage: termux-tts-speak [-e engine] [-l language] [-n region] [-v variant] [-p pitch] [-r rate] [-s stream] [text-to-speak]
+Speak text with a system text-to-speech (TTS) engine. The text to speak is either supplied as arguments or read from stdin if no arguments are given.
+  -e engine    TTS engine to use (see termux-tts-engines)
+  -l language  language to speak in (may be unsupported by the engine)
+  -n region    region of language to speak in
+  -v variant   variant of the language to speak in
+  -p pitch     pitch to use in speech. 1.0 is the normal pitch,
+                 lower values lower the tone of the synthesized voice,
+                 greater values increase it.
+  -r rate      speech rate to use. 1.0 is the normal speech rate,
+                 lower values slow down the speech
+                 (0.5 is half the normal speech rate)
+                 while greater values accelerates it
+                 (2.0 is twice the normal speech rate).
+  -s stream    audio stream to use (default:NOTIFICATION), one of:
+                 ALARM, MUSIC, NOTIFICATION, RING, SYSTEM, VOICE_CALL
+"""
+
+private const val NOTIFICATION_REMOVE_USAGE = """Usage: termux-notification-remove notification-id
+Remove a notification previously shown with termux-notification --id.
+"""
+
+private const val VOLUME_USAGE = """Usage: termux-volume stream volume
+Change volume of audio stream
+Valid audio streams are: alarm, music, notification, ring, system, call
+Call w/o arguments to show information about each audio stream
 """

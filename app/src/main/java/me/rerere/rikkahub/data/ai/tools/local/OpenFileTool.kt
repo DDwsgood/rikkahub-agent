@@ -35,7 +35,7 @@ fun openFileTool(
     streamer: InteractiveToolStreamer = InteractiveToolStreamer.NoOp,
 ): Tool = Tool(
     name = "open_file",
-    description = "Open a file in the user's OS viewer (Gallery / PDF reader / audio player / text editor). Backgrounds the app; user reads/edits in the destination app. Path accepts ~, an absolute file path, or a content:// URI (USB / SD / Downloads / cloud / shared media). Optional mime_type forces a specific viewer when the extension is ambiguous.",
+    description = "Open a file in the user's OS viewer (Gallery, PDF reader, player, editor). Path accepts ~, absolute path, or content:// URI. Optional mime_type forces a specific viewer.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {

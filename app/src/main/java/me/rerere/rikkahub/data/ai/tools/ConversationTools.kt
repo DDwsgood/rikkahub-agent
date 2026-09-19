@@ -27,10 +27,8 @@ fun createConversationTools(
     Tool(
         name = "recent_chats",
         description = """
-            List the user's recent conversations with you to understand their preferences and ongoing topics.
-            Returns conversation titles and the date of last activity, ordered by pinned first then most recently updated.
-            Use this when you need quick context about what the user has been discussing lately.
-            Only titles and dates are returned; use `conversation_search` to look up the actual content.
+            List the user's recent conversations (titles + last-activity dates, pinned
+            first). Use conversation_search to look up actual message content.
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
@@ -66,9 +64,9 @@ fun createConversationTools(
     Tool(
         name = "conversation_search",
         description = """
-            Full-text search across the user's past conversations to recall specific information they mentioned before.
-            Use focused keywords. Run multiple searches with different keywords if needed.
-            Each result includes the conversation title, a snippet with matched keywords wrapped in [brackets], and the date.
+            Full-text search across the user's past conversations. Use focused keywords;
+            run multiple searches if needed. Each result has the conversation title, a
+            snippet with matches in [brackets], and the date.
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(

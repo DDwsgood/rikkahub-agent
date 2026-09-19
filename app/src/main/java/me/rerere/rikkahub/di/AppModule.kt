@@ -53,7 +53,8 @@ val appModule = module {
     // 内嵌 Termux
     single { me.rerere.rikkahub.data.termux.TermuxEnvironment(get()) }
     single { me.rerere.rikkahub.data.termux.TermuxInstaller(get(), get(), get()) }
-    single { me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner(get(), get()) }
+    single { me.rerere.rikkahub.data.termux.api.TermuxApiServer(get()) }
+    single { me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner(get(), get(), get()) }
     // Interactive-tool post-action screenshot streamer for headless mode (Telegram bot /
     // cron / sub-agent). Resolves lazily inside each interactive tool's execute lambda so
     // there's no DI cycle through LocalTools → ChatService → ... → TelegramBotClient.

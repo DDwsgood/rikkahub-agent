@@ -13,6 +13,7 @@ import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.BuildConfig
 import me.rerere.rikkahub.data.preferences.TermuxPreferences
 import me.rerere.rikkahub.data.preferences.TermuxRuntime
+import me.rerere.rikkahub.data.termux.api.TermuxApiShims
 import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.File
@@ -90,6 +91,11 @@ class TermuxInstaller(
         val ready = result.isSuccess && environment.isInstalled()
         TermuxRuntime.embeddedTermuxInstalled = ready
         preferences.setEmbeddedTermuxInstalled(ready)
+        if (ready) {
+            // 幂等投放 termux-* API shim（内容一致时跳过），覆盖安装/修复/已就绪三条路径。
+            runCatching { TermuxApiShims.install(environment.prefix) }
+                .onFailure { Log.w(TAG, "Failed to install Termux API shim scripts", it) }
+        }
         return result
     }
 

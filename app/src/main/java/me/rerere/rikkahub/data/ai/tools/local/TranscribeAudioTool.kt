@@ -64,7 +64,7 @@ private const val PREFERRED_MODEL_NAME = "ggml-tiny.bin"
  */
 fun transcribeAudioFileTool(context: Context): Tool = Tool(
     name = "transcribe_audio_file",
-    description = "Transcribe speech in an audio file via whisper.cpp on Termux. Accepts OGG/Opus (Telegram voice notes), WAV, MP3, M4A, FLAC. Returns text + detected language + duration + transcription time. Needs whisper.cpp + a model — error envelope's `hint` field tells you which is missing. Path absolute or ~.",
+    description = "Transcribe speech in an audio file via whisper.cpp on Termux (OGG/Opus, WAV, MP3, M4A, FLAC). Returns text + detected language + duration. Path absolute or ~.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {

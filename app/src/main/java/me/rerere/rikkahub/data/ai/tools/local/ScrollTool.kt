@@ -58,10 +58,9 @@ fun scrollTool(
 ): Tool = Tool(
     name = "scroll",
     description = """
-        Scroll the active window in the given direction (up/down/left/right). If x and y are
-        provided, scrolls the scrollable container at that point; otherwise scrolls the first
-        scrollable container found. Falls back to a swipe gesture if no scrollable container
-        can be located. Returns {success: bool, reason?: string}.
+        Scroll the active window in a direction (up/down/left/right). With x/y, scrolls
+        the container at that point; otherwise the first scrollable container.
+        Falls back to a swipe gesture when no scrollable node is found.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

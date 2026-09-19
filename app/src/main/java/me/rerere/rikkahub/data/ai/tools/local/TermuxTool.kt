@@ -213,24 +213,18 @@ fun termuxRunCommandTool(
 ): Tool = Tool(
     name = "termux_run_command",
     description = """
-        Execute a shell command in the embedded Termux environment (Android host shell, not inside the proot workspace). By default the command
-        runs in the background and its stdout / stderr / exit_code are returned to you so
-        you can reason on the output (e.g. check if a package is installed, read a file,
-        run a script). Pass interactive=true to run in a foreground process; output is still
-        captured. In command mode, apt/apt-get are automatically wrapped with
-        DEBIAN_FRONTEND=noninteractive and safe dpkg defaults; do not add extra -y flags
-        unless the user specifically asked for unattended upgrades.
+        Run a shell command in the embedded Termux environment (Android host shell, not the proot workspace). Returns stdout, stderr, exit_code. Pass interactive=true for a foreground process. apt/apt-get are wrapped with noninteractive defaults automatically.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
                 put("command", buildJsonObject {
                     put("type", "string")
-                    put("description", "Shell command line, e.g. 'pkg update && pkg upgrade -y'. Mutually exclusive with executable+arguments.")
+                    put("description", "Shell command line. Mutually exclusive with executable+arguments.")
                 })
                 put("executable", buildJsonObject {
                     put("type", "string")
-                    put("description", "Absolute path to executable, e.g. ${embeddedTermuxRunner.env.bashPath.absolutePath}. Pairs with arguments[].")
+                    put("description", "Absolute path to executable (pairs with arguments[]).")
                 })
                 put("arguments", buildJsonObject {
                     put("type", "array")
@@ -243,15 +237,15 @@ fun termuxRunCommandTool(
                 })
                 put("interactive", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "If true, runs in a foreground process. In the embedded model output is still captured. Default false.")
+                    put("description", "Run in a foreground process (output still captured). Default false.")
                 })
                 put("background", buildJsonObject {
                     put("type", "boolean")
-                    put("description", "Command mode only. If true, launch the command fully detached (nohup, streams redirected) and return immediately with its PID. Use for servers / long-running processes that would otherwise block until timeout. Default false.")
+                    put("description", "Launch fully detached (nohup) and return immediately with the PID. For servers/long-running processes. Default false.")
                 })
                 put("timeout_seconds", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Capture-mode timeout in seconds. Omit or pass 0 to use the user-configured default (Settings -> Termux). Max ${TermuxDefaults.MAX_COMMAND_TIMEOUT_SECONDS} s.")
+                    put("description", "Timeout in seconds (0/omit = default, max ${TermuxDefaults.MAX_COMMAND_TIMEOUT_SECONDS}).")
                 })
             }
         )

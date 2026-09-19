@@ -223,6 +223,12 @@ object HardlineCommandGuard {
             }
             toolName == "ssh_exec" || toolName == "ssh_exec_saved" ->
                 checkCommand(input["command"]?.jsonPrimitive?.contentOrNull)
+            // adb_shell: the `command` arg is evaluated by the target device's shell as
+            // uid 2000 — a strictly higher privilege than the app sandbox (pm uninstall,
+            // settings put, input injection), so the same deny floor applies. adb_pair's
+            // args are validated host/port/code fields, no shell content.
+            toolName == "adb_shell" ->
+                checkCommand(input["command"]?.jsonPrimitive?.contentOrNull)
             // Sub-agent dispatch — the spawned LLM gets the parent's full tool surface
             // headlessly, so a `task` / `prompt` containing a literal hardline-blocked
             // command (e.g. `rm -rf /`) shouldn't be authorised even if the parent

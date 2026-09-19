@@ -23,10 +23,9 @@ import me.rerere.rikkahub.data.repository.SshHostRepository
 fun saveSshHostTool(repo: SshHostRepository): Tool = Tool(
     name = "save_ssh_host",
     description = """
-        Persist an SSH host (host, port, user, credentials) under a short name so the LLM can
-        reference it later via ssh_exec_saved / ssh_upload / ssh_download without re-typing
-        credentials. Replaces any existing host with the same name. Pass either password OR
-        private_key for authentication.
+        Save an SSH host (host, port, user, credentials) under a short name for use by
+        ssh_exec_saved / ssh_upload / ssh_download. Replaces an existing host with the
+        same name. Pass either password OR private_key.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -154,9 +153,8 @@ fun forgetSshHostKeyTool(context: Context): Tool = Tool(
 fun sshExecSavedTool(context: Context, repo: SshHostRepository): Tool = Tool(
     name = "ssh_exec_saved",
     description = """
-        Run a shell command on a previously-saved SSH host (looked up by name). Returns
-        stdout, stderr, exit_code. For destructive or system-level commands you should
-        explicitly confirm with the user before invoking.
+        Run a shell command on a previously-saved SSH host (looked up by name).
+        Returns stdout, stderr, exit_code.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

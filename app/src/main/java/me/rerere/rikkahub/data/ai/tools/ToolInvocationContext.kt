@@ -29,10 +29,14 @@ import me.rerere.ai.core.Tool
  *    that read like "I looked at it" - the root cause of confabulated image descriptions.
  *    Defaults to `true`: the no-knowledge fallback preserves the pre-fix behaviour, and
  *    ChatService (the only LLM-driven dispatch path) always sets it explicitly.
- *  - [dynamicToolsProvider]: returns the tools the assistant may use for this generation.
- *    The generation loop invokes it before every provider request so every usable tool is
- *    declared and resolvable at each step. Availability is independent of `search_tools`:
- *    search is only a capability-discovery aid and never gates declaration or execution.
+ *  - [dynamicToolsProvider]: returns the extra tools to DECLARE for this generation
+ *    (merged into the request's tools field before every provider call). ChatService
+ *    returns only the tools the model has already discovered via `search_tools` or
+ *    actually executed, keeping the first request's tool list small.
+ *  - [resolvableToolsProvider]: returns every tool the assistant may EXECUTE this
+ *    generation, whether declared or not. Used as the resolveTool fallback so a tool
+ *    the model learned about from search results or conversation history still runs
+ *    even when it was never declared in the request.
  */
 data class ToolInvocationContext(
     val callerAssistantId: String? = null,
@@ -40,6 +44,7 @@ data class ToolInvocationContext(
     val isHeadless: Boolean = false,
     val modelCanSeeImages: Boolean = true,
     val dynamicToolsProvider: (() -> List<Tool>)? = null,
+    val resolvableToolsProvider: (() -> List<Tool>)? = null,
 ) {
     companion object {
         /** No-knowledge fallback. Factories that depend on context MUST handle this. */

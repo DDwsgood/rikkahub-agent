@@ -25,9 +25,8 @@ fun swipeTool(
 ): Tool = Tool(
     name = "swipe",
     description = """
-        Swipe between two absolute screen coordinates. Default duration is 300ms; provide
-        duration_ms (>= 50, <= 5000) to override. Returns {success: bool, reason?: string} or
-        the standard service-not-active envelope.
+        Swipe between two absolute screen coordinates. Default duration 300ms;
+        duration_ms overrides (50-5000).
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

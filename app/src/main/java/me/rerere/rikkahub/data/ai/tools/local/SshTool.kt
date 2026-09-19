@@ -481,11 +481,7 @@ internal fun runOnSession(session: Session, command: String, timeoutMs: Int, std
 fun sshExecTool(context: Context): Tool = Tool(
     name = "ssh_exec",
     description = """
-        Connect to a remote host via SSH and run a single shell command. Returns stdout, stderr,
-        and exit code. For destructive or system-level commands you should explicitly confirm
-        with the user before invoking. Pass either password OR private_key for authentication.
-        For hosts you'll use repeatedly, prefer save_ssh_host + ssh_exec_saved instead so
-        credentials don't appear in chat history every time.
+        Run a single shell command on a remote host over SSH. Returns stdout, stderr, exit code. Authenticate with password OR private_key. For repeat use prefer save_ssh_host + ssh_exec_saved so credentials stay out of chat history.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -497,8 +493,8 @@ fun sshExecTool(context: Context): Tool = Tool(
                 put("private_key", buildJsonObject { put("type", "string"); put("description", "Full PEM/OpenSSH private key contents") })
                 put("passphrase", buildJsonObject { put("type", "string"); put("description", "Optional passphrase for the private key") })
                 put("command", buildJsonObject { put("type", "string"); put("description", "Shell command to run on the remote host") })
-                put("stdin", buildJsonObject { put("type", "string"); put("description", "Optional data piped to the command's stdin (then EOF). Quote-free way to write a file (command=\"cat > /path\") or feed input; omit to send an immediate EOF.") })
-                put("background", buildJsonObject { put("type", "boolean"); put("description", "If true, launch the command fully detached (nohup, streams redirected) and return immediately with its PID instead of waiting. Use for servers/long jobs that would otherwise block until timeout. Default false.") })
+                put("stdin", buildJsonObject { put("type", "string"); put("description", "Data piped to the command's stdin, then EOF (e.g. command=\"cat > /path\"). Omit for immediate EOF.") })
+                put("background", buildJsonObject { put("type", "boolean"); put("description", "Launch detached (nohup) and return immediately with the PID. For servers/long jobs. Default false.") })
                 put("timeout_seconds", buildJsonObject { put("type", "integer"); put("description", "Total timeout including connect+exec, default 30, max 300") })
             },
             required = listOf("host", "user", "command")

@@ -20,7 +20,7 @@ fun playMediaTool(
     streamer: InteractiveToolStreamer = InteractiveToolStreamer.NoOp,
 ): Tool = Tool(
     name = "play_media",
-    description = "Start a new playback session from position 0 with system media controls (lock-screen notification, Bluetooth buttons). DESTRUCTIVE — replaces any active session; loses prior playback position. Use only for a brand-new track or 'play X from the start'. To fix an inaudible session use resume_media / seek_media / set_volume — NOT this. Sources: file://, content://, https://. Optional title/artist/album/artwork_uri for the notification.",
+    description = "Start a new playback session from position 0 with system media controls. Replaces any active session — only for a brand-new track; to fix the current one use resume_media / seek_media / set_volume. Sources: file://, content://, https://. Optional title/artist/album/artwork_uri for the notification.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -84,7 +84,7 @@ fun playMediaTool(
 
 fun stopMediaTool(context: Context): Tool = Tool(
     name = "stop_media",
-    description = "Stop the active media session and dismiss the notification. Use this only when the user is DONE with the track and is moving on to something else (\"stop the music\", \"end playback\"). For \"hold on\" / \"I'll be right back\" / \"pause for a sec\" use pause_media instead — that preserves the live MediaPlayer and lets resume_media continue exactly where the user left off. stop_media tears the player down; resume_media's fallback can replay the last-stopped track from the saved position, but it's a best-effort recovery, not the primary path.",
+    description = "Stop the active media session and dismiss the notification. Use only when the user is done with the track; for a temporary pause use pause_media so resume_media can continue in place.",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject { })
     },

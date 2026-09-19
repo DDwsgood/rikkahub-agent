@@ -78,8 +78,8 @@ private suspend fun withSavedHostSession(
 fun sshUploadTool(context: Context, repo: SshHostRepository): Tool = Tool(
     name = "ssh_upload",
     description = """
-        Upload a local file from the device to a remote path on a saved SSH host using SFTP.
-        Both paths are absolute file paths. The remote directory must already exist.
+        Upload a local file to a remote path on a saved SSH host via SFTP.
+        Both paths are absolute; the remote directory must already exist.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -129,9 +129,8 @@ fun sshUploadTool(context: Context, repo: SshHostRepository): Tool = Tool(
 fun sshDownloadTool(context: Context, repo: SshHostRepository): Tool = Tool(
     name = "ssh_download",
     description = """
-        Download a remote file from a saved SSH host to a local path on the device using SFTP.
-        Both paths are absolute file paths. The local directory must already exist (or be the
-        app's cache/files dir).
+        Download a remote file from a saved SSH host to a local path via SFTP.
+        Both paths are absolute; the local directory must already exist.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

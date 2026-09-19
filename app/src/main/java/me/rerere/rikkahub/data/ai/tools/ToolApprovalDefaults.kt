@@ -31,6 +31,12 @@ object ToolApprovalDefaults {
         "termux_run_command",
         "transcribe_audio_file",  // shells out to whisper-cli via Termux; reads arbitrary audio files
         "eval_javascript",
+        // adb over TCP/IP — adb_shell runs as uid 2000 on the target (incl. THIS device
+        // via wireless debugging): pm/settings/am/input/dumpsys are all reachable, so it
+        // sits in the same approval tier as termux_run_command + ssh_exec. adb_pair is
+        // the one-time pairing ceremony — also gated (it mints trusted adb keys).
+        "adb_shell",
+        "adb_pair",
 
         // Remote shell (SSH)
         "ssh_exec",

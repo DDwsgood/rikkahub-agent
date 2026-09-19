@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import me.rerere.rikkahub.data.termux.api.TermuxApiServer
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit
 class EmbeddedTermuxRunner(
     val env: TermuxEnvironment,
     private val installer: TermuxInstaller,
+    private val apiServer: TermuxApiServer,
 ) {
 
     /**
@@ -64,6 +66,8 @@ class EmbeddedTermuxRunner(
                 exitCode = 127,
             )
         }
+        // termux-* shim 依赖 app 内 API server；与命令进程同生命周期懒启动。
+        apiServer.ensureStarted()
         val effectiveCommand = if (wrapApt) wrapAptNonInteractive(command) else command
         val process = try {
             buildProcess(effectiveCommand, workdir).start()
@@ -152,6 +156,8 @@ class EmbeddedTermuxRunner(
         return ProcessBuilder(launcher).apply {
             directory(effectiveWorkdir)
             environment().putAll(env.buildProcessEnv())
+            // 注入 shim 连接参数（RIKKA_API_HOST/PORT/TOKEN）；server 未运行时为空。
+            environment().putAll(apiServer.sessionEnv())
             redirectErrorStream(false)
         }
     }

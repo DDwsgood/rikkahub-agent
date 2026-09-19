@@ -138,10 +138,9 @@ fun grantDirectoryAccessTool(
 ): Tool = Tool(
     name = "grant_directory_access",
     description = """
-        Open the system directory picker so the user can grant persistent read+write
-        access to a storage tree (USB / SD / Downloads / Pictures / Drive / Dropbox /
-        OneDrive). The grant lets the file tools and archive tools work on that tree.
-        Returns {granted, content_uri?, display_name?, authority?}.
+        Open the system directory picker so the user grants persistent read+write
+        access to a storage tree (USB / SD / Downloads / cloud). File and archive
+        tools can then work on that tree.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

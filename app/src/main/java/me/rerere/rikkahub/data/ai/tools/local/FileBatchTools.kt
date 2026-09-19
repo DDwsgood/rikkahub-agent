@@ -97,11 +97,9 @@ private fun batchErr(detail: String) =
 fun batchCopyTool(): Tool = Tool(
     name = "batch_copy",
     description = """
-        Copy many files to a destination directory in one call. Provide either paths (an
-        explicit list) or root + pattern (a glob). dst_dir is the destination directory;
-        each source is copied into it under its own filename. overwrite defaults false.
-        Every path is checked by the path-safety guard. Returns {success: N, failed:
-        [{path, error}]}.
+        Copy many files into dst_dir in one call. Provide either paths (explicit list)
+        or root + pattern (glob). overwrite defaults false. Unsafe paths are refused.
+        Returns {success: N, failed: [{path, error}]}.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -158,10 +156,9 @@ fun batchCopyTool(): Tool = Tool(
 fun batchMoveTool(): Tool = Tool(
     name = "batch_move",
     description = """
-        Move many files into a destination directory in one call. Provide either paths (an
-        explicit list) or root + pattern (a glob). dst_dir is the destination directory.
-        overwrite defaults false. Every path is checked by the path-safety guard. Returns
-        {success: N, failed: [{path, error}]}.
+        Move many files into dst_dir in one call. Provide either paths (explicit list)
+        or root + pattern (glob). overwrite defaults false. Unsafe paths are refused.
+        Returns {success: N, failed: [{path, error}]}.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -263,10 +260,9 @@ fun batchMoveTool(): Tool = Tool(
 fun batchDeleteTool(): Tool = Tool(
     name = "batch_delete",
     description = """
-        Delete many files or directories in one call. Provide either paths (an explicit list)
-        or root + pattern (a glob). recursive defaults false (a non-empty directory fails
-        unless recursive=true). Every path is checked by the path-safety guard. Returns
-        {success: N, failed: [{path, error}]}.
+        Delete many files or directories in one call. Provide either paths (explicit
+        list) or root + pattern (glob). Non-empty directories need recursive=true.
+        Unsafe paths are refused. Returns {success: N, failed: [{path, error}]}.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

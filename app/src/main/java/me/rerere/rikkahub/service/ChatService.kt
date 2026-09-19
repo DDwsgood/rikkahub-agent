@@ -124,6 +124,9 @@ internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
  */
 internal val ESSENTIAL_TOOL_NAMES = setOf("get_time_info", "eval_javascript")
 
+/** Max length of an MCP tool description injected into prompts/search results. */
+private const val MAX_MCP_TOOL_DESC_CHARS = 500
+
 /**
  * Outcome of a single [ChatService.sendMessage] turn, delivered via the returned
  * [CompletableDeferred] handle. Headless consumers (CronJobWorker) await this to observe
@@ -998,8 +1001,10 @@ class ChatService(
             val mcpToolDefinitions = availableMcpTools.map { (serverId, serverName, tool) ->
                 val serverSlug = serverId.toString().take(8).replace("-", "")
                 val mcpToolName = "mcp__${serverSlug}_${serverName}__${tool.name}"
-                val effectiveDesc = tool.description?.takeIf { it.isNotBlank() }
-                    ?: "MCP tool: ${tool.name} from $serverName"
+                // Cap MCP-provided descriptions: servers can ship multi-KB docs that
+                // would dominate search results and the declared schema once discovered.
+                val effectiveDesc = (tool.description?.takeIf { it.isNotBlank() }
+                    ?: "MCP tool: ${tool.name} from $serverName").take(MAX_MCP_TOOL_DESC_CHARS)
                 ToolRegistry.register(
                     ToolRegistry.ToolEntry(
                         name = mcpToolName,
@@ -1023,29 +1028,41 @@ class ChatService(
                 )
             }
 
-            // Every tool the assistant may use (enabled local tools + always-injected
-            // essentials + currently available MCP tools) is always declared and resolvable
-            // at every provider step, with or without search_tools. The set is already
-            // filtered by the assistant's config above, so disabled or nonexistent tools
-            // never appear here. search_tools remains available purely for capability
-            // discovery — it no longer controls what can be executed.
+            // Only core tools are declared up front; every other enabled tool is
+            // exposed lazily. A non-core tool joins the declared set once the model
+            // discovers it via search_tools (recorded on the ConversationSession) or
+            // executes it (e.g. from conversation history) — the execute wrapper below
+            // marks that. Execution is never gated: GenerationHandler's
+            // resolvableToolsProvider fallback resolves every enabled tool whether or
+            // not it was declared in the request.
+            val discoveredToolNames = session.discoveredToolNames
             val discoverableTools = buildDiscoverableToolMap(allLocalTools, mcpToolDefinitions)
+                .mapValues { (_, tool) ->
+                    tool.copy(execute = { input ->
+                        discoveredToolNames.add(tool.name)
+                        tool.execute(input)
+                    })
+                }
             val invocationCtx = baseInvocationCtx.copy(
                 dynamicToolsProvider = {
+                    discoverableTools.values.filter { it.name in discoveredToolNames }
+                },
+                resolvableToolsProvider = {
                     discoverableTools.values.toList()
                 },
             )
 
             // Static tools injected up front (search_tools meta-tool + web search + direct
-            // core tools + essentials + workspace + skills). Everything else the assistant
-            // may use — non-core local tools and MCP tools — is exposed every step through
-            // dynamicToolsProvider, so the model can call any of them without having run
-            // search_tools first. Overlapping names are deduplicated by GenerationHandler.
+            // core tools + essentials + workspace + skills). Non-core local tools and MCP
+            // tools join the request only after the model discovers them via search_tools
+            // or executes them — resolvableToolsProvider keeps every enabled tool callable
+            // regardless. Overlapping names are deduplicated by GenerationHandler.
             val tools = buildList {
                 // Always inject the search_tools meta-tool first.
                 add(
                     toolSearchTool(
                         availableToolNames = discoverableTools.keys,
+                        onDiscovered = { names -> discoveredToolNames.addAll(names) },
                     )
                 )
 

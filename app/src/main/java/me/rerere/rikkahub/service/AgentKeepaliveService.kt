@@ -121,17 +121,12 @@ class AgentKeepaliveService : Service() {
     private fun acquireWakeLockIfNeeded() {
         if (TelegramBotService.isRunning) {
             Log.i(TAG, "Telegram bot FGS already running — skipping keepalive wakelock")
-            return
+        } else {
+            lockWakeLock()
         }
-        if (wakeLock == null) {
-            val pm = getSystemService(PowerManager::class.java) ?: return
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG).apply {
-                setReferenceCounted(false)
-            }
-        }
-        runCatching { wakeLock?.acquire(WAKELOCK_CHUNK_MS) }
-            .onFailure { Log.w(TAG, "wakelock acquire failed", it) }
-
+        // The watchdog starts even when the bot currently owns the coverage: if the bot
+        // later stops while this service is still running, the watchdog picks the lock up
+        // and the transition stays gap-free.
         if (wakeLockWatchdog?.isActive != true) {
             wakeLockWatchdog = scope.launch {
                 while (true) {
@@ -141,15 +136,26 @@ class AgentKeepaliveService : Service() {
                     // release our lock so only one always-on holder remains.
                     if (TelegramBotService.isRunning) {
                         releaseWakeLock()
-                        continue
-                    }
-                    val lock = wakeLock ?: continue
-                    if (!lock.isHeld) {
-                        runCatching { lock.acquire(WAKELOCK_CHUNK_MS) }
-                            .onFailure { Log.w(TAG, "wakelock re-acquire failed", it) }
+                    } else {
+                        lockWakeLock()
                     }
                 }
             }
+        }
+    }
+
+    /** Creates the WakeLock on first use and acquires a fresh chunk when not held. */
+    private fun lockWakeLock() {
+        if (wakeLock == null) {
+            val pm = getSystemService(PowerManager::class.java) ?: return
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG).apply {
+                setReferenceCounted(false)
+            }
+        }
+        val lock = wakeLock ?: return
+        if (!lock.isHeld) {
+            runCatching { lock.acquire(WAKELOCK_CHUNK_MS) }
+                .onFailure { Log.w(TAG, "wakelock acquire failed", it) }
         }
     }
 

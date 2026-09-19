@@ -33,14 +33,10 @@ import java.io.File
 fun writeTextFileTool(context: Context): Tool = Tool(
     name = "write_text_file",
     description = """
-        Save text content to a file at the given absolute path. The full path must be
-        outside system / other-app sandboxes (the path-safety guard refuses those with a
-        structured envelope). Three behaviors via the append + overwrite flags: default
-        refuses if the file exists; overwrite=true truncates; append=true appends to
-        existing content (creates the file if missing). Creates missing parent directories
-        automatically for app workspace paths and common shared-storage user folders.
-        Also accepts a content:// URI (USB / SD / Downloads / cloud via SAF grant);
-        append is not supported on content:// URIs.
+        Save text content to a file at the given absolute path (system/other-app
+        sandbox paths are refused). Default refuses if the file exists;
+        overwrite=true truncates; append=true appends. Missing parent directories
+        are created where allowed. Also accepts a content:// URI (no append there).
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

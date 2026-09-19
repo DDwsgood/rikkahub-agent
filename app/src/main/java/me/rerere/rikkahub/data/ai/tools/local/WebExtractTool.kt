@@ -25,14 +25,10 @@ private const val WEB_EXTRACT_TIMEOUT_MS = 30_000L
 fun webExtractTool(client: OkHttpClient): Tool = Tool(
     name = "web_extract",
     description = """
-        Read a web page and return its readable content with navigation, ads and boilerplate
-        removed. mode: 'article' (default, main prose), 'text' (all body text), 'links',
-        or 'metadata'. max_chars caps the result (default 32768); when truncated=true pass
-        next_start_index back as start_index to continue reading. Use this instead of
-        web_fetch when you want to read a page rather than inspect its markup. Pages that
-        build their content with JavaScript may return empty_extraction, use the browser
-        tools for those. Returns {status, final_url, title, text, truncated,
-        next_start_index} or {error, detail, recovery}.
+        Read a web page and return its readable content (navigation, ads, boilerplate
+        removed). Prefer over web_fetch for reading pages. mode: 'article' (default),
+        'text', 'links', or 'metadata'. When truncated=true pass next_start_index back
+        as start_index to continue. JavaScript-rendered pages may fail; use browser tools.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

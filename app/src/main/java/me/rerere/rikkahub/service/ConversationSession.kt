@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.model.Conversation
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.uuid.Uuid
 
@@ -30,6 +31,13 @@ class ConversationSession(
 
     // 处理状态（如 OCR 识别中）
     val processingStatus = MutableStateFlow<String?>(null)
+
+    /**
+     * Non-core tools this conversation has already discovered (via search_tools hits)
+     * or executed. ChatService declares only these dynamic tools in each request so
+     * the first prompt stays small; execution itself is not gated by membership here.
+     */
+    val discoveredToolNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     // 生成任务（内聚在 session 中）
     private val _generationJob = MutableStateFlow<Job?>(null)

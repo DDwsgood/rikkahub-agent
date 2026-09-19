@@ -406,6 +406,8 @@ class GenerationHandler(
             }
             fun resolveTool(name: String): Tool? =
                 toolsInternal.find { it.name == name }
+                    ?: invocationContext?.resolvableToolsProvider?.invoke()
+                        ?.find { it.name == name }
                     ?: invocationContext?.dynamicToolsProvider?.invoke()
                         ?.find { it.name == name }
 

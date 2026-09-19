@@ -47,6 +47,11 @@
   <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
   <uses-permission android:name="android.permission.WRITE_SETTINGS"
       tools:ignore="ProtectedPermissions" />
+  <!-- signature|development — granted via `adb shell pm grant` (the local-adb
+       bootstrap path the adb_shell tool hints at). Lets the app toggle
+       adb_wifi_enabled itself after the first wireless-debugging pairing. -->
+  <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+      tools:ignore="ProtectedPermissions" />
   <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
   <uses-permission android:name="android.permission.READ_CONTACTS" />

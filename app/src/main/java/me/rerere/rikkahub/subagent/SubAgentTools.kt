@@ -54,21 +54,11 @@ fun subagentDispatchTool(
     name = "subagent_dispatch",
     description = """
         Dispatch a focused sub-agent — a clean-context LLM run that returns a concise
-        summary. Use when the task is independent (research, lookup, multi-step work)
-        and would otherwise pollute your context with intermediate output, OR when the
-        user explicitly asks for parallel work.
-
-        Pass a clear, self-contained task — the sub-agent doesn't see your conversation,
-        so restate any context it needs. Pass a short label so the user can recognise
-        the running sub-agent. For long-running work, set run_in_background=true and
-        poll with subagent_get; otherwise foreground (default) blocks until terminal.
-
-        Concurrency caps: each assistant has its own (default 3, configurable 1-8) and
-        there's a global cap of 16 across all assistants. Over-cap dispatches fail with
-        a clear error — back off and retry, or wait for a slot.
-
-        Approval-required: every dispatch needs explicit confirmation. Eligible for
-        Always Allow if the user trusts the assistant to delegate freely.
+        summary. Use for independent multi-step work that would pollute your context,
+        or when the user asks for parallel work. The sub-agent can't see this
+        conversation — restate any context it needs. Set run_in_background=true and
+        poll with subagent_get for long tasks; foreground (default) blocks until done.
+        Per-assistant and global concurrency caps apply; over-cap calls fail — retry later.
     """.trimIndent(),
     parameters = {
         InputSchema.Obj(

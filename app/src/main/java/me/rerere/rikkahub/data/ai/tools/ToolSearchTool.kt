@@ -18,31 +18,25 @@ import me.rerere.rikkahub.utils.JsonInstant
  *
  * 默认注入到每个 LLM 请求中。LLM 调用它来发现不知道名字的能力
  * （按关键字或类别搜索，返回匹配工具的完整 schema）。
- * 这只是能力发现：所有已启用工具在每个步骤都已声明、可直接调用，
- * 调用本工具与否不会影响任何工具的声明或执行。
+ * 非核心工具不在首个请求的 tools 字段中声明：匹配到的工具名通过
+ * [onDiscovered] 记入会话的 discovered 集合，之后的请求才会声明它们。
+ * 声明与否不影响执行——模型调用任何已启用工具都能被解析执行。
  */
 fun toolSearchTool(
     availableToolNames: Set<String>? = null,
+    onDiscovered: (Collection<String>) -> Unit = {},
 ) = Tool(
     name = "search_tools",
     description = """
-        Search for available tools by keyword or category.
-        Use this when you need a capability but don't know which tool provides it.
-        Returns matching tool names, descriptions, categories, and parameter schemas
-        so you can call them immediately.
-
-        Multi-keyword search: separate keywords with spaces. ALL keywords must match
-        (tool name or description). Example: "ssh upload" matches tools with both
-        "ssh" and "upload" in their name or description. If no tool matches all
-        keywords, the search falls back to OR semantics, then to fuzzy matching.
-
-        Category browse: omit query and pass category to list all tools in that
-        category. Example: category="file" lists all file management tools.
-
-        Available categories: device, media, phone, camera, screen, app, shell, telegram,
-        cron, file, notification, mcp, automation, config, subagent, skill,
-        intent, workflow, browser, security, nfc, storage, archive, keyboard,
-        workspace, download, location, sensor, telephony, wallpaper, misc
+        Find device/MCP tools by keyword or category. Most tools are NOT preloaded:
+        call this first when you need a capability — matches are returned with full
+        schemas and become callable immediately.
+        Multiple space-separated keywords must ALL match (falls back to OR, then fuzzy).
+        Omit query and pass category to browse a category.
+        Categories: device, media, phone, camera, screen, app, shell, telegram, cron,
+        file, notification, mcp, automation, config, subagent, skill, intent, workflow,
+        browser, security, nfc, storage, archive, keyboard, workspace, download,
+        location, sensor, telephony, wallpaper, misc
     """.trimIndent(),
     parameters = {
         InputSchema.Obj(
@@ -78,6 +72,9 @@ fun toolSearchTool(
         val matches = ToolRegistry.search(query, category)
             .filter { availableToolNames == null || it.name in availableToolNames }
             .take(limit)
+
+        // Surfaced tools join the declared set on subsequent provider calls.
+        onDiscovered(matches.map { it.name })
 
         val result = buildJsonObject {
             put("count", matches.size)

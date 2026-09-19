@@ -57,10 +57,9 @@ fun findNodeTool(
 ): Tool = Tool(
     name = "find_node",
     description = """
-        Find accessibility nodes in the active window matching a selector. by: text |
-        content_description | view_id_resource_name. Returns {matches: [...]} with at most 50
-        node summaries. Use read_window_tree first to see what's available, then this for
-        targeted lookups.
+        Find accessibility nodes in the active window matching a selector
+        (by: text | content_description | view_id_resource_name). Returns up to 50
+        node summaries. Use read_window_tree first to see what's available.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -136,10 +135,8 @@ fun clickNodeTool(
 ): Tool = Tool(
     name = "click_node",
     description = """
-        Find an accessibility node by selector and tap it via ACTION_CLICK. If the matched node
-        is not clickable but a clickable ancestor exists, the ancestor is clicked instead.
-        nth (default 0) disambiguates when multiple nodes match. Returns {success, clicked, ...}
-        or a structured error.
+        Find an accessibility node by selector and tap it (ACTION_CLICK; falls back to a
+        clickable ancestor). nth (default 0) disambiguates multiple matches.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -245,11 +242,9 @@ fun setTextTool(
 ): Tool = Tool(
     name = "set_text",
     description = """
-        Type or replace text in an editable input field on screen. Find the field by selector
-        (text / content_description / view_id_resource_name). Works for URL bars, search boxes,
-        form fields. Does NOT work for terminals like Termux that render natively - for Termux
-        run shell commands directly via termux_run_command. Returns {success, set_to, ...} or
-        a structured error.
+        Type or replace text in an editable input field found by selector
+        (text / content_description / view_id_resource_name). Does NOT work for
+        natively-rendered terminals like Termux — use termux_run_command there.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

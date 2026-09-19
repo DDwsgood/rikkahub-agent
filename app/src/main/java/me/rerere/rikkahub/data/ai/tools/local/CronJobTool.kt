@@ -186,29 +186,12 @@ fun scheduleJobTool(
 ): Tool = Tool(
     name = "schedule_job",
     description = """
-        Schedule a recurring or one-shot job. Two modes: 'llm' (sends the prompt to an
-        assistant at fire time, model decides what to do) and 'direct' (runs a fixed list
-        of tool calls at fire time, no LLM, no tokens, deterministic).
-        Two timing types: 'once' (single absolute timestamp) and 'cron' (5-field cron
-        expression with aliases like @hourly, @daily, @every 30m).
-
-        Pick 'direct' when the action is a fixed side effect ('post good morning every
-        8am', 'screenshot every hour'). Free, fast, predictable.
-        Pick 'llm' when the action requires reasoning ('if battery is low, message me',
-        'summarize last hour of notifications').
-
-        Cron examples: '0 9 * * MON-FRI' (weekdays 9am), '*/15 * * * *' (every 15 min),
-        '@every 2h' (every 2h), '@daily' (midnight), '0 0 1 * *' (first of every month).
-        Timezone defaults to the device's; pass an IANA id to override.
-
-        catchup controls missed-window behavior on reboot/process kill: 'skip',
-        'fire_once' (DEFAULT), 'fire_all' (capped at 20).
-
-        Scheduling backend is automatic based on mode: 'direct' jobs use
-        AlarmManager.setAlarmClock (user-visible, precise); 'llm' jobs use
-        setExactAndAllowWhileIdle. When exact-alarm permission is unavailable
-        (Android 12+), all jobs safely fall back to battery-friendly WorkManager
-        with flexible timing (may run a little late under Doze/battery saver).
+        Schedule a recurring or one-shot job. mode: 'llm' (prompt sent to an assistant
+        at fire time — use when reasoning is needed) or 'direct' (fixed tool-call list,
+        no LLM — use for fixed side effects). schedule_type: 'once' (at_unix_ms) or
+        'cron' (5-field cron like '0 9 * * MON-FRI', or @daily/@every 30m). timezone is
+        an optional IANA id (default device). catchup handles missed runs: 'skip',
+        'fire_once' (default), 'fire_all'.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

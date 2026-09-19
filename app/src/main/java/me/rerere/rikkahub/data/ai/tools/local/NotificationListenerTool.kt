@@ -35,10 +35,9 @@ private fun NotificationEntry.toJson(): JsonObject = buildJsonObject {
 fun listRecentNotificationsTool(): Tool = Tool(
     name = "list_recent_notifications",
     description = """
-        Return notifications captured by the in-app listener since it was bound. Backed by a
-        100-entry ring buffer, ordered oldest -> newest. Use limit (default 50, max 100),
-        package_name (case-insensitive substring match against package or app label), and
-        since_unix_ms (only entries posted after this) to narrow the result. Returns
+        Return notifications captured by the in-app listener since it was bound
+        (100-entry ring buffer, oldest first). Filters: limit (default 50, max 100),
+        package_name (case-insensitive substring), since_unix_ms.
         {error, recovery} if the listener is not bound.
     """.trimIndent().replace("\n", " "),
     parameters = {
@@ -86,7 +85,7 @@ fun listRecentNotificationsTool(): Tool = Tool(
 
 fun listActiveNotificationsTool(): Tool = Tool(
     name = "list_active_notifications",
-    description = "Notifications currently in the status bar / shade (vs list_recent_notifications = historical ring buffer). Use when you need to act on something the user can see now (dismiss, click action). Filters: limit (default 50, max 100), package_name (case-insensitive substring), since_unix_ms.",
+    description = "Notifications currently in the status bar (vs list_recent_notifications = history). Use to act on visible notifications (dismiss, click). Filters: limit (default 50, max 100), package_name (substring), since_unix_ms.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -170,11 +169,10 @@ fun dismissNotificationTool(): Tool = Tool(
 fun notificationActionClickTool(): Tool = Tool(
     name = "notification_action_click",
     description = """
-        Fire one of a notification's action buttons (e.g. Reply, Mark as read). Pass either
-        action_index (0-based) or action_title (case-insensitive exact match). If the action
-        requires text input (e.g. WhatsApp Reply with RemoteInput), returns
-        {error: requires_input} - in that case fall back to launch_app + set_text via the
-        screen automation tools.
+        Fire one of a notification's action buttons (e.g. Reply, Mark as read). Pass
+        action_index (0-based) or action_title (case-insensitive exact match).
+        {error: requires_input} means the action needs text — use notification_reply
+        or launch_app + set_text instead.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -245,12 +243,10 @@ fun notificationActionClickTool(): Tool = Tool(
 fun notificationReplyTool(): Tool = Tool(
     name = "notification_reply",
     description = """
-        Reply to a notification in one call. Fills the notification's direct-reply action
-        (RemoteInput) with text and fires it — works for WhatsApp / Messages / Telegram and
-        any app exposing an inline reply. Pass notification_key (from a notifications list
-        call) and text. Returns {error: no_action} if the notification has no reply action
-        (fall back to launch_app + set_text via screen automation), {error: not_found} if
-        the notification is no longer active.
+        Reply to a notification's inline direct-reply action (RemoteInput) with text.
+        Pass notification_key (from a notifications list call) and text.
+        {error: no_action} = no reply action (fall back to launch_app + set_text);
+        {error: not_found} = notification no longer active.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

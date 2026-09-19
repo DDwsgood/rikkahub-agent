@@ -322,9 +322,8 @@ private fun fileTooLargeEnvelope(
 fun telegramSendPhotoTool(prefs: TelegramBotPreferences, client: TelegramBotClient): Tool = Tool(
     name = "telegram_send_photo",
     description = ("Send a photo via the bot from a local file path. Caption is optional. " +
-        "chat_id defaults to the configured default chat. HARD CAP: 10 MB — Telegram Bot API " +
-        "rejects larger photos. For larger images use telegram_send_document (50 MB cap) or " +
-        "split / link to them.").trimIndent().replace("\n", " "),
+        "chat_id defaults to the configured default chat. HARD CAP: 10 MB — for larger " +
+        "images use telegram_send_document (50 MB cap).").trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -362,11 +361,8 @@ fun telegramSendPhotoTool(prefs: TelegramBotPreferences, client: TelegramBotClie
 fun telegramSendDocumentTool(prefs: TelegramBotPreferences, client: TelegramBotClient): Tool = Tool(
     name = "telegram_send_document",
     description = ("Send a file as a document via the bot from a local file path. " +
-        "chat_id defaults to the configured default chat. HARD CAP: 50 MB — Telegram Bot API " +
-        "rejects larger files. For files over 50 MB, split with `split -b 45m FILE part-`, " +
-        "send each part separately, then `cat part-* > FILE` on the receiver to reassemble. " +
-        "Or upload to a cloud share and send the link via telegram_send_message. Don't blindly " +
-        "retry the same large file — the cap doesn't get raised on retry.").trimIndent().replace("\n", " "),
+        "chat_id defaults to the configured default chat. HARD CAP: 50 MB — for larger " +
+        "files, split and send the parts or share a link via telegram_send_message.").trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -405,11 +401,9 @@ fun telegramSendDocumentTool(prefs: TelegramBotPreferences, client: TelegramBotC
 fun telegramSetCommandsTool(prefs: TelegramBotPreferences, client: TelegramBotClient): Tool = Tool(
     name = "telegram_set_commands",
     description = """
-        Add custom commands to the Telegram /commands autocomplete menu. The built-in
-        commands (/start, /help, /new, /stop, /status, /model, /ratelimit) are ALWAYS
-        preserved — this tool merges your additions on top of them rather than replacing
-        the whole menu, so the user never loses their built-in surface. Entries whose
-        command name collides with a built-in are dropped (built-ins can't be shadowed).
+        Add custom commands to the Telegram /commands autocomplete menu. Built-in
+        commands are always preserved — additions merge on top, and entries colliding
+        with a built-in name are dropped.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

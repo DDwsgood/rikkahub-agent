@@ -202,6 +202,7 @@ sealed class LocalToolOption {
     @Serializable @SerialName("external_storage")     data object ExternalStorage     : LocalToolOption()
     @Serializable @SerialName("archive")              data object Archive             : LocalToolOption()
     @Serializable @SerialName("keyboard_control")     data object KeyboardControl     : LocalToolOption()
+    @Serializable @SerialName("adb")                  data object Adb                 : LocalToolOption()
 }
 
 /**
@@ -386,12 +387,9 @@ class LocalTools(
         Tool(
             name = "eval_javascript",
             description = """
-                Execute JavaScript code using QuickJS engine (ES2020).
-                The result is the value of the last expression in the code.
-                For calculations with decimals, use toFixed() to control precision.
-                Console output (log/info/warn/error) is captured and returned in 'logs' field.
-                No DOM or Node.js APIs available.
-                Example: '1 + 2' returns 3; 'const x = 5; x * 2' returns 10.
+                Execute JavaScript with the QuickJS engine (ES2020). Returns the value of
+                the last expression; console output is captured in 'logs'. No DOM or
+                Node.js APIs.
             """.trimIndent().replace("\n", " "),
             parameters = {
                 InputSchema.Obj(
@@ -643,10 +641,9 @@ class LocalTools(
         Tool(
             name = "ask_user",
             description = """
-                Ask the user one or more questions when you need clarification, additional information, or confirmation.
-                Each question can optionally provide a list of suggested options for the user to choose from.
-                The user may select an option or provide their own free-text answer for each question.
-                The answers will be returned as a JSON object mapping question IDs to the user's responses.
+                Ask the user one or more questions for clarification or confirmation.
+                Each question may include suggested options; the user can pick one or
+                answer freely. Returns a JSON object mapping question IDs to answers.
             """.trimIndent().replace("\n", " "),
             parameters = {
                 InputSchema.Obj(
@@ -1057,6 +1054,13 @@ class LocalTools(
             tools.add(keyboardSetCursorTool(keyboardApiClient))
             tools.add(keyboardSelectRangeTool(keyboardApiClient))
         }
+        if (options.contains(LocalToolOption.Adb)) {
+            // adb over TCP/IP via the embedded Termux android-tools package. adb_shell
+            // auto-connects to this device's wireless debugging (127.0.0.1) once paired;
+            // adb_pair performs the one-time pairing ceremony.
+            tools.add(me.rerere.rikkahub.data.ai.tools.local.adbShellTool(context, embeddedTermuxRunner))
+            tools.add(me.rerere.rikkahub.data.ai.tools.local.adbPairTool(context, embeddedTermuxRunner))
+        }
         // Register all tools to ToolRegistry so search_tools can discover them by keyword
         // or category. The schema lambda is invoked eagerly here (wrapped in runCatching so
         // a factory that throws doesn't abort the whole registration pass).
@@ -1095,7 +1099,7 @@ class LocalTools(
  * Order matters: prefix checks run first, then exact-name sets.
  */
 internal fun categorizeTool(name: String): String = when {
-    name.startsWith("termux_") || name.startsWith("ssh_") -> "shell"
+    name.startsWith("termux_") || name.startsWith("ssh_") || name.startsWith("adb_") -> "shell"
     name.startsWith("telegram_") -> "telegram"
     name.startsWith("browser_") -> "browser"
     name.startsWith("workflow_") -> "workflow"

@@ -59,7 +59,7 @@ fun readWindowTreeTool(
     streamer: InteractiveToolStreamer = InteractiveToolStreamer.NoOp,
 ): Tool = Tool(
     name = "read_window_tree",
-    description = "Snapshot of the active window's a11y node tree. Default filters to visible nodes that are clickable / scrollable / editable / have text or content_description. verbose=true skips the filter (use sparingly). max_nodes caps result (default 500, max 2000). package_name optionally restricts + errors if the foreground app doesn't match.",
+    description = "Snapshot of the active window's accessibility node tree, filtered to interactive/text-bearing nodes (verbose=true disables the filter). max_nodes caps the result (default 500, max 2000). package_name optionally restricts to one app.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {

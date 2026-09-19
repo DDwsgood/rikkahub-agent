@@ -84,6 +84,31 @@ class ToolSearchToolTest {
     }
 
     @Test
+    fun `onDiscovered receives the names of surfaced tools`() = runBlocking {
+        val found = mutableSetOf<String>()
+        ToolRegistry.register(entry("ssh_upload"))
+        ToolRegistry.register(entry("ssh_exec"))
+        ToolRegistry.register(entry("battery_status"))
+        try {
+            val tool = toolSearchTool(
+                availableToolNames = setOf("ssh_upload", "ssh_exec"),
+                onDiscovered = { names -> found.addAll(names) },
+            )
+
+            tool.execute(Json.parseToJsonElement("""{"query":"ssh"}"""))
+
+            // Surfaced (and allowed) tools are reported; filtered-out and unmatched are not.
+            assertTrue("ssh_upload" in found)
+            assertTrue("ssh_exec" in found)
+            assertFalse("battery_status" in found)
+        } finally {
+            ToolRegistry.unregister("ssh_upload")
+            ToolRegistry.unregister("ssh_exec")
+            ToolRegistry.unregister("battery_status")
+        }
+    }
+
+    @Test
     fun `multi-keyword search uses AND semantics`() = runBlocking {
         ToolRegistry.register(entry("ssh_upload", "Upload file via SSH"))
         ToolRegistry.register(entry("ssh_exec", "Execute command via SSH"))

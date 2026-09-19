@@ -1161,6 +1161,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_adb_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_adb_desc))
+                },
+                trailingContent = {
+                    PermissionedSwitch(
+                        checked = assistant.localTools.contains(LocalToolOption.Adb),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Adb, it) },
+                    )
+                }
+            )
         }
 
         // Keyboard control section — drives the active text field through the co-signed

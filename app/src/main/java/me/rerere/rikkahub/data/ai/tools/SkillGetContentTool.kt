@@ -37,11 +37,9 @@ fun skillGetContentTool(
 ): Tool = Tool(
     name = "skill_get_content",
     description = """
-        Show a skill's full markdown content, description, and current enabled state without
-        running it. Read-only — use this to display a skill to the user or inspect one before
-        calling use_skill. Works on disabled skills too. Returns
-        { name, description, format, source_label, enabled, content_md, args_schema } on
-        success, or { error: "skill_not_found", available_skills: [...] } if the name is unknown.
+        Show a skill's full markdown content, description, and enabled state without
+        running it (read-only; works on disabled skills). Use to inspect a skill
+        before use_skill.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

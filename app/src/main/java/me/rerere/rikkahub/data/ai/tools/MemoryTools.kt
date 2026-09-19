@@ -26,22 +26,11 @@ fun buildMemoryTools(
     Tool(
         name = "memory_tool",
         description = """
-            The memory tool stores long-term information across conversations.
-            Use `action` to control the operation: `create` (add), `edit` (update), `delete` (remove).
-            - No relevant record: `create` + `content`
-            - Existing relevant record: `edit` + `id` + `content`
-            - Outdated/irrelevant record: `delete` + `id`
-            Memories will automatically appear in the <memories> tag in later conversations.
-            Do not store sensitive information (e.g., ethnicity, religion, sexual orientation, political views, sex life, criminal records).
-            You may store: preferred name, preferences, plans, work-related notes, chat style preferences, first chat time, etc.
-            Do not show memory content directly in the conversation unless the user explicitly asks.
-            Today is ${LocalDate.now().toLocalString(true)}.
-            Similar memories should be merged; prefer updating existing records.
-
-            Examples:
-            {"action":"create","content":"User prefers brief replies and is more active on weekends."}
-            {"action":"edit","id":12,"content":"User’s preferred name updated to “A-Xing”, prefers Chinese replies."}
-            {"action":"delete","id":7}
+            Store long-term information across conversations. action: 'create' (+content),
+            'edit' (+id+content), 'delete' (+id). Memories reappear in the <memories> tag
+            later; merge similar ones instead of duplicating. Never store sensitive data
+            (ethnicity, religion, health, politics, sex life, criminal record) and don't
+            reveal memory contents unless the user asks. Today is ${LocalDate.now().toLocalString(true)}.
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(

@@ -51,10 +51,8 @@ fun launchAppTool(
 ): Tool = Tool(
     name = "launch_app",
     description = """
-        Open an installed app on the device by its package name (e.g. com.termux, com.android.settings).
-        Returns {success: true} if the launch intent was dispatched. If you do not know the package name,
-        first call list_installed_apps to discover available packages. The app is brought to the
-        foreground; screen-automation tools (tap, swipe, read_window_tree) can then drive its UI.
+        Open an installed app by package name (use list_installed_apps to find it).
+        The app comes to the foreground; screen-automation tools can then drive its UI.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -165,7 +163,7 @@ fun launchAppTool(
 
 fun listInstalledAppsTool(context: Context): Tool = Tool(
     name = "list_installed_apps",
-    description = "List installed apps as {label, package, has_launcher}. Default: launcher-visible only. With `filter` or `include_no_launcher=true`, also returns service-only addons (Termux:API, Termux:Boot, etc.) that have no app-drawer entry.",
+    description = "List installed apps as {label, package, has_launcher}. Default: launcher-visible only; pass `filter` or include_no_launcher=true to also list service-only addons without an app-drawer entry.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -296,14 +294,9 @@ fun openUrlTool(
 ): Tool = Tool(
     name = "open_url",
     description = """
-        Open a URL in the system's default handler app (browser for http/https, dialer for
-        tel:, maps for geo:, mailto: for email, etc.). Strongly preferred over
-        launch_app + screen automation when the user asks you to "search X in chrome",
-        "open google.com", "call this number", "show me this address on a map", or any
-        request that maps cleanly to a URL — typing into a browser URL bar via accessibility
-        is unreliable and slow. Optionally pass package_name to force a specific app
-        (e.g. com.android.chrome) when multiple handlers exist. Auto-wakes the screen if
-        it was off.
+        Open a URL in its default handler app (browser, dialer for tel:, maps for geo:,
+        mailto:, etc.). Strongly preferred over launch_app + screen automation for
+        anything that maps to a URL. Pass package_name to force a specific handler app.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -405,9 +398,8 @@ fun listAppActivitiesTool(context: Context): Tool = Tool(
     name = "list_app_activities",
     description = """
         List the activities (screens) declared by one installed app, as
-        {name, exported, label}. Use it to deep-link into a specific screen: pass a name from
-        here to launch_activity. Only activities with exported=true can actually be launched.
-        Call list_installed_apps first if you do not know the package name.
+        {name, exported, label}. Pass an exported name to launch_activity to deep-link
+        into that screen.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -518,10 +510,9 @@ fun launchActivityTool(
 ): Tool = Tool(
     name = "launch_activity",
     description = """
-        Open one specific screen (activity) of an installed app, e.g. package com.android.settings
-        activity .wifi.WifiSettings. Call list_app_activities first to get valid activity names;
-        only exported activities can be launched. Prefer launch_app when you just want the app's
-        normal entry point.
+        Open one specific screen (activity) of an installed app. Get valid names from
+        list_app_activities (only exported ones launch). Prefer launch_app for the
+        app's normal entry point.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

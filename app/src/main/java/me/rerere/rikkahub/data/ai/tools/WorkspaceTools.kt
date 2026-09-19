@@ -74,9 +74,8 @@ private fun createReadFileTool(
 ) = Tool(
     name = "workspace_read_file",
     description = """
-        Read a file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
-        Use /workspace for the workspace files area.
-        Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp, svg, heic, heif, avif, ico).
+        Read a file in the bound workspace Rootfs (absolute path; /workspace is the
+        files area). Supports UTF-8 text and common image formats.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -112,8 +111,8 @@ private fun createWriteFileTool(
 ) = Tool(
     name = "workspace_write_file",
     description = """
-        Write a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
-        Use /workspace for the workspace files area.
+        Write a UTF-8 text file in the bound workspace Rootfs (absolute path;
+        /workspace is the files area).
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -149,10 +148,9 @@ private fun createEditFileTool(
 ) = Tool(
     name = "workspace_edit_file",
     description = """
-        Edit a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
-        Use /workspace for the workspace files area.
-        Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence.
-        If no exact match is found, whitespace-tolerant line matching is attempted automatically.
+        Replace old_text with new_text in a UTF-8 file in the bound workspace Rootfs
+        (absolute path; /workspace is the files area). old_text must occur exactly
+        once unless replace_all=true. Falls back to whitespace-tolerant matching.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -285,11 +283,9 @@ private fun createRunBackgroundTool(
 ) = Tool(
     name = "workspace_run_background",
     description = buildString {
-        append("Run a shell command persistently in the background in the assistant's bound workspace Rootfs. ")
-        append("The process survives across tool calls, so use it for dev servers, long-running installs, or watchers ")
-        append("(e.g. 'python -m http.server 8000'). The command runs in the foreground of its own process, so do NOT append '&'. ")
-        append("Returns a task id: poll it with workspace_background_status and stop it with workspace_background_kill. ")
-        append("Use cwd for a path relative to the workspace files root. ")
+        append("Run a shell command persistently in the background in the bound workspace Rootfs — survives across tool calls, for dev servers or watchers. Do NOT append '&'. ")
+        append("Returns a task id: poll with workspace_background_status, stop with workspace_background_kill. ")
+        append("cwd is relative to the workspace files root. ")
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")
         }

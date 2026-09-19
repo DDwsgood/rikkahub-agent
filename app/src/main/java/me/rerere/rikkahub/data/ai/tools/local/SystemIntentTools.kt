@@ -45,10 +45,8 @@ fun createCalendarEventTool(
 ): Tool = Tool(
     name = "create_calendar_event",
     description = """
-        Open the system Calendar app pre-filled with a new event the user can review and save.
-        Useful for "schedule a meeting", "add an event for", "remind me on date X".
-        The user finalises in their default Calendar app — no event is saved without their
-        explicit save action.
+        Open the system Calendar app pre-filled with a new event the user reviews and
+        saves. Nothing is saved without the user's explicit action.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -186,9 +184,8 @@ fun sendEmailIntentTool(
 ): Tool = Tool(
     name = "send_email_intent",
     description = """
-        Open the user's default email app composer pre-filled with recipient, subject, and body.
-        The user reviews and presses Send — no email is sent silently. Use this for "email Bob
-        about ..." type asks where the user wants to control the actual send action.
+        Open the default email app composer pre-filled with recipient, subject, body.
+        The user reviews and sends — nothing is sent silently.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

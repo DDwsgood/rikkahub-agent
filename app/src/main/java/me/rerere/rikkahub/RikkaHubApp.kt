@@ -111,6 +111,10 @@ class RikkaHubApp : Application() {
         // auto-revive it after a process kill; we need to bring it back ourselves.
         startTelegramBotIfEnabled()
 
+        // Same for the opt-in keep-alive FGS: START_STICKY revives only cover LMK kills,
+        // and an app launch is a guaranteed restart point.
+        startKeepaliveIfEnabled()
+
         // Initialise the agent's `~` workspace at /data/data/<pkg>/files/workspace/.
         // Tools resolve `~` and `~/foo` paths to this dir, giving the LLM a stable
         // sandbox for `.learnings/`, scratch files, and skill state without scoped-
@@ -387,6 +391,18 @@ class RikkaHubApp : Application() {
                 }
             }.onFailure {
                 Log.e(TAG, "startTelegramBotIfEnabled failed", it)
+            }
+        }
+    }
+
+    private fun startKeepaliveIfEnabled() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                if (get<SettingsStore>().settingsFlowRaw.first().keepaliveEnabled) {
+                    me.rerere.rikkahub.service.AgentKeepaliveService.start(this@RikkaHubApp)
+                }
+            }.onFailure {
+                Log.e(TAG, "startKeepaliveIfEnabled failed", it)
             }
         }
     }

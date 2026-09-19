@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.ui.pages.setting.doctor
 
 import android.Manifest
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +22,7 @@ import me.rerere.rikkahub.data.repository.ScheduledJobRepository
 import me.rerere.rikkahub.data.repository.ScheduledJobRunRepository
 import me.rerere.rikkahub.data.telegram.TelegramBotPreferences
 import me.rerere.rikkahub.service.TelegramBotService
+import me.rerere.rikkahub.utils.RomUtils
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository
 import me.rerere.rikkahub.browser.BrowserPreferences
 import me.rerere.rikkahub.browser.BrowserToolDefaults
@@ -167,6 +170,7 @@ class DoctorChecks(
         buildList {
             addAll(permissionChecks(enabled))
             addAll(serviceChecks(enabled))
+            addAll(reliabilityChecks(enabled))
             addAll(assistantChecks())
             addAll(databaseChecks(enabled))
             addAll(networkChecks())
@@ -555,6 +559,142 @@ class DoctorChecks(
                 )
             )
         }
+    }
+
+    // ----- OEM reliability -------------------------------------------------------------
+
+    /**
+     * OEM background-kill surface: ROM aggressiveness, last process-death cause
+     * (ApplicationExitInfo — OEM cleaners leave REASON_OTHER / SIGNALED-SIGKILL /
+     * EXCESSIVE_RESOURCE_USAGE / FREEZER), an honest "can't detect autostart" row, and the
+     * Android 12+ phantom-process advisory (only when a Termux-using tool is enabled —
+     * long-running shell children are what the killer actually hits).
+     *
+     * None of these rows pretend to verify state that isn't readable: autostart and the
+     * per-ROM battery toggles have no query API, so the row asks the user to confirm
+     * instead of faking a pass/fail.
+     */
+    private fun reliabilityChecks(enabled: Set<LocalToolOption>): List<DoctorCheck> = buildList {
+        val rom = RomUtils.detect()
+        add(
+            DoctorCheck(
+                id = "service.rom",
+                category = DoctorCategory.Services,
+                label = "Device ROM",
+                detail = "${rom.displayName}" +
+                    (if (rom.version.isNotEmpty()) " ${rom.version}" else "") +
+                    " — background-kill aggressiveness: ${rom.aggressiveness.name.lowercase()}." +
+                    if (rom.needsWarning)
+                        " This system force-stops background apps; complete the background-reliability setup."
+                    else "",
+                severity = when {
+                    rom.needsWarning -> Severity.WARN
+                    rom.aggressiveness == RomUtils.Aggressiveness.MODERATE -> Severity.INFO
+                    else -> Severity.OK
+                },
+                fix = if (rom.needsWarning)
+                    FixAction.OpenAppRoute("Open background settings", AppRouteKey.SettingReliability)
+                else null,
+            )
+        )
+
+        // Autostart state is not readable on any ROM — show the manual-confirmation hint
+        // only where the concept actually exists (aggressive OEMs).
+        if (rom.needsWarning) {
+            add(
+                DoctorCheck(
+                    id = "service.autostart",
+                    category = DoctorCategory.Services,
+                    label = "Autostart permission",
+                    detail = "Cannot be detected programmatically. Please confirm autostart " +
+                        "is enabled for this app in the background-reliability settings — " +
+                        "without it, alarms and boot receivers are silently blocked.",
+                    severity = Severity.INFO,
+                    fix = FixAction.OpenAppRoute("Open autostart settings", AppRouteKey.SettingReliability),
+                )
+            )
+        }
+
+        // Last process-exit cause. OEM force-kills surface as REASON_OTHER, REASON_SIGNALED
+        // with SIGKILL, REASON_EXCESSIVE_RESOURCE_USAGE, or REASON_FREEZER.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val last = runCatching {
+                context.getSystemService(ActivityManager::class.java)
+                    ?.getHistoricalProcessExitReasons(context.packageName, 0, 1)
+                    ?.firstOrNull()
+            }.getOrNull()
+            if (last != null) {
+                val at = java.text.DateFormat.getDateTimeInstance()
+                    .format(java.util.Date(last.timestamp))
+                val sigkill = last.reason == ApplicationExitInfo.REASON_SIGNALED && last.status == 9
+                val killed = last.reason == ApplicationExitInfo.REASON_OTHER ||
+                    last.reason == ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ||
+                    last.reason == ApplicationExitInfo.REASON_FREEZER ||
+                    sigkill
+                val userStop = last.reason == ApplicationExitInfo.REASON_USER_REQUESTED ||
+                    last.reason == ApplicationExitInfo.REASON_USER_STOPPED
+                val reasonName = exitReasonName(last.reason)
+                add(
+                    DoctorCheck(
+                        id = "service.last_exit",
+                        category = DoctorCategory.Services,
+                        label = "Last process exit",
+                        detail = when {
+                            killed -> "The app was force-killed by the system last time " +
+                                "(reason=$reasonName" +
+                                (if (sigkill) ", signal=SIGKILL" else "") +
+                                ", at $at) — typical of vendor background cleaners. " +
+                                "Complete the background-reliability setup."
+                            userStop -> "Last exit was user-requested ($reasonName, at $at)."
+                            else -> "Last exit reason: $reasonName, at $at."
+                        },
+                        severity = if (killed) Severity.WARN else Severity.INFO,
+                        fix = if (killed)
+                            FixAction.OpenAppRoute("Open background settings", AppRouteKey.SettingReliability)
+                        else null,
+                    )
+                )
+            }
+        }
+
+        // Android 12+ phantom process killer — only matters when the built-in Termux /
+        // terminal tooling is enabled (long-running shell children get reaped).
+        val termuxNeeders = requirersOf(Capability.Termux, enabled)
+        if (termuxNeeders.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(
+                DoctorCheck(
+                    id = "service.phantom_procs",
+                    category = DoctorCategory.Services,
+                    label = "Phantom process limit",
+                    detail = "Android 12+ caps background child processes (~32) and kills " +
+                        "long-running shell tasks. Disable via adb: " +
+                        "`settings put global settings_enable_monitor_phantom_procs false`, " +
+                        "or turn off child-process restrictions in Developer options. " +
+                        "Needed by: ${termuxNeeders.joinToString(", ") { it.shortName() }}.",
+                    severity = Severity.WARN,
+                )
+            )
+        }
+    }
+
+    private fun exitReasonName(reason: Int): String = when (reason) {
+        ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+        ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+        ApplicationExitInfo.REASON_CRASH -> "CRASH"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+        ApplicationExitInfo.REASON_ANR -> "ANR"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+        ApplicationExitInfo.REASON_OTHER -> "OTHER"
+        ApplicationExitInfo.REASON_FREEZER -> "FREEZER"
+        ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "PACKAGE_STATE_CHANGE"
+        ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "PACKAGE_UPDATED"
+        else -> "UNKNOWN($reason)"
     }
 
     // ----- Active assistant ------------------------------------------------------------

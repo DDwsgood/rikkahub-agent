@@ -41,6 +41,8 @@ internal object CronAlarmRetry {
         jobId: String,
         scheduledAtMs: Long,
         attempt: Int,
+        jobName: String? = null,
+        jobMode: String? = null,
     ): Boolean {
         if (attempt >= MAX_ATTEMPTS) {
             Log.e(TAG, "giving up after $attempt retries for job $jobId (slot $scheduledAtMs)")
@@ -54,8 +56,11 @@ internal object CronAlarmRetry {
                     .setAction(action)
                     .setData(Uri.parse("rikkahub://cron-retry/$jobId"))
                     .putExtra(CronJobWorker.KEY_JOB_ID, jobId)
+                    .putExtra(CronJobWorker.KEY_JOB_NAME, jobName)
+                    .putExtra(CronJobWorker.KEY_JOB_MODE, jobMode)
                     .putExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
-                    .putExtra(KEY_RETRY_ATTEMPT, attempt + 1),
+                    .putExtra(KEY_RETRY_ATTEMPT, attempt + 1)
+                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             val at = System.currentTimeMillis() + RETRY_DELAY_MS

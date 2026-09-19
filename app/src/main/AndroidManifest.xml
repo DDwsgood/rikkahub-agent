@@ -75,6 +75,10 @@
       android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       tools:ignore="BatteryLife" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <!-- Lets an opt-in scheduled-job alert post a full-screen intent over the lock screen
+       (alarm-app pattern). Install-time grant; the feature stays off unless the user
+       enables "wake screen on fire" in Scheduled jobs settings. -->
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
   <uses-permission
       android:name="android.permission.QUERY_ALL_PACKAGES"
       tools:ignore="QueryAllPackagesPermission" />
@@ -316,6 +320,18 @@
         android:value="long-running Telegram bot long-poll loop" />
     </service>
 
+    <!-- Optional user-enabled keep-alive FGS (Settings → Scheduled jobs). specialUse:
+         indefinite user-requested background residency has no predefined FGS type and
+         specialUse carries no daily budget cap. -->
+    <service
+      android:name=".service.AgentKeepaliveService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="user-enabled keep-alive for scheduled agent tasks" />
+    </service>
+
     <service
       android:name=".service.MediaPlaybackService"
       android:exported="false"
@@ -362,8 +378,10 @@
       android:name=".service.CronBootReceiver"
       android:enabled="true"
       android:exported="true"
+      android:directBootAware="true"
       android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
       <intent-filter>
+        <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
         <action android:name="android.intent.action.BOOT_COMPLETED" />
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
         <action android:name="android.intent.action.QUICKBOOT_POWERON" />
@@ -392,6 +410,37 @@
       android:name=".service.DirectCronAlarmReceiver"
       android:enabled="true"
       android:exported="false" />
+
+    <!-- Fossify-style daily "dummy" alarm: self-perpetuating setExactAndAllowWhileIdle
+         (≤1 fire/day) that keeps the AlarmManager pipeline warm against OEM cold-treatment.
+         Direct-boot aware: its onReceive only re-arms an alarm — no storage access. -->
+    <receiver
+      android:name=".service.CronDailyKeepAliveReceiver"
+      android:enabled="true"
+      android:exported="false"
+      android:directBootAware="true" />
+
+    <!-- Translucent over-lockscreen alert for scheduled jobs (opt-in, default off). Posted
+         via setFullScreenIntent; stacks the API-27 calls with the deprecated window flags
+         because several OEM builds honour only a subset. -->
+    <activity
+      android:name=".CronJobWakeActivity"
+      android:exported="false"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+    <!-- 1x1 home-screen widget. The system's AppWidgetService dispatches APPWIDGET_UPDATE
+         every 30 min even to a dead process — the WakeUp-pattern revive anchor that also
+         re-arms every enabled job's exact alarm on each pass. -->
+    <receiver
+      android:name=".widget.AgentWidgetProvider"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/agent_widget_info" />
+    </receiver>
 
     <!-- Phase 12 — geofence transition receiver. Play Services delivers via
          PendingIntent.getBroadcast outside any active component, so this MUST be a

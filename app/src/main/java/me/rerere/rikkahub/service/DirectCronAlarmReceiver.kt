@@ -35,11 +35,17 @@ class DirectCronAlarmReceiver : BroadcastReceiver() {
         val scheduledAtMs = intent.getLongExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, -1L)
         if (scheduledAtMs <= 0L) return
         val attempt = intent.getIntExtra(CronAlarmRetry.KEY_RETRY_ATTEMPT, 0)
+        // Display extras armed by the scheduler — carried into the worker so notification
+        // building never depends on Room being ready in a cold-started process.
+        val jobName = intent.getStringExtra(CronJobWorker.KEY_JOB_NAME)
+        val jobMode = intent.getStringExtra(CronJobWorker.KEY_JOB_MODE)
 
         val request = OneTimeWorkRequestBuilder<CronJobWorker>()
             .setInputData(
                 Data.Builder()
                     .putString(CronJobWorker.KEY_JOB_ID, jobId)
+                    .putString(CronJobWorker.KEY_JOB_NAME, jobName)
+                    .putString(CronJobWorker.KEY_JOB_MODE, jobMode)
                     .putLong(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
                     .build()
             )
@@ -60,7 +66,7 @@ class DirectCronAlarmReceiver : BroadcastReceiver() {
             Log.e(TAG, "Unable to enqueue direct fire for $jobId", t)
             CronAlarmRetry.arm(
                 context, DirectCronAlarmReceiver::class.java, ACTION_FIRE,
-                jobId, scheduledAtMs, attempt,
+                jobId, scheduledAtMs, attempt, jobName, jobMode,
             )
             pendingResult.finish()
             return
@@ -72,7 +78,7 @@ class DirectCronAlarmReceiver : BroadcastReceiver() {
                     Log.e(TAG, "Failed to persist direct fire for $jobId")
                     CronAlarmRetry.arm(
                         context, DirectCronAlarmReceiver::class.java, ACTION_FIRE,
-                        jobId, scheduledAtMs, attempt,
+                        jobId, scheduledAtMs, attempt, jobName, jobMode,
                     )
                     pendingResult.finish()
                 } else {

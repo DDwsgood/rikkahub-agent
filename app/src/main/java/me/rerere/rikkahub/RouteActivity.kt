@@ -550,6 +550,10 @@ class RouteActivity : ComponentActivity() {
                                 me.rerere.rikkahub.ui.pages.setting.scheduledjobs.ScheduledJobsScreen()
                             }
 
+                            entry<Screen.SettingReliability> {
+                                me.rerere.rikkahub.ui.pages.setting.SettingReliabilityPage()
+                            }
+
                             entry<Screen.SettingBrowser> {
                                 me.rerere.rikkahub.ui.pages.setting.browser.SettingBrowserPage()
                             }
@@ -817,6 +821,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingScheduledJobs : Screen
+
+    @Serializable
+    data object SettingReliability : Screen
 
     @Serializable
     data object SettingBrowser : Screen

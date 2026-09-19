@@ -297,6 +297,23 @@ fun ScheduledJobDetailScreen(
                     }
                 }
             }
+            item {
+                // Honest-degradation hint — OEM power saving can still delay or drop fires.
+                Text(
+                    text = stringResource(R.string.setting_page_scheduled_jobs_reliability_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = { nav.navigate(Screen.SettingReliability) },
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                ) {
+                    Text(
+                        stringResource(R.string.setting_page_reliability_open),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
             // Run now / Edit / Delete moved to the Scaffold's bottomBar so they stay
             // pinned and visible regardless of how long the history grows.
         }

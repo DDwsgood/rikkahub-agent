@@ -9,9 +9,15 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
+import androidx.work.Data
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ForegroundInfo
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.repository.ScheduledJobRepository
 import me.rerere.rikkahub.data.repository.ScheduledJobRunRepository
@@ -47,11 +53,14 @@ class CronReconcileWorker(
     private val repo: ScheduledJobRepository by inject()
     private val runRepo: ScheduledJobRunRepository by inject()
     private val telegramPrefs: me.rerere.rikkahub.data.telegram.TelegramBotPreferences by inject()
+    private val settingsStore: me.rerere.rikkahub.data.datastore.SettingsStore by inject()
 
     override suspend fun getForegroundInfo(): ForegroundInfo = createReconcileForegroundInfo()
 
     override suspend fun doWork(): Result {
         val kind = inputData.getString(KEY_KIND) ?: KIND_BOOT
+        // Every reconcile pass re-asserts the daily keep-alive alarm (no-op if armed).
+        CronDailyKeepAliveReceiver.armIfAbsent(applicationContext)
         try {
             setForeground(createReconcileForegroundInfo())
         } catch (c: CancellationException) {
@@ -116,6 +125,14 @@ class CronReconcileWorker(
             }
             runCatching { WebServerHealthWorker.schedule(applicationContext) }
                 .onFailure { Log.e(TAG, "web health schedule failed", it) }
+            // Keep-alive FGS: if the user opted in, bring it back on boot / package
+            // replace (both map to KIND_BOOT). START_STICKY cannot cross a reboot, so
+            // this is its only boot-time revive path.
+            runCatching {
+                if (settingsStore.settingsFlowRaw.first().keepaliveEnabled) {
+                    AgentKeepaliveService.start(applicationContext)
+                }
+            }.onFailure { Log.e(TAG, "keepalive boot restart failed", it) }
             runCatching { me.rerere.rikkahub.workflow.trigger.WorkflowBootDispatcher.onBoot() }
                 .onFailure { Log.e(TAG, "workflow boot dispatch failed", it) }
         }
@@ -149,17 +166,16 @@ class CronReconcileWorker(
 
     private fun postFailureNotification(title: String, text: String) {
         val ctx = applicationContext
-        val nm = ctx.getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CronJobWorker.CHANNEL_ID) == null) {
-            nm.createNotificationChannel(NotificationChannel(
-                CronJobWorker.CHANNEL_ID, "Scheduled jobs",
-                NotificationManager.IMPORTANCE_DEFAULT))
-        }
-        val builder = NotificationCompat.Builder(ctx, CronJobWorker.CHANNEL_ID)
+        ensureScheduledJobsHighChannel(ctx)
+        val builder = NotificationCompat.Builder(ctx, SCHEDULED_JOBS_HIGH_CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVibrate(SCHEDULED_JOB_VIBRATE_PATTERN)
             .setAutoCancel(true)
         try {
             // Fixed notification ID so subsequent boots replace the prior aggregate
@@ -205,8 +221,38 @@ class CronReconcileWorker(
         const val KIND_TIME = "time"
         const val KIND_PERMISSION = "permission"
 
+        /**
+         * Periodic self-healing reconcile (Chrono pattern): WorkManager's correct role is
+         * the fallback that periodically re-arms every job's exact alarm — not just a DB
+         * check. 60 minutes satisfies the ≤60min target and stays well inside
+         * WorkManager's 15-minute minimum period.
+         */
+        const val KIND_PERIODIC = "periodic"
+        private const val PERIODIC_WORK_NAME = "cron_reconcile_periodic"
+        private const val PERIODIC_INTERVAL_HOURS = 1L
+
         private const val RECONCILE_CHANNEL_ID = "rikkahub_cron_reconcile"
         // Distinct from CronJobWorker's 0x50000000-prefixed execution notification IDs.
         private const val RECONCILE_NOTIFICATION_ID = 0x005EC0DE
+
+        /**
+         * Ensures the hourly self-healing reconcile is enqueued. Called from
+         * [CronBootReceiver] on every boot-like event; UPDATE keeps the request fresh
+         * without stacking duplicates (unique-work identity).
+         */
+        fun schedulePeriodic(context: Context) {
+            runCatching {
+                val req = PeriodicWorkRequestBuilder<CronReconcileWorker>(
+                    PERIODIC_INTERVAL_HOURS, TimeUnit.HOURS,
+                )
+                    .setInputData(Data.Builder().putString(KEY_KIND, KIND_PERIODIC).build())
+                    .build()
+                WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                    PERIODIC_WORK_NAME,
+                    ExistingPeriodicWorkPolicy.UPDATE,
+                    req,
+                )
+            }
+        }
     }
 }

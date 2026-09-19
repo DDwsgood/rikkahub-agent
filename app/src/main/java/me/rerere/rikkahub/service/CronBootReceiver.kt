@@ -44,6 +44,17 @@ class CronBootReceiver : BroadcastReceiver() {
             return
         }
 
+        // Direct boot (device still locked, credential-protected storage unavailable):
+        // Room, DataStore and WorkManager are all unreachable, so a reconcile cannot run
+        // here. The only safe work is re-arming the storage-free daily keep-alive alarm;
+        // the real BOOT_COMPLETED pass after unlock performs the full reconcile.
+        if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED) {
+            // arm() (not armIfAbsent): a reboot wiped the alarm but the PendingIntent
+            // registration may still resolve, which would make the absent-check misfire.
+            CronDailyKeepAliveReceiver.arm(context)
+            return
+        }
+
         val isBootLike = action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_MY_PACKAGE_REPLACED ||
             action == "android.intent.action.QUICKBOOT_POWERON"
@@ -62,6 +73,11 @@ class CronBootReceiver : BroadcastReceiver() {
     }
 
     private fun enqueueReconcile(context: Context, kind: String, attempt: Int) {
+        // Boot is also a good moment to (re)assert the pipeline warmers. arm() directly —
+        // a reboot wiped the alarm even when the PendingIntent registration still resolves.
+        CronDailyKeepAliveReceiver.arm(context)
+        CronReconcileWorker.schedulePeriodic(context)
+
         val workName = when (kind) {
             CronReconcileWorker.KIND_TIME -> RECONCILE_TIME_WORK_NAME
             CronReconcileWorker.KIND_PERMISSION -> RECONCILE_PERMISSION_WORK_NAME
@@ -143,7 +159,8 @@ private object CronBootRetry {
                     .setAction(CronBootReceiver.ACTION_RETRY)
                     .setData(Uri.parse("rikkahub://cron-boot-retry/$kind"))
                     .putExtra(CronReconcileWorker.KEY_KIND, kind)
-                    .putExtra(CronAlarmRetry.KEY_RETRY_ATTEMPT, attempt + 1),
+                    .putExtra(CronAlarmRetry.KEY_RETRY_ATTEMPT, attempt + 1)
+                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             val at = System.currentTimeMillis() + RETRY_DELAY_MS

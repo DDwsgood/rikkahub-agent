@@ -180,6 +180,12 @@ class SettingsStore(
         // AI logging
         val AI_LOG_LEVEL = stringPreferencesKey("ai_log_level")
 
+        // 后台保活（可选常驻 FGS + wakelock，Settings → Scheduled jobs）
+        val KEEPALIVE_ENABLED = booleanPreferencesKey("keepalive_enabled")
+
+        // 定时任务触发时从锁屏全屏拉起（默认关，Settings → Scheduled jobs）
+        val SCHEDULED_JOB_WAKE_ON_LOCK_SCREEN = booleanPreferencesKey("scheduled_job_wake_on_lock_screen")
+
         // 提示词注入
         val MODE_INJECTIONS = stringPreferencesKey("mode_injections")
         val LOREBOOKS = stringPreferencesKey("lorebooks")
@@ -340,6 +346,8 @@ class SettingsStore(
                 webServerAccessPassword = preferences[WEB_SERVER_ACCESS_PASSWORD] ?: "",
                 webServerLocalhostOnly = preferences[WEB_SERVER_LOCALHOST_ONLY] == true,
                 aiLogLevel = AiLogLevel.fromPreference(preferences[AI_LOG_LEVEL]),
+                keepaliveEnabled = preferences[KEEPALIVE_ENABLED] == true,
+                scheduledJobWakeOnLockScreen = preferences[SCHEDULED_JOB_WAKE_ON_LOCK_SCREEN] == true,
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let { raw ->
                     runCatching { JsonInstant.decodeFromString<BackupReminderConfig>(raw) }.getOrElse {
                         Log.w(TAG, "Failed to decode backupReminderConfig, using default", it)
@@ -625,6 +633,8 @@ class SettingsStore(
             preferences[WEB_SERVER_ACCESS_PASSWORD] = settings.webServerAccessPassword
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[AI_LOG_LEVEL] = settings.aiLogLevel.preferenceName
+            preferences[KEEPALIVE_ENABLED] = settings.keepaliveEnabled
+            preferences[SCHEDULED_JOB_WAKE_ON_LOCK_SCREEN] = settings.scheduledJobWakeOnLockScreen
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
@@ -799,7 +809,19 @@ data class Settings(
     val webServerAccessPassword: String = "",
     val webServerLocalhostOnly: Boolean = false,
     val aiLogLevel: AiLogLevel = AiLogLevel.INFO,
+    /**
+     * User opt-in for [me.rerere.rikkahub.service.AgentKeepaliveService] — a low-importance
+     * ongoing FGS + partial WakeLock that keeps the process foreground-priority so
+     * scheduled jobs survive OEM-aggressive killers. Off by default.
+     */
+    val keepaliveEnabled: Boolean = false,
     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
+    /**
+     * Opt-in (default off): post a full-screen-intent alert when a scheduled job fires so
+     * it can surface over the lock screen — the alarm-app pattern. Requires the
+     * USE_FULL_SCREEN_INTENT permission (declared; install-time grant).
+     */
+    val scheduledJobWakeOnLockScreen: Boolean = false,
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
 ) {

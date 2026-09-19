@@ -169,8 +169,13 @@ class CronJobScheduler(
         val nextRunAtMs: Long?,
     )
 
-    suspend fun schedule(job: ScheduledJobEntity): ScheduleResult = withJobLock(job.id) {
-        scheduleLocked(job)
+    suspend fun schedule(job: ScheduledJobEntity): ScheduleResult {
+        // Keep the daily keep-alive alarm armed so the AlarmManager pipeline stays warm
+        // (Fossify-style dummy alarm; at most one fire per day).
+        CronDailyKeepAliveReceiver.armIfAbsent(context)
+        return withJobLock(job.id) {
+            scheduleLocked(job)
+        }
     }
 
     /**
@@ -221,19 +226,19 @@ class CronJobScheduler(
                 //    KEY_IS_BACKUP). Any failure here propagates — the new durable path
                 //    must exist before the old path is torn down (see the class KDoc
                 //    point 4 and [scheduleTransitionSteps]).
-                enqueueBackup(job.id, nextRun, nowMs)
+                enqueueBackup(job, nextRun, nowMs)
 
                 // 2) Arm the new exact alarm. A SecurityException race is possible: the
                 // user can revoke SCHEDULE_EXACT_ALARM between canScheduleExactAlarms()
                 // and the actual set call; tryArmExactAlarm catches it and returns false.
-                val armed = tryArmExactAlarm(job.id, nextRun, desiredBackend)
+                val armed = tryArmExactAlarm(job, nextRun, desiredBackend)
                 val resolved = resolveBackendAfterArm(desiredBackend, armed)
                 if (!armed) {
                     // Permission revoked in the race window → replace the backup with the
                     // immediate flexible work (same slot, idempotent). REPLACE also
                     // replaces the stale fallback under the same unique name, so no
                     // explicit cancel is needed on this path.
-                    enqueueFlexible(job.id, nextRun, nowMs)
+                    enqueueFlexible(job, nextRun, nowMs)
                 } else {
                     // 3) New path durable — now drop any lingering fallback execution from
                     //    a previous no-permission period (best-effort; the replay /
@@ -258,7 +263,7 @@ class CronJobScheduler(
             }
             Backend.WORK_MANAGER_FALLBACK, Backend.WORK_MANAGER -> {
                 // 1) Durable flexible work FIRST (REPLACE keeps the identity stable).
-                enqueueFlexible(job.id, nextRun, nowMs)
+                enqueueFlexible(job, nextRun, nowMs)
 
                 // 2) New path durable — clean the stale exact-path backups: the PREVIOUS
                 //    slot's backup AND any backup left over for the CURRENT (same) slot
@@ -284,15 +289,18 @@ class CronJobScheduler(
     }
 
     private suspend fun enqueueFlexible(
-        jobId: String,
+        job: ScheduledJobEntity,
         scheduledAtMs: Long,
         nowMs: Long,
     ) {
+        val jobId = job.id
         val delayMs = max(0L, scheduledAtMs - nowMs)
         val req = OneTimeWorkRequestBuilder<CronJobWorker>()
             .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
             .setInputData(Data.Builder()
                 .putString(CronJobWorker.KEY_JOB_ID, jobId)
+                .putString(CronJobWorker.KEY_JOB_NAME, job.name)
+                .putString(CronJobWorker.KEY_JOB_MODE, job.mode)
                 .putLong(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
                 .build())
             .addTag(workTagFor(jobId))
@@ -310,12 +318,15 @@ class CronJobScheduler(
      * the primary slot worker is durably persisted, and the worker can tell the backup
      * apart via [CronJobWorker.KEY_IS_BACKUP] for at-most-once slot semantics.
      */
-    private suspend fun enqueueBackup(jobId: String, scheduledAtMs: Long, nowMs: Long) {
+    private suspend fun enqueueBackup(job: ScheduledJobEntity, scheduledAtMs: Long, nowMs: Long) {
+        val jobId = job.id
         val delayMs = max(0L, scheduledAtMs - nowMs) + EXACT_BACKUP_GRACE_MS
         val req = OneTimeWorkRequestBuilder<CronJobWorker>()
             .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
             .setInputData(Data.Builder()
                 .putString(CronJobWorker.KEY_JOB_ID, jobId)
+                .putString(CronJobWorker.KEY_JOB_NAME, job.name)
+                .putString(CronJobWorker.KEY_JOB_MODE, job.mode)
                 .putLong(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
                 .putBoolean(CronJobWorker.KEY_IS_BACKUP, true)
                 .build())
@@ -552,6 +563,7 @@ class CronJobScheduler(
      * Per-job exceptions are isolated (see [scheduleAllEnabled]).
      */
     suspend fun reconcileAllEnabled(): List<String> {
+        CronDailyKeepAliveReceiver.armIfAbsent(context)
         val failures = mutableListOf<String>()
         for (job in repo.getEnabled()) {
             try {
@@ -599,13 +611,13 @@ class CronJobScheduler(
         when (desiredBackend) {
             Backend.ALARM_CLOCK_DIRECT, Backend.EXACT_ALARM_LLM -> {
                 // Same ordering as scheduleLocked: durable path first, stale teardown after.
-                enqueueBackup(job.id, scheduledAtMs, nowMs)
-                if (!tryArmExactAlarm(job.id, scheduledAtMs, desiredBackend)) {
+                enqueueBackup(job, scheduledAtMs, nowMs)
+                if (!tryArmExactAlarm(job, scheduledAtMs, desiredBackend)) {
                     // Permission revoked between the check and the set — replace the
                     // backup with the immediate flexible work (same slot) and remove both
                     // alarms (fallback has none). REPLACE also replaces the stale fallback
                     // under the same unique name.
-                    enqueueFlexible(job.id, scheduledAtMs, nowMs)
+                    enqueueFlexible(job, scheduledAtMs, nowMs)
                     cancelAllAlarms(job.id)
                 } else {
                     // New path durable — tear down the stale fallback (best-effort) and the
@@ -625,7 +637,7 @@ class CronJobScheduler(
                     .any { it.state == WorkInfo.State.ENQUEUED ||
                         it.state == WorkInfo.State.BLOCKED ||
                         it.state == WorkInfo.State.RUNNING }
-                if (!active) enqueueFlexible(job.id, scheduledAtMs, nowMs)
+                if (!active) enqueueFlexible(job, scheduledAtMs, nowMs)
                 // Drop the stale exact-backend backup for THIS slot (best-effort). Rearm
                 // runs under the per-job lock from app/reconcile — never from inside the
                 // slot's own backup worker — so this cancel cannot self-cancel; the
@@ -646,6 +658,8 @@ class CronJobScheduler(
                 .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
                 .setInputData(Data.Builder()
                     .putString(CronJobWorker.KEY_JOB_ID, job.id)
+                    .putString(CronJobWorker.KEY_JOB_NAME, job.name)
+                    .putString(CronJobWorker.KEY_JOB_MODE, job.mode)
                     .putLong(CronJobWorker.KEY_SCHEDULED_AT_MS, plan.fireSlotsMs[index])
                     .build())
                 .addTag(workTagFor(job.id))
@@ -702,25 +716,26 @@ class CronJobScheduler(
      * the fallback decision is delegated to the pure [resolveBackendAfterArm] which is
      * JVM-testable without an AlarmManager.
      */
-    private fun tryArmExactAlarm(jobId: String, scheduledAtMs: Long, backend: Backend): Boolean {
+    private fun tryArmExactAlarm(job: ScheduledJobEntity, scheduledAtMs: Long, backend: Backend): Boolean {
         return try {
             when (backend) {
-                Backend.ALARM_CLOCK_DIRECT -> scheduleAlarmClockDirect(jobId, scheduledAtMs)
-                Backend.EXACT_ALARM_LLM -> scheduleExactAlarmLlm(jobId, scheduledAtMs)
+                Backend.ALARM_CLOCK_DIRECT -> scheduleAlarmClockDirect(job, scheduledAtMs)
+                Backend.EXACT_ALARM_LLM -> scheduleExactAlarmLlm(job, scheduledAtMs)
                 else -> return false
             }
             true
         } catch (_: SecurityException) {
             // Permission revoked in the race window. Clean up any partially-armed alarm
             // so it doesn't fire unexpectedly later.
-            cancelAllAlarms(jobId)
+            cancelAllAlarms(job.id)
             false
         }
     }
 
     // ---- Direct mode: setAlarmClock (user-visible alarm) ----
 
-    private fun scheduleAlarmClockDirect(jobId: String, scheduledAtMs: Long) {
+    private fun scheduleAlarmClockDirect(job: ScheduledJobEntity, scheduledAtMs: Long) {
+        val jobId = job.id
         // showIntent uses a constant requestCode (0) because every job's showIntent is
         // identical — it just opens the app launcher. Using jobId.hashCode() as the
         // requestCode risked PendingIntent identity collisions (String.hashCode can collide
@@ -735,19 +750,31 @@ class CronJobScheduler(
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val triggerPI = directAlarmPendingIntent(jobId, scheduledAtMs)
+        val triggerPI = directAlarmPendingIntent(jobId, scheduledAtMs, job.name, job.mode)
         alarmManager.setAlarmClock(
             AlarmManager.AlarmClockInfo(scheduledAtMs, showIntent),
             triggerPI,
         )
     }
 
-    private fun directAlarmPendingIntent(jobId: String, scheduledAtMs: Long): PendingIntent {
+    // Display extras (job name/mode) ride along so the receiver → worker chain can build
+    // notifications even when the process was cold-started by the alarm and Room is not
+    // ready yet. Extras never affect PendingIntent identity, so cancel calls may omit them.
+    private fun directAlarmPendingIntent(
+        jobId: String,
+        scheduledAtMs: Long,
+        jobName: String? = null,
+        jobMode: String? = null,
+    ): PendingIntent {
         val intent = Intent(context, DirectCronAlarmReceiver::class.java)
             .setAction(DirectCronAlarmReceiver.ACTION_FIRE)
             .setData(Uri.parse("rikkahub://cron-direct/$jobId"))
             .putExtra(CronJobWorker.KEY_JOB_ID, jobId)
+            .putExtra(CronJobWorker.KEY_JOB_NAME, jobName)
+            .putExtra(CronJobWorker.KEY_JOB_MODE, jobMode)
             .putExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
+            // Foreground broadcast queue — faster delivery for user-visible alarms.
+            .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
         return PendingIntent.getBroadcast(
             context,
             0,
@@ -758,20 +785,28 @@ class CronJobScheduler(
 
     // ---- LLM mode: setExactAndAllowWhileIdle ----
 
-    private fun scheduleExactAlarmLlm(jobId: String, scheduledAtMs: Long) {
+    private fun scheduleExactAlarmLlm(job: ScheduledJobEntity, scheduledAtMs: Long) {
         alarmManager.setExactAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP,
             scheduledAtMs,
-            llmAlarmPendingIntent(jobId, scheduledAtMs),
+            llmAlarmPendingIntent(job.id, scheduledAtMs, job.name, job.mode),
         )
     }
 
-    private fun llmAlarmPendingIntent(jobId: String, scheduledAtMs: Long): PendingIntent {
+    private fun llmAlarmPendingIntent(
+        jobId: String,
+        scheduledAtMs: Long,
+        jobName: String? = null,
+        jobMode: String? = null,
+    ): PendingIntent {
         val intent = Intent(context, ExactCronAlarmReceiver::class.java)
             .setAction(ExactCronAlarmReceiver.ACTION_FIRE)
             .setData(Uri.parse("rikkahub://cron-llm/$jobId"))
             .putExtra(CronJobWorker.KEY_JOB_ID, jobId)
+            .putExtra(CronJobWorker.KEY_JOB_NAME, jobName)
+            .putExtra(CronJobWorker.KEY_JOB_MODE, jobMode)
             .putExtra(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
+            .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
         return PendingIntent.getBroadcast(
             context,
             0,

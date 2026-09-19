@@ -1,18 +1,22 @@
 package me.rerere.rikkahub.ui.pages.setting.scheduledjobs
 
+import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
 import me.rerere.rikkahub.data.db.entity.ScheduledJobRunEntity
 import me.rerere.rikkahub.data.repository.ScheduledJobRepository
 import me.rerere.rikkahub.data.repository.ScheduledJobRunRepository
+import me.rerere.rikkahub.service.AgentKeepaliveService
 import me.rerere.rikkahub.service.CronJobScheduler
 
 /**
@@ -25,13 +29,53 @@ import me.rerere.rikkahub.service.CronJobScheduler
  * order the tools use, so the WorkManager schedule and the DB row stay in lock-step.
  */
 class ScheduledJobsViewModel(
+    private val context: Application,
     private val repository: ScheduledJobRepository,
     private val runRepository: ScheduledJobRunRepository,
     private val scheduler: CronJobScheduler,
+    private val settingsStore: SettingsStore,
 ) : ViewModel() {
 
     val jobs: StateFlow<List<ScheduledJobEntity>> =
         repository.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val keepaliveEnabled: StateFlow<Boolean> =
+        settingsStore.settingsFlow
+            .map { it.keepaliveEnabled }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /**
+     * Flip the keep-alive FGS on/off. Callers (the settings switch) must only reach this
+     * after [me.rerere.rikkahub.service.KeepaliveEligibilityChecker] passes — the screen
+     * walks the user through missing notification/alarm/widget prerequisites first.
+     */
+    fun setKeepaliveEnabled(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                settingsStore.update { it.copy(keepaliveEnabled = enabled) }
+                if (enabled) AgentKeepaliveService.start(context)
+                else AgentKeepaliveService.stop(context)
+            }.onFailure {
+                android.util.Log.w("ScheduledJobsViewModel", "setKeepaliveEnabled($enabled) failed", it)
+            }
+        }
+    }
+
+    /** Opt-in lock-screen wake for scheduled-job fires (default off). */
+    val wakeOnLockScreen: StateFlow<Boolean> =
+        settingsStore.settingsFlow
+            .map { it.scheduledJobWakeOnLockScreen }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setWakeOnLockScreen(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                settingsStore.update { it.copy(scheduledJobWakeOnLockScreen = enabled) }
+            }.onFailure {
+                android.util.Log.w("ScheduledJobsViewModel", "setWakeOnLockScreen($enabled) failed", it)
+            }
+        }
+    }
 
     fun setEnabled(id: String, enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {

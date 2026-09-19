@@ -1,8 +1,11 @@
 package me.rerere.rikkahub.ui.pages.setting.scheduledjobs
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -45,12 +48,13 @@ import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
 import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
 import me.rerere.rikkahub.service.CronJobScheduler
+import me.rerere.rikkahub.service.KeepaliveEligibilityChecker
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.RelativeTimeStrings
 import me.rerere.rikkahub.utils.formatRelativeAgo
-import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
 
 @Composable
@@ -59,21 +63,84 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val jobs by vm.jobs.collectAsStateWithLifecycle()
+    val keepaliveEnabled by vm.keepaliveEnabled.collectAsStateWithLifecycle()
+    val wakeOnLockScreen by vm.wakeOnLockScreen.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     var showHowItWorks by remember { mutableStateOf(false) }
     var exactAlarmGranted by remember {
         mutableStateOf(PermissionHelper.canScheduleExactAlarms(context))
     }
+    var eligibility by remember {
+        mutableStateOf(KeepaliveEligibilityChecker.check(context))
+    }
+    // Set when the user asks to enable keep-alive while prerequisites are still missing;
+    // when they come back from the system prompt and everything is granted we enable it
+    // automatically instead of making them hunt for the switch again.
+    var pendingKeepaliveEnable by remember { mutableStateOf(false) }
+    var widgetPinUnsupported by remember { mutableStateOf(false) }
+
+    fun refreshEligibility() {
+        eligibility = KeepaliveEligibilityChecker.check(context)
+        if (pendingKeepaliveEnable && eligibility.allSatisfied) {
+            pendingKeepaliveEnable = false
+            vm.setKeepaliveEnabled(true)
+        }
+    }
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { refreshEligibility() }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 exactAlarmGranted = PermissionHelper.canScheduleExactAlarms(context)
                 if (exactAlarmGranted) vm.reconcileSchedules()
+                refreshEligibility()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // WakeUp-style gate: only flip the setting when every prerequisite holds; otherwise
+    // walk the user through the first missing piece (permission prompt / settings deep
+    // link / widget pin sheet) rather than silently enabling a feature that can't work.
+    fun onKeepaliveToggle(enabled: Boolean) {
+        if (!enabled) {
+            pendingKeepaliveEnable = false
+            vm.setKeepaliveEnabled(false)
+            return
+        }
+        val res = KeepaliveEligibilityChecker.check(context).also { eligibility = it }
+        when {
+            !res.notificationsGranted -> {
+                pendingKeepaliveEnable = true
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    notifPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        )
+                    }
+                }
+            }
+            !res.exactAlarmsGranted -> {
+                pendingKeepaliveEnable = true
+                context.startActivity(PermissionHelper.exactAlarmAccessIntent(context))
+            }
+            !res.widgetPlaced -> {
+                pendingKeepaliveEnable = true
+                if (!KeepaliveEligibilityChecker.requestPinWidget(context)) {
+                    // Launcher doesn't support the pin sheet — surface a hint so the user
+                    // adds it via the normal widget picker.
+                    widgetPinUnsupported = true
+                }
+            }
+            else -> vm.setKeepaliveEnabled(true)
+        }
     }
 
     if (showHowItWorks) {
@@ -101,59 +168,177 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         containerColor = CustomColors.topBarColors.containerColor,
     ) { innerPadding ->
-        if (jobs.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.Center,
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+        ) {
+            // High-reliability background section — always visible (even with zero jobs)
+            // so the prerequisites can be set up before the first job exists.
+            CardGroup(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                title = { Text(stringResource(R.string.setting_page_scheduled_jobs_reliability)) },
             ) {
-                Text(
-                    text = stringResource(R.string.setting_page_scheduled_jobs_empty),
-                    style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.setting_page_scheduled_jobs_keepalive_title))
+                    },
+                    supportingContent = {
+                        Column {
+                            Text(stringResource(R.string.setting_page_scheduled_jobs_keepalive_desc))
+                            if (!eligibility.allSatisfied) {
+                                val missing = buildList {
+                                    if (!eligibility.notificationsGranted) {
+                                        add(stringResource(R.string.setting_page_scheduled_jobs_req_notifications))
+                                    }
+                                    if (!eligibility.exactAlarmsGranted) {
+                                        add(stringResource(R.string.setting_page_scheduled_jobs_req_exact_alarms))
+                                    }
+                                    if (!eligibility.widgetPlaced) {
+                                        add(stringResource(R.string.setting_page_scheduled_jobs_req_widget))
+                                    }
+                                }
+                                Text(
+                                    text = stringResource(
+                                        R.string.setting_page_scheduled_jobs_reliability_missing,
+                                        missing.joinToString(", "),
+                                    ),
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = keepaliveEnabled,
+                            onCheckedChange = { onKeepaliveToggle(it) },
+                        )
+                    },
+                )
+                item(
+                    onClick = if (eligibility.widgetPlaced) null else {
+                        {
+                            if (!KeepaliveEligibilityChecker.requestPinWidget(context)) {
+                                widgetPinUnsupported = true
+                            }
+                        }
+                    },
+                    headlineContent = {
+                        Text(stringResource(R.string.setting_page_scheduled_jobs_widget_title))
+                    },
+                    supportingContent = {
+                        Text(
+                            stringResource(
+                                if (widgetPinUnsupported) {
+                                    R.string.setting_page_scheduled_jobs_widget_desc_manual
+                                } else {
+                                    R.string.setting_page_scheduled_jobs_widget_desc
+                                }
+                            )
+                        )
+                    },
+                    trailingContent = {
+                        Text(
+                            text = stringResource(
+                                if (eligibility.widgetPlaced) {
+                                    R.string.setting_page_scheduled_jobs_widget_added
+                                } else {
+                                    R.string.setting_page_scheduled_jobs_widget_add
+                                }
+                            ),
+                            color = if (eligibility.widgetPlaced) {
+                                MaterialTheme.colorScheme.outline
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    },
+                )
+                item(
+                    onClick = { nav.navigate(Screen.SettingReliability) },
+                    headlineContent = {
+                        Text(stringResource(R.string.setting_page_scheduled_jobs_reliability_note))
+                    },
+                    trailingContent = {
+                        Text(
+                            text = stringResource(R.string.setting_page_reliability_open),
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    },
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.setting_page_scheduled_jobs_wake_lockscreen_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.setting_page_scheduled_jobs_wake_lockscreen_desc))
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = wakeOnLockScreen,
+                            onCheckedChange = { vm.setWakeOnLockScreen(it) },
+                        )
+                    },
                 )
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = innerPadding + PaddingValues(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (!exactAlarmGranted && jobs.any { it.enabled }) {
-                    item {
-                        ListItem(
-                            headlineContent = {
-                                Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_title))
-                            },
-                            supportingContent = {
-                                Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_body))
-                            },
-                            trailingContent = {
-                                TextButton(onClick = {
-                                    context.startActivity(PermissionHelper.exactAlarmAccessIntent(context))
-                                }) {
-                                    Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_grant))
-                                }
-                            },
-                        )
-                        HorizontalDivider()
-                    }
-                }
-                items(jobs, key = { it.id }) { job ->
-                    ScheduledJobRow(
-                        job = job,
-                        exactAlarmGranted = exactAlarmGranted,
-                        onToggle = { enabled -> vm.setEnabled(job.id, enabled) },
-                        onTap = { nav.navigate(Screen.ScheduledJobDetail(job.id)) },
+
+            if (jobs.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(R.string.setting_page_scheduled_jobs_empty),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                item {
-                    TextButton(
-                        onClick = { showHowItWorks = true },
-                        modifier = Modifier.padding(8.dp),
-                    ) {
-                        Text(stringResource(R.string.setting_page_scheduled_jobs_how_it_works))
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (!exactAlarmGranted && jobs.any { it.enabled }) {
+                        item {
+                            ListItem(
+                                headlineContent = {
+                                    Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_title))
+                                },
+                                supportingContent = {
+                                    Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_body))
+                                },
+                                trailingContent = {
+                                    TextButton(onClick = {
+                                        context.startActivity(PermissionHelper.exactAlarmAccessIntent(context))
+                                    }) {
+                                        Text(stringResource(R.string.setting_page_scheduled_jobs_exact_permission_grant))
+                                    }
+                                },
+                            )
+                            HorizontalDivider()
+                        }
+                    }
+                    items(jobs, key = { it.id }) { job ->
+                        ScheduledJobRow(
+                            job = job,
+                            exactAlarmGranted = exactAlarmGranted,
+                            onToggle = { enabled -> vm.setEnabled(job.id, enabled) },
+                            onTap = { nav.navigate(Screen.ScheduledJobDetail(job.id)) },
+                        )
+                    }
+                    item {
+                        TextButton(
+                            onClick = { showHowItWorks = true },
+                            modifier = Modifier.padding(8.dp),
+                        ) {
+                            Text(stringResource(R.string.setting_page_scheduled_jobs_how_it_works))
+                        }
                     }
                 }
             }

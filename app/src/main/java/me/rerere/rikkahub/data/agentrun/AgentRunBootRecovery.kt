@@ -65,7 +65,10 @@ class AgentRunBootRecovery(
     }
 
     companion object {
-        const val CHANNEL_ID = "rikkahub_agent_run_recovery"
+        // Channel importance is immutable once created — the recovery alert moved to a
+        // new IMPORTANCE_HIGH channel id so an interrupted-run warning is a heads-up
+        // (aligned with the scheduled-jobs channel upgrade).
+        const val CHANNEL_ID = "rikkahub_agent_run_recovery_high"
 
         /** Fixed id so subsequent boots replace, not stack, the aggregate notification. */
         private const val AGGREGATE_NOTIF_ID = Int.MAX_VALUE - 101
@@ -83,7 +86,7 @@ class AgentRunBootRecovery(
                         NotificationChannel(
                             CHANNEL_ID,
                             "Autonomous run recovery",
-                            NotificationManager.IMPORTANCE_DEFAULT,
+                            NotificationManager.IMPORTANCE_HIGH,
                         )
                     )
                 }
@@ -102,6 +105,9 @@ class AgentRunBootRecovery(
                     .setContentText(text)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setDefaults(NotificationCompat.DEFAULT_ALL)
                     .setAutoCancel(true)
                 NotificationManagerCompat.from(context).notify(AGGREGATE_NOTIF_ID, builder.build())
             }.onFailure {

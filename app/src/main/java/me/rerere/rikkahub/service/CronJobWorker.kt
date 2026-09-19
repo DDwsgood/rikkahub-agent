@@ -2,7 +2,9 @@ package me.rerere.rikkahub.service
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.util.Log
@@ -22,6 +24,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.CronJobWakeActivity
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.agentrun.AgentRunKind
 import me.rerere.rikkahub.data.agentrun.AgentRunRepository
@@ -192,7 +195,13 @@ class CronJobWorker(
     /** Required for expedited exact-alarm work on Android 11 and lower. */
     override suspend fun getForegroundInfo(): ForegroundInfo {
         val jobId = inputData.getString(KEY_JOB_ID)
-        return createExecutionForegroundInfo(jobId = jobId, jobName = null)
+        // The display name rides along in inputData (armed via alarm extras), so the
+        // foreground notification never depends on Room being ready in a cold-started
+        // process.
+        return createExecutionForegroundInfo(
+            jobId = jobId,
+            jobName = inputData.getString(KEY_JOB_NAME),
+        )
     }
 
     override suspend fun doWork(): Result {
@@ -219,13 +228,15 @@ class CronJobWorker(
         var ledgerId: String? = null
         var runRowInserted = false
         var runRowTerminal = false
-        var jobMode: String? = null
+        var jobMode: String? = inputData.getString(KEY_JOB_MODE)
+        var jobName: String? = inputData.getString(KEY_JOB_NAME)
         var slotMs: Long = nowMs
 
         try {
             val job = repo.getById(jobId) ?: return Result.success()
             if (!job.enabled) return Result.success()
             jobMode = job.mode
+            jobName = job.name
 
             // WorkManager otherwise imposes a roughly ten-minute execution limit. Promote
             // only while this user-requested job is active; there is no always-on service.
@@ -329,6 +340,17 @@ class CronJobWorker(
                 },
             )
 
+            // Optional lock-screen wake (opt-in setting, default off): a full-screen
+            // intent alert over the keyguard when a scheduled job fires — the alarm-app
+            // pattern. Manual fires never wake the screen.
+            val wakeOnLockScreen = runCatching {
+                settingsStore.settingsFlow.first().scheduledJobWakeOnLockScreen
+            }.getOrDefault(false)
+            if (!isManual && wakeOnLockScreen) {
+                runCatching { postWakeNotification(job.name) }
+                    .onFailure { Log.w(TAG, "wake notification failed for $jobId", it) }
+            }
+
             val (outcome, errorMessage, convIdMaybe) = when (job.mode) {
                 "llm"    -> runLlm(job)
                 "direct" -> runDirect(job)
@@ -424,6 +446,15 @@ class CronJobWorker(
                 ledgerId?.let { id ->
                     agentRunRepo.markTerminal(id, AgentRunStatus.failed, t.message)
                 }
+            }
+            // Surface the crash — a silent failure leaves the user unaware that the fire
+            // was lost. Falls back to the inputData name (armed via alarm extras) when the
+            // Room read itself failed in a cold-started process.
+            runCatching {
+                postFailureNotification(
+                    jobName ?: jobId,
+                    "worker crashed: ${t::class.simpleName}: ${t.message.orEmpty()}",
+                )
             }
             val successCount = runCatching { runRepo.countSuccessful(jobId) }.getOrDefault(0)
             // A manual fire is bonus — its crash must not bump lastRunAtMs/runsSoFar or
@@ -562,19 +593,53 @@ class CronJobWorker(
 
     private fun postFailureNotification(jobName: String, errorMessage: String) {
         val ctx = applicationContext
-        val nm = ctx.getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            nm.createNotificationChannel(NotificationChannel(
-                CHANNEL_ID, "Scheduled jobs", NotificationManager.IMPORTANCE_DEFAULT))
-        }
-        val builder = NotificationCompat.Builder(ctx, CHANNEL_ID)
+        ensureScheduledJobsHighChannel(ctx)
+        val builder = NotificationCompat.Builder(ctx, SCHEDULED_JOBS_HIGH_CHANNEL_ID)
             .setContentTitle("Scheduled job failed")
             .setContentText("$jobName: $errorMessage")
             .setStyle(NotificationCompat.BigTextStyle().bigText("$jobName: $errorMessage"))
             .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVibrate(SCHEDULED_JOB_VIBRATE_PATTERN)
             .setAutoCancel(true)
         try {
             NotificationManagerCompat.from(ctx).notify(jobName.hashCode(), builder.build())
+        } catch (_: SecurityException) { /* POST_NOTIFICATIONS not granted — fine */ }
+    }
+
+    /**
+     * Opt-in lock-screen wake: a heads-up notification carrying a full-screen intent to
+     * [CronJobWakeActivity], so a firing job can surface over the keyguard — the alarm-app
+     * pattern (Etar/AOSP DeskClock). Only posted when the user enabled the "wake screen
+     * on fire" setting (default off).
+     */
+    private fun postWakeNotification(jobName: String) {
+        val ctx = applicationContext
+        ensureScheduledJobsHighChannel(ctx)
+        val wakeIntent = Intent(ctx, CronJobWakeActivity::class.java)
+            .putExtra(CronJobWakeActivity.EXTRA_JOB_NAME, jobName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val wakePi = PendingIntent.getActivity(
+            ctx,
+            0,
+            wakeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = NotificationCompat.Builder(ctx, SCHEDULED_JOBS_HIGH_CHANNEL_ID)
+            .setContentTitle(ctx.getString(R.string.cron_job_wake_notification_title))
+            .setContentText(jobName)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVibrate(SCHEDULED_JOB_VIBRATE_PATTERN)
+            .setContentIntent(wakePi)
+            .setFullScreenIntent(wakePi, true)
+            .setAutoCancel(true)
+        try {
+            NotificationManagerCompat.from(ctx).notify(WAKE_NOTIFICATION_ID, builder.build())
         } catch (_: SecurityException) { /* POST_NOTIFICATIONS not granted — fine */ }
     }
 
@@ -614,10 +679,13 @@ class CronJobWorker(
 
     companion object {
         const val KEY_JOB_ID = "cron_job_id"
+        const val KEY_JOB_NAME = "cron_job_name"
+        const val KEY_JOB_MODE = "cron_job_mode"
         const val KEY_MANUAL = "cron_job_manual"
         const val KEY_SCHEDULED_AT_MS = "cron_job_scheduled_at_ms"
         const val KEY_IS_BACKUP = "cron_job_is_backup"
         const val CHANNEL_ID = "rikkahub_cron_jobs"
+        private const val WAKE_NOTIFICATION_ID = Int.MAX_VALUE - 102
         private const val EXECUTION_CHANNEL_ID = "rikkahub_cron_execution"
         private const val FOREGROUND_NOTIFICATION_ID_PREFIX = 0x50000000
         private const val FOREGROUND_NOTIFICATION_ID_MASK = 0x0fffffff

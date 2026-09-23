@@ -548,7 +548,7 @@ class CronJobWorker(
         // Tool list scoped to the job's assistant — same path ChatService uses.
         val assistantUuid = runCatching { Uuid.parse(job.assistantId) }.getOrNull()
             ?: return Triple("failed", "bad_assistant_id:${job.assistantId}", null)
-        val settings = settingsStore.settingsFlow.first()
+        val settings = settingsStore.awaitLoadedSettings()
         val assistant = settings.findAssistantById(assistantUuid)
             ?: return Triple("failed", "assistant_not_found", null)
         // Headless context — sub-agent recursion guard fires from this dispatch path so
@@ -558,6 +558,7 @@ class CronJobWorker(
             me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                 callerAssistantId = assistantUuid.toString(),
                 callerConversationId = null,  // direct-mode has no conversation
+                callerWorkspaceId = assistant.workspaceId?.toString(),
                 isHeadless = true,
             ),
         )

@@ -521,7 +521,7 @@ class ChatService(
                 // Resolve the assistant from the conversation's own assistantId, not the
                 // global current-assistant pointer — otherwise switching assistants mid-
                 // generation makes one conversation preprocess input with another's config.
-                val settings = settingsStore.settingsFlow.first()
+                val settings = settingsStore.awaitLoadedSettings()
                 val assistant = settings.getAssistantById(currentConversation.assistantId)
                     ?: settings.getCurrentAssistant()
                 val processedContent = preprocessUserInputParts(content, assistant)
@@ -609,6 +609,7 @@ class ChatService(
             me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                 callerAssistantId = assistant.id.toString(),
                 callerConversationId = conversationId.toString(),
+                callerWorkspaceId = assistant.workspaceId?.toString(),
                 isHeadless = false,  // gated above
             ),
         )
@@ -890,7 +891,7 @@ class ChatService(
         conversationId: Uuid,
         messageRange: ClosedRange<Int>? = null
     ) {
-        val settings = settingsStore.settingsFlow.first()
+        val settings = settingsStore.awaitLoadedSettings()
         // Resolve the assistant from this conversation's own assistantId — the global
         // current-assistant pointer can have moved if the user switched assistants while
         // this generation was queued (multi-assistant crosstalk). Everything downstream
@@ -971,6 +972,7 @@ class ChatService(
             val baseInvocationCtx = ToolInvocationContext(
                 callerAssistantId = assistant.id.toString(),
                 callerConversationId = conversationId.toString(),
+                callerWorkspaceId = assistant.workspaceId?.toString(),
                 isHeadless = me.rerere.rikkahub.data.ai.tools.HeadlessConversations
                     .isHeadless(conversationId),
                 modelCanSeeImages = Modality.IMAGE in model.inputModalities,
@@ -1376,7 +1378,7 @@ class ChatService(
         if (!shouldGenerate) return
 
         runCatching {
-            val settings = settingsStore.settingsFlow.first()
+            val settings = settingsStore.awaitLoadedSettings()
             val model = settings.findModelById(settings.titleModelId, fallback = settings.fastModelId) ?: return
             val provider = model.findProvider(settings.providers) ?: return
             // Same defence as handleLlmTurn: don't burn tokens on a disabled provider.
@@ -1418,7 +1420,7 @@ class ChatService(
 
     suspend fun generateSuggestion(conversationId: Uuid, conversation: Conversation) {
         runCatching {
-            val settings = settingsStore.settingsFlow.first()
+            val settings = settingsStore.awaitLoadedSettings()
             if (!settings.enableSuggestion) return
             val model = settings.findModelById(settings.suggestionModelId, fallback = settings.fastModelId) ?: return
             val provider = model.findProvider(settings.providers) ?: return
@@ -1476,7 +1478,7 @@ class ChatService(
         targetTokens: Int,
         keepRecentMessages: Int = 32
     ): Result<Unit> = runCatching {
-        val settings = settingsStore.settingsFlow.first()
+        val settings = settingsStore.awaitLoadedSettings()
         val model = settings.findModelById(settings.compressModelId)
             ?: settings.getCurrentChatModel()
             ?: throw IllegalStateException("No model available for compression")
@@ -1802,7 +1804,7 @@ class ChatService(
     ) {
         appScope.launch(Dispatchers.IO) {
             try {
-                val settings = settingsStore.settingsFlow.first()
+                val settings = settingsStore.awaitLoadedSettings()
 
                 val messageText = message.parts.filterIsInstance<UIMessagePart.Text>()
                     .joinToString("\n\n") { it.text }
@@ -1867,7 +1869,7 @@ class ChatService(
         if (parts.isEmptyInputMessage()) return
 
         val currentConversation = getConversationFlow(conversationId).value
-        val settings = settingsStore.settingsFlow.first()
+        val settings = settingsStore.awaitLoadedSettings()
         val assistant = settings.getAssistantById(currentConversation.assistantId)
             ?: settings.getCurrentAssistant()
         val processedParts = preprocessUserInputParts(parts, assistant)

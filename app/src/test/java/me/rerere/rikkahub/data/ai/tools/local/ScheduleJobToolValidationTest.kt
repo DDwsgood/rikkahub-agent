@@ -10,11 +10,12 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScheduleJobToolValidationTest {
 
-    private val knownTools = listOf("post_notification", "telegram_send_message", "termux_run_command")
+    private val knownTools = listOf("post_notification", "telegram_send_message", "termux_run_command", "share_file")
 
     private fun base(): JsonObject = buildJsonObject {
         put("name", "test")
@@ -205,5 +206,63 @@ class ScheduleJobToolValidationTest {
             put("tags", buildJsonArray { add("HasUppercase") })
         }, knownTools)
         assertEquals("bad_tag", r!!.code)
+    }
+
+    // ---- share_file direct-mode block (behavioral) ----
+
+    @Test
+    fun `direct mode share_file action returns interactive_only`() {
+        val r = ScheduleJobValidator.validate(buildJsonObject {
+            put("name", "share-test"); put("mode", "direct")
+            put("actions", buildJsonArray { add(buildJsonObject {
+                put("tool", "share_file")
+                put("args", buildJsonObject { put("path", "/sdcard/test.txt") })
+            }) })
+            put("schedule_type", "once"); put("at_unix_ms", 200L)
+        }, knownTools)
+        assertNotNull(r)
+        assertEquals("interactive_only", r!!.code)
+    }
+
+    @Test
+    fun `direct mode share_file action error mentions the tool name`() {
+        val r = ScheduleJobValidator.validate(buildJsonObject {
+            put("name", "share-test"); put("mode", "direct")
+            put("actions", buildJsonArray { add(buildJsonObject {
+                put("tool", "share_file")
+                put("args", buildJsonObject { put("path", "/sdcard/test.txt") })
+            }) })
+            put("schedule_type", "once"); put("at_unix_ms", 200L)
+        }, knownTools)
+        assertNotNull(r)
+        assertTrue("detail should mention share_file: ${r!!.detail}", r.detail.contains("share_file"))
+    }
+
+    @Test
+    fun `llm mode with share_file in prompt is not blocked by direct-mode guard`() {
+        // LLM mode never enters the direct-mode action loop, so the interactive_only
+        // guard must NOT fire. The job should pass validation (or fail for its own
+        // reasons, but never with code "interactive_only").
+        val r = ScheduleJobValidator.validate(buildJsonObject {
+            put("name", "llm-share"); put("mode", "llm")
+            put("schedule_type", "cron"); put("cron_expression", "@hourly")
+            put("prompt", "Please use share_file to send ~/report.pdf to the user.")
+        }, knownTools)
+        // Should pass — LLM mode is valid
+        assertNull(r)
+    }
+
+    @Test
+    fun `direct mode with valid non-interactive tool passes`() {
+        // Ensure the direct-mode block doesn't accidentally reject valid tools
+        val r = ScheduleJobValidator.validate(buildJsonObject {
+            put("name", "ok"); put("mode", "direct")
+            put("actions", buildJsonArray { add(buildJsonObject {
+                put("tool", "post_notification")
+                put("args", buildJsonObject { put("title", "t"); put("body", "b") })
+            }) })
+            put("schedule_type", "once"); put("at_unix_ms", 200L)
+        }, knownTools)
+        assertNull(r)
     }
 }

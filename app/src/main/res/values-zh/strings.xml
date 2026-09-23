@@ -1867,5 +1867,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="keepalive_notification_body">保持定时任务在此设备上正常运行。</string>
   <string name="agent_widget_desc">显示下一次定时任务时间</string>
   <string name="agent_widget_next_run">下次 %1$s</string>
+  <string name="assistant_page_local_tools_share_file_title">分享文件</string>
+  <string name="assistant_page_local_tools_share_file_desc">打开系统分享面板，将单个文件发送到其他应用。支持 AgentWorkspace、公共存储、Workspace 和 Termux 路径。</string>
 </resources>
 

@@ -457,6 +457,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_share_file_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_share_file_desc))
+                },
+                trailingContent = {
+                    PermissionedSwitch(
+                        checked = assistant.localTools.contains(LocalToolOption.ShareFile),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.ShareFile, it) }
+                    )
+                }
+            )
         }
 
         // Hardware control section

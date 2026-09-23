@@ -63,6 +63,7 @@ import me.rerere.rikkahub.data.ai.tools.local.searchSmsTool
 import me.rerere.rikkahub.data.ai.tools.local.setBrightnessTool
 import me.rerere.rikkahub.data.ai.tools.local.setVolumeTool
 import me.rerere.rikkahub.data.ai.tools.local.shareTool
+import me.rerere.rikkahub.data.ai.tools.local.shareFileTool
 import me.rerere.rikkahub.data.ai.tools.local.speechToTextTool
 import me.rerere.rikkahub.data.ai.tools.local.stopMediaTool
 import me.rerere.rikkahub.data.ai.tools.local.storageTool
@@ -159,6 +160,7 @@ sealed class LocalToolOption {
     @Serializable @SerialName("toast")          data object Toast          : LocalToolOption()
     @Serializable @SerialName("notification")   data object Notification   : LocalToolOption()
     @Serializable @SerialName("share")          data object Share          : LocalToolOption()
+    @Serializable @SerialName("share_file")     data object ShareFile      : LocalToolOption()
     @Serializable @SerialName("torch")          data object Torch          : LocalToolOption()
     @Serializable @SerialName("vibrate")        data object Vibrate        : LocalToolOption()
     @Serializable @SerialName("brightness")     data object Brightness     : LocalToolOption()
@@ -376,6 +378,10 @@ class LocalTools(
     private val keyboardApiClient: me.rerere.rikkahub.data.keyboard.KeyboardApiClient,
     // Embedded Termux runner - backs the stateless termux_run_command tool.
     private val embeddedTermuxRunner: me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner,
+    // WorkspaceRepository — backs share_file's /workspace/ path resolution (rootfs export).
+    private val workspaceRepository: me.rerere.rikkahub.data.repository.WorkspaceRepository,
+    // TermuxEnvironment — authoritative Termux paths for share_file's termux:~/ source.
+    private val termuxEnvironment: me.rerere.rikkahub.data.termux.TermuxEnvironment,
 ) {
     init {
         // Bridge the DI-provided runner into the process-scoped holder so legacy
@@ -768,6 +774,9 @@ class LocalTools(
         if (options.contains(LocalToolOption.Share)) {
             tools.add(shareTool(context, invocationContext, interactiveToolStreamer))
         }
+        if (options.contains(LocalToolOption.ShareFile)) {
+            tools.add(shareFileTool(context, workspaceRepository, termuxEnvironment, invocationContext))
+        }
         if (options.contains(LocalToolOption.Torch)) {
             tools.add(torchTool(context))
         }
@@ -1131,7 +1140,7 @@ internal fun categorizeTool(name: String): String = when {
     name in setOf("take_photo", "record_audio", "speech_to_text", "verify_fingerprint") -> "camera"
     name in setOf("launch_app", "list_installed_apps", "open_url") -> "app"
     name in setOf(
-        "show_toast", "post_notification", "share", "set_torch", "vibrate",
+        "show_toast", "post_notification", "share", "share_file", "set_torch", "vibrate",
         "get_brightness", "set_brightness", "get_volume", "set_volume"
     ) -> "device"
     name in setOf(

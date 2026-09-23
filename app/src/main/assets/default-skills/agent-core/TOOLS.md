@@ -52,7 +52,8 @@ You have three distinct filesystem surfaces. Know which one a tool targets befor
 
 - **`show_toast`** — short transient overlay; not stored.
 - **`post_notification`** — system notification with optional click intent.
-- **`share`** — send a string / file via the system share sheet.
+- **`share`** — send text or a URL via the system share sheet.
+- **`share_file`** — open the system share sheet for a single file. Copies the file into an app-controlled cache and exposes it via `content://` (never `file://`). Allowed sources: `~/...` (AgentWorkspace), `/sdcard/...` or `/storage/...` (public storage), `/workspace/...` (proot rootfs, requires a bound workspace), `termux:~/...` (embedded Termux, lowercase). Rejected: `content://`, `file://`, direct `/data/data/...` paths, `TERMUX:` uppercase, bare `/storage`. Only opens the chooser; does not guarantee the file was sent. Interactive only — cannot be used from background/cron/workflow/Telegram.
 
 ## Hardware control
 

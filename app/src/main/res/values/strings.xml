@@ -2019,5 +2019,7 @@
   <string name="keepalive_notification_body">Keeps scheduled jobs running on this device.</string>
   <string name="agent_widget_desc">Shows the next scheduled job time</string>
   <string name="agent_widget_next_run">Next %1$s</string>
+  <string name="assistant_page_local_tools_share_file_title">Share file</string>
+  <string name="assistant_page_local_tools_share_file_desc">Open the system share sheet to send a single file to other apps. Supports AgentWorkspace, public storage, workspace, and Termux paths.</string>
 </resources>
 

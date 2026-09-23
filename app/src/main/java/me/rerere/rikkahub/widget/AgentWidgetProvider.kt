@@ -11,10 +11,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.repository.ScheduledJobRepository
 import me.rerere.rikkahub.service.CronJobScheduler
+import me.rerere.rikkahub.service.CronReconcileWorker
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.text.SimpleDateFormat
@@ -47,24 +49,37 @@ class AgentWidgetProvider : AppWidgetProvider(), KoinComponent {
         appWidgetIds: IntArray,
     ) {
         val pendingResult = goAsync()
-        // goAsync gives us ~10s off-main; scheduleAllEnabled is a handful of awaited
-        // WorkManager/AlarmManager calls — comfortably inside the budget for realistic
-        // job counts. If the process is cold, Koin bootstrap eats most of the window, so
-        // a failure is logged and left for the next 30-min pass rather than retried here.
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                // Re-arm all enabled jobs first (the actual keepalive work)…
-                runCatching { scheduler.scheduleAllEnabled() }
-                    .onFailure { Log.w(TAG, "widget onUpdate: scheduleAllEnabled failed", it) }
-                // …then read the freshest nextRunAtMs values for the label. Reading after
-                // the re-arm means the label reflects the just-persisted control plane.
-                val nextRunMs = runCatching {
-                    repo.getEnabled()
-                        .mapNotNull { it.nextRunAtMs }
-                        .filter { it > System.currentTimeMillis() }
-                        .minOrNull()
-                }.getOrNull()
-                updateWidgets(context, appWidgetManager, appWidgetIds, nextRunMs)
+                // goAsync's broadcast window is ~10s; a cold-process Koin bootstrap plus an
+                // unbounded reconcile sweep (Room reads + awaited WorkManager persists over
+                // every enabled job) can blow past it. Bound the work at 8s and, on timeout,
+                // hand the unfinished sweep to a durable one-shot CronReconcileWorker so the
+                // pass still completes after the broadcast deadline instead of being killed
+                // mid-write.
+                val finished = withTimeoutOrNull(GO_ASYNC_BUDGET_MS) {
+                    // Reconcile (NOT scheduleAllEnabled): reconcile keeps a healthy future
+                    // slot's persisted nextRunAtMs and only re-arms delivery, while missed
+                    // past slots go through CatchupPlanner. A plain re-schedule would
+                    // recompute nextRunAtMs to the NEXT future slot and silently erase the
+                    // catchup window for a broadcast that was swallowed minutes ago.
+                    runCatching { scheduler.reconcileAllEnabled() }
+                        .onFailure { Log.w(TAG, "widget onUpdate: reconcileAllEnabled failed", it) }
+                    // …then read the freshest nextRunAtMs values for the label. Reading after
+                    // the reconcile means the label reflects the just-persisted control plane.
+                    val nextRunMs = runCatching {
+                        repo.getEnabled()
+                            .mapNotNull { it.nextRunAtMs }
+                            .filter { it > System.currentTimeMillis() }
+                            .minOrNull()
+                    }.getOrNull()
+                    updateWidgets(context, appWidgetManager, appWidgetIds, nextRunMs)
+                    true
+                }
+                if (finished != true) {
+                    Log.w(TAG, "widget onUpdate: reconcile exceeded goAsync budget — enqueuing worker fallback")
+                    CronReconcileWorker.enqueueOneTime(context, CronReconcileWorker.KIND_PERIODIC)
+                }
             } finally {
                 pendingResult.finish()
             }
@@ -103,6 +118,13 @@ class AgentWidgetProvider : AppWidgetProvider(), KoinComponent {
 
     companion object {
         private const val TAG = "AgentWidgetProvider"
+
+        /**
+         * Self-imposed ceiling inside the ~10s goAsync broadcast window. Below the system
+         * kill threshold so the coroutine can still enqueue the durable worker fallback
+         * and call pendingResult.finish() before the process is reaped.
+         */
+        private const val GO_ASYNC_BUDGET_MS = 8_000L
         private val TIME_FORMAT = SimpleDateFormat("HH:mm", Locale.getDefault())
     }
 }

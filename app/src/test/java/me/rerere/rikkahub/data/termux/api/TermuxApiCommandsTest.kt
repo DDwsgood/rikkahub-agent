@@ -359,4 +359,41 @@ class TermuxApiCommandsTest {
         assertEquals("UNKNOWN", batteryStatusString(1))
         assertEquals("UNKNOWN", batteryStatusString(-1))
     }
+
+    // -- 请求协议: 空参数哨兵 --------------------------------------------------
+    // 协议行为见 parseApiRequestLine / TermuxApiShims.scriptFor:
+    // base64("") 是空串会被字段过滤吞掉，shim 端因此把空参数编码为 "-"。
+
+    private fun b64(s: String): String =
+        java.util.Base64.getEncoder().encodeToString(s.toByteArray(Charsets.UTF_8))
+
+    @Test
+    fun `request line decodes base64 args`() {
+        val req = parseApiRequestLine("tok termux-toast ${b64("hello world")}")
+        assertEquals("tok", req!!.token)
+        assertEquals("termux-toast", req.command)
+        assertEquals(listOf("hello world"), req.args)
+    }
+
+    @Test
+    fun `request line restores sentinel to empty string arg`() {
+        // termux-notification -t "" -c "body": 空标题必须保留在位，
+        // 否则 -c 的值会前移成标题。
+        val req = parseApiRequestLine(
+            "tok termux-notification ${b64("-t")} - ${b64("-c")} ${b64("body")}"
+        )
+        assertEquals(listOf("-t", "", "-c", "body"), req!!.args)
+    }
+
+    @Test
+    fun `request line keeps real dash arg distinct from sentinel`() {
+        // 真实的 "-" 参数被 shim 编码成 "LQ=="，不会与哨兵混淆。
+        val req = parseApiRequestLine("tok termux-toast ${b64("-")}")
+        assertEquals(listOf("-"), req!!.args)
+    }
+
+    @Test
+    fun `request line rejects invalid base64`() {
+        assertNull(parseApiRequestLine("tok cmd !!!notbase64!!!"))
+    }
 }

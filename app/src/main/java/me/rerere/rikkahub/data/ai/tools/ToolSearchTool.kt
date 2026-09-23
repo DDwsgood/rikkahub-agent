@@ -69,8 +69,9 @@ fun toolSearchTool(
             ))
         }
 
-        val matches = ToolRegistry.search(query, category)
-            .filter { availableToolNames == null || it.name in availableToolNames }
+        // 可用工具过滤在 search() 内部、AND→OR→模糊回退之前生效，
+        // 否则回退决策基于未过滤的结果集，会漏掉当前助手实际可用的工具。
+        val matches = ToolRegistry.search(query, category, availableToolNames)
             .take(limit)
 
         // Surfaced tools join the declared set on subsequent provider calls.

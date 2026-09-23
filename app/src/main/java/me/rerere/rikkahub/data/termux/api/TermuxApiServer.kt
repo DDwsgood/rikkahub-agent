@@ -8,7 +8,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -16,6 +18,7 @@ import java.net.SocketException
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 一次 termux-* shim 命令的执行结果。
@@ -56,9 +59,16 @@ internal fun parseApiRequestLine(line: String): TermuxApiRequest? {
     val fields = line.trimEnd('\r', '\n').split(' ').filter { it.isNotEmpty() }
     if (fields.size < 2) return null
     val args = fields.drop(2).map { encoded ->
-        runCatching {
-            String(Base64.getDecoder().decode(encoded), Charsets.UTF_8)
-        }.getOrElse { return null }
+        // 哨兵 "-": shim 端把空参数编码为 "-"，因为 base64("") 是空串，会被
+        // 上面的 filter { it.isNotEmpty() } 吞掉导致参数位置前移。"-" 不是合法
+        // base64，线上永远不会与真实编码冲突；真实的 "-" 参数会被编码成 "LQ=="。
+        if (encoded == TermuxApiServer.EMPTY_ARG_SENTINEL) {
+            ""
+        } else {
+            runCatching {
+                String(Base64.getDecoder().decode(encoded), Charsets.UTF_8)
+            }.getOrElse { return null }
+        }
     }
     return TermuxApiRequest(token = fields[0], command = fields[1], args = args)
 }
@@ -83,6 +93,7 @@ class TermuxApiServer(context: Context) {
     private val stateLock = Any()
     private var serverSocket: ServerSocket? = null
     private var scope: CoroutineScope? = null
+    private val activeConnections = AtomicInteger(0)
 
     val isRunning: Boolean
         get() = synchronized(stateLock) { serverSocket != null }
@@ -148,12 +159,20 @@ class TermuxApiServer(context: Context) {
                 }
                 break
             }
+            // 并发连接上限：超出直接拒绝新连接（loopback 上任意进程都能连，
+            // 无上限时一个恶意/失控进程可以无限堆积 handler 协程）。
+            if (activeConnections.incrementAndGet() > MAX_CONNECTIONS) {
+                activeConnections.decrementAndGet()
+                runCatching { client.close() }
+                continue
+            }
             coroutineScope.launch {
                 try {
                     handleClient(client)
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to handle Termux API client", e)
                 } finally {
+                    activeConnections.decrementAndGet()
                     runCatching { client.close() }
                 }
             }
@@ -163,7 +182,7 @@ class TermuxApiServer(context: Context) {
     private fun handleClient(socket: Socket) {
         socket.soTimeout = READ_TIMEOUT_MS
         val requestLine = runCatching {
-            socket.getInputStream().bufferedReader(Charsets.UTF_8).readLine()
+            readRequestLine(socket.getInputStream())
         }.getOrNull() ?: return
         val result = dispatch(requestLine)
         val stderrBytes = result.stderr.toByteArray(Charsets.UTF_8)
@@ -175,6 +194,45 @@ class TermuxApiServer(context: Context) {
         output.flush()
         // 关闭写方向让 shim 的 `cat` 读到 EOF；随后由调用方关闭整个 socket。
         runCatching { socket.shutdownOutput() }
+    }
+
+    /**
+     * 有界地读取请求行。不能用 BufferedReader.readLine()——它在 token 校验之前会
+     * 无限制累积输入，loopback 上的任意进程只要不发换行符就能耗尽内存。
+     *
+     * 这里顺带做最早的 token 校验：逐块读入时一旦遇到空格（token 字段结束）就比较
+     * token，不匹配立即返回 null（连接随即关闭），不再读取任何后续字节。token 字段
+     * 本身限长 [MAX_TOKEN_FIELD_BYTES]，整行限长 [MAX_REQUEST_LINE_BYTES]。
+     */
+    private fun readRequestLine(input: InputStream): String? {
+        val out = ByteArrayOutputStream(MAX_TOKEN_FIELD_BYTES + 1)
+        val chunk = ByteArray(READ_CHUNK_BYTES)
+        var tokenChecked = false
+        while (true) {
+            val n = input.read(chunk)
+            if (n < 0) break // EOF（客户端中止；shim 协议下正常请求不会走到这）
+            if (n == 0) continue
+            if (out.size() + n > MAX_REQUEST_LINE_BYTES) return null
+            out.write(chunk, 0, n)
+            val bytes = out.toByteArray()
+            if (!tokenChecked) {
+                val spaceIdx = bytes.indexOf(' '.code.toByte())
+                val newlineIdx = bytes.indexOf('\n'.code.toByte())
+                when {
+                    // 字段过长还没遇到分隔符：不是合法 token，直接拒绝。
+                    spaceIdx < 0 && newlineIdx < 0 && bytes.size > MAX_TOKEN_FIELD_BYTES -> return null
+                    spaceIdx >= 0 -> {
+                        tokenChecked = true
+                        val provided = String(bytes, 0, spaceIdx, Charsets.UTF_8)
+                        if (!apiTokenEquals(provided, token)) return null // 立即关闭
+                    }
+                    newlineIdx >= 0 -> return null // 无空格的行：畸形请求
+                }
+            }
+            if ('\n'.code.toByte() in bytes) break
+        }
+        if (out.size() == 0) return null
+        return String(out.toByteArray(), Charsets.UTF_8)
     }
 
     private fun dispatch(line: String): TermuxApiResult {
@@ -205,6 +263,13 @@ class TermuxApiServer(context: Context) {
         private const val BIND_PORT_ANY = 0
         private const val BACKLOG = 16
         private const val READ_TIMEOUT_MS = 15_000
+        private const val MAX_CONNECTIONS = 8
+        private const val MAX_TOKEN_FIELD_BYTES = 4 * 1024
+        private const val MAX_REQUEST_LINE_BYTES = 64 * 1024
+        private const val READ_CHUNK_BYTES = 4 * 1024
+
+        /** shim 端对空字符串参数的编码占位符（base64("") 是空串会被字段过滤吞掉）。 */
+        internal const val EMPTY_ARG_SENTINEL = "-"
 
         const val EXIT_OK = 0
         const val EXIT_ERROR = 1

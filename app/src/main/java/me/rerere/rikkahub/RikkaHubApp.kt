@@ -145,6 +145,12 @@ class RikkaHubApp : Application() {
         // every change. With zero enabled workflows, no receivers are registered.
         startWorkflowRegistry()
 
+        // Hourly self-healing cron reconcile: boot/time/permission broadcasts register it
+        // too, but a fresh install that never reboots has no chain until the first
+        // schedule() call — registering at app start closes that gap. Idempotent
+        // (enqueueUniquePeriodicWork + UPDATE), so this is safe to run on every launch.
+        me.rerere.rikkahub.service.CronReconcileWorker.schedulePeriodic(this)
+
         // Phase-17 stability — register a network-change monitor that evicts OkHttp's
         // connection pool on every default-network transition. Fixes the post-Termux-
         // interactive-session "Unable to resolve host …" bug: when the user opens

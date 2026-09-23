@@ -140,9 +140,15 @@ fi
 HOST=${'$'}{RIKKA_API_HOST:-127.0.0.1}
 $stdinSnippet
 # 每个参数独立 base64 编码，避免引号/空白/换行歧义（协议: token cmd b64arg...）。
+# 空参数编码为哨兵 "-"：base64("") 是空串，会被 server 的空字段过滤吞掉导致
+# 后续参数位置前移。"-" 不是合法 base64，server 解码时把它还原为空串。
 payload=""
 for arg in "${'$'}@"; do
-  enc=$(printf '%s' "${'$'}arg" | base64 | tr -d '\n')
+  if [ -z "${'$'}arg" ]; then
+    enc="-"
+  else
+    enc=$(printf '%s' "${'$'}arg" | base64 | tr -d '\n')
+  fi
   payload="${'$'}payload${'$'}enc "
 done
 

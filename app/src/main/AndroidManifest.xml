@@ -379,14 +379,18 @@
       </intent-filter>
     </service>
 
+    <!-- Deliberately NOT directBootAware and no LOCKED_BOOT_COMPLETED: Application.onCreate
+         runs before any receiver and synchronously touches credential-protected storage
+         (Koin → SharedPreferences/DataStore/Room), which is unavailable while the device is
+         still locked — so direct-boot delivery would crash before this receiver could do its
+         storage-free work. Every reconcile path needs Room/DataStore anyway, so the safe
+         boundary is BOOT_COMPLETED (fired after unlock); alarms re-arm within ~10s there. -->
     <receiver
       android:name=".service.CronBootReceiver"
       android:enabled="true"
       android:exported="true"
-      android:directBootAware="true"
       android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
       <intent-filter>
-        <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
         <action android:name="android.intent.action.BOOT_COMPLETED" />
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
         <action android:name="android.intent.action.QUICKBOOT_POWERON" />

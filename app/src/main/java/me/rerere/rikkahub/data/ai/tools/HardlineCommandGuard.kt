@@ -133,6 +133,49 @@ object HardlineCommandGuard {
         return null
     }
 
+    /**
+     * `adb [options] shell <remote-cmd>` at command position. Options between `adb` and
+     * `shell` are `-x` or `-x value` pairs (e.g. `-s emulator-5554`, `-d`, `-t 3`).
+     * Anchored at command position so `echo "adb shell reboot"` does not match.
+     */
+    private val ADB_SHELL_REGEX = Regex(
+        CMD_POS_BARE + "\\s*adb\\b(?:\\s+-\\w(?:\\s+\\S+)?)*\\s+shell\\s+",
+        IGNORE_CASE,
+    )
+
+    /**
+     * Extract the remote command from each `adb … shell …` invocation and run it through
+     * [checkCommand]. `adb shell reboot` hides `reboot` behind two argv words, so the raw
+     * text never puts it at command position — the same gap the adb_shell tool's `command`
+     * arg closes by construction, reopened by termux/ssh strings that invoke `adb` inline.
+     *
+     * Handles all three quoting forms the remote shell accepts: `adb shell reboot`,
+     * `adb shell 'reboot'` and `adb shell "shutdown -h now"`. A missing remote command
+     * (`adb shell` alone starts an interactive session) is not itself hardline-blocked.
+     */
+    private fun checkAdbShellPayloads(command: String): String? {
+        for (match in ADB_SHELL_REGEX.findAll(command)) {
+            var rest = command.substring(match.range.last + 1).trimStart()
+            if (rest.isEmpty()) continue
+            val quote = rest.first()
+            if (quote == '\'' || quote == '"') {
+                rest = rest.substring(1).substringBefore(quote)
+            }
+            checkCommand(rest)?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * [checkCommand] plus the [checkAdbShellPayloads] re-check. Used for every tool arg
+     * whose text is evaluated by a shell (termux command/argv, ssh_exec, adb_shell), so a
+     * nested `adb shell <blocked>` can't slip through any of them.
+     */
+    private fun checkShellCommand(command: String?): String? {
+        checkCommand(command)?.let { return it }
+        return command?.let(::checkAdbShellPayloads)
+    }
+
     /** shell `-c` 的候选解释器 (busybox 前缀单独处理)。 */
     private val SHELL_EVAL_INTERPRETERS = setOf("sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh", "ash")
 
@@ -212,23 +255,23 @@ object HardlineCommandGuard {
         return when {
             toolName == "termux_run_command" -> {
                 val cmd = input["command"]?.jsonPrimitive?.contentOrNull
-                checkCommand(cmd)?.let { return it }
+                checkShellCommand(cmd)?.let { return it }
                 val exe = input["executable"]?.jsonPrimitive?.contentOrNull
                 val args = input["arguments"]?.jsonArray
                     ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                     ?.joinToString(" ")
                 if (exe != null || args != null) {
-                    checkCommand("${exe.orEmpty()} ${args.orEmpty()}")
+                    checkShellCommand("${exe.orEmpty()} ${args.orEmpty()}")
                 } else null
             }
             toolName == "ssh_exec" || toolName == "ssh_exec_saved" ->
-                checkCommand(input["command"]?.jsonPrimitive?.contentOrNull)
+                checkShellCommand(input["command"]?.jsonPrimitive?.contentOrNull)
             // adb_shell: the `command` arg is evaluated by the target device's shell as
             // uid 2000 — a strictly higher privilege than the app sandbox (pm uninstall,
             // settings put, input injection), so the same deny floor applies. adb_pair's
             // args are validated host/port/code fields, no shell content.
             toolName == "adb_shell" ->
-                checkCommand(input["command"]?.jsonPrimitive?.contentOrNull)
+                checkShellCommand(input["command"]?.jsonPrimitive?.contentOrNull)
             // Sub-agent dispatch — the spawned LLM gets the parent's full tool surface
             // headlessly, so a `task` / `prompt` containing a literal hardline-blocked
             // command (e.g. `rm -rf /`) shouldn't be authorised even if the parent

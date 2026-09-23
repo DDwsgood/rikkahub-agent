@@ -1846,6 +1846,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_page_scheduled_jobs_reliability_note">系统省电策略可能导致提醒延迟或丢失，完成「后台运行与可靠性」设置可显著改善</string>
   <string name="setting_page_scheduled_jobs_wake_lockscreen_title">触发时亮屏提醒</string>
   <string name="setting_page_scheduled_jobs_wake_lockscreen_desc">任务触发时像闹钟一样在锁屏上显示全屏提醒。默认关闭。</string>
+  <string name="setting_page_scheduled_jobs_wake_lockscreen_fsi_missing">全屏 intent 权限未授予 — 提醒将降级为普通通知。点击前往授权。</string>
   <string name="cron_job_wake_notification_title">定时任务触发</string>
   <string name="cron_job_wake_title">定时任务</string>
   <string name="cron_job_wake_dismiss">知道了</string>

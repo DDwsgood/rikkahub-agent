@@ -44,17 +44,11 @@ class CronBootReceiver : BroadcastReceiver() {
             return
         }
 
-        // Direct boot (device still locked, credential-protected storage unavailable):
-        // Room, DataStore and WorkManager are all unreachable, so a reconcile cannot run
-        // here. The only safe work is re-arming the storage-free daily keep-alive alarm;
-        // the real BOOT_COMPLETED pass after unlock performs the full reconcile.
-        if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED) {
-            // arm() (not armIfAbsent): a reboot wiped the alarm but the PendingIntent
-            // registration may still resolve, which would make the absent-check misfire.
-            CronDailyKeepAliveReceiver.arm(context)
-            return
-        }
-
+        // LOCKED_BOOT_COMPLETED is intentionally NOT registered: Application.onCreate runs
+        // before any receiver and touches credential-protected storage (Koin →
+        // SharedPreferences/DataStore/Room), so direct-boot delivery would crash. All
+        // reconcile work needs that storage anyway — BOOT_COMPLETED (post-unlock) is the
+        // safe boundary and re-arms alarms within ~10s of unlock.
         val isBootLike = action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_MY_PACKAGE_REPLACED ||
             action == "android.intent.action.QUICKBOOT_POWERON"

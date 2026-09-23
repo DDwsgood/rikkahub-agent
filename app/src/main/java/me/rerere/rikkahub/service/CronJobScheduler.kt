@@ -173,6 +173,11 @@ class CronJobScheduler(
         // Keep the daily keep-alive alarm armed so the AlarmManager pipeline stays warm
         // (Fossify-style dummy alarm; at most one fire per day).
         CronDailyKeepAliveReceiver.armIfAbsent(context)
+        // Re-assert the hourly self-healing reconcile on every scheduling call. Boot/time/
+        // permission broadcasts also register it, but a fresh install that creates a job
+        // without ever seeing one of those broadcasts would otherwise have no periodic
+        // safety net. Idempotent — enqueueUniquePeriodicWork with UPDATE.
+        CronReconcileWorker.schedulePeriodic(context)
         return withJobLock(job.id) {
             scheduleLocked(job)
         }

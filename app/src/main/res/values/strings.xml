@@ -1998,6 +1998,7 @@
   <string name="setting_page_scheduled_jobs_reliability_note">System power saving may delay or drop reminders — completing the \"Background run &amp; reliability\" setup improves this significantly.</string>
   <string name="setting_page_scheduled_jobs_wake_lockscreen_title">Wake screen on fire</string>
   <string name="setting_page_scheduled_jobs_wake_lockscreen_desc">Show a full-screen alert over the lock screen when a scheduled job fires, like an alarm. Off by default.</string>
+  <string name="setting_page_scheduled_jobs_wake_lockscreen_fsi_missing">Full-screen intent permission is off — alerts will appear as normal notifications. Tap to grant.</string>
   <string name="cron_job_wake_notification_title">Scheduled job fired</string>
   <string name="cron_job_wake_title">Scheduled job</string>
   <string name="cron_job_wake_dismiss">Dismiss</string>

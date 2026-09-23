@@ -68,24 +68,30 @@ object ToolRegistry {
      *
      * 相关性评分: 名称精确 > 名称前缀 > 名称子串 > 描述子串 > 模糊子序列。
      */
-    fun search(query: String, category: String? = null): List<ToolEntry> {
+    fun search(
+        query: String,
+        category: String? = null,
+        availableToolNames: Set<String>? = null,
+    ): List<ToolEntry> {
         val q = query.trim().lowercase()
+
+        // availableToolNames 过滤在 AND→OR→模糊回退【之前】生效：否则 AND 命中了
+        // 不可用工具时回退不会触发，当前助手明明有可匹配的工具却显示"无工具"。
+        val entryFilter: (ToolEntry) -> Boolean = { entry ->
+            (availableToolNames == null || entry.name in availableToolNames) &&
+                (category == null || entry.category.equals(category, ignoreCase = true))
+        }
 
         // 无 query 时按类别浏览
         if (q.isBlank()) {
-            return entries.values.filter { entry ->
-                category == null || entry.category.equals(category, ignoreCase = true)
-            }.sortedBy { it.name }
+            return entries.values.filter(entryFilter).sortedBy { it.name }
         }
 
         val keywords = q.split(Regex("\\s+")).filter { it.isNotBlank() }
-        val categoryFilter: (ToolEntry) -> Boolean = { entry ->
-            category == null || entry.category.equals(category, ignoreCase = true)
-        }
 
         // 1. AND 语义: 所有关键词都必须匹配
         val andMatches = entries.values.filter { entry ->
-            categoryFilter(entry) && keywords.all { kw ->
+            entryFilter(entry) && keywords.all { kw ->
                 entry.name.lowercase().contains(kw) || entry.description.lowercase().contains(kw)
             }
         }
@@ -95,7 +101,7 @@ object ToolRegistry {
         } else {
             // 2. OR 回退: 任一关键词匹配
             val orMatches = entries.values.filter { entry ->
-                categoryFilter(entry) && keywords.any { kw ->
+                entryFilter(entry) && keywords.any { kw ->
                     entry.name.lowercase().contains(kw) || entry.description.lowercase().contains(kw)
                 }
             }
@@ -104,7 +110,7 @@ object ToolRegistry {
             } else {
                 // 3. 模糊回退: Levenshtein 编辑距离对工具名做模糊匹配
                 entries.values.filter { entry ->
-                    categoryFilter(entry) && keywords.any { kw ->
+                    entryFilter(entry) && keywords.any { kw ->
                         val name = entry.name.lowercase()
                         abs(name.length - kw.length) <= 3 &&
                             levenshtein.apply(name, kw) <= 2

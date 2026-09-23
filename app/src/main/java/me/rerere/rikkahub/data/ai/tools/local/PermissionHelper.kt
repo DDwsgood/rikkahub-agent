@@ -97,4 +97,26 @@ object PermissionHelper {
         Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
             .setData("package:${ctx.packageName}".toUri())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /**
+     * True iff the app may post full-screen intents. USE_FULL_SCREEN_INTENT is granted at
+     * install, but Android 14+ (API 34) lets the user revoke it from app settings — a
+     * revoked grant silently degrades setFullScreenIntent to a normal heads-up
+     * notification, which breaks the "wake screen on fire" feature without any error.
+     * Pre-34 there is no revocation surface, so it's always true there.
+     */
+    fun canUseFullScreenIntent(ctx: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+            ctx.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+
+    /** Settings page where the user can re-grant full-screen intent (API 34+). */
+    fun fullScreenIntentSettingsIntent(ctx: Context): Intent =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
+                .setData("package:${ctx.packageName}".toUri())
+        } else {
+            // Pre-34 has no dedicated page — fall back to app notification settings.
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+        }
 }

@@ -147,6 +147,35 @@ class ToolRegistrySearchTest {
     }
 
     @Test
+    fun `available filter applies before AND to OR fallback`() {
+        // 回归：AND 命中了不可用工具时不应阻止 OR 回退——当前助手有可匹配的
+        // 工具就不该返回空。
+        ToolRegistry.register(entry("ssh_upload_other", "Upload file via SSH for other assistant"))
+        ToolRegistry.register(entry("ssh_exec", "Execute command via SSH"))
+
+        val results = ToolRegistry.search(
+            "ssh upload",
+            availableToolNames = setOf("ssh_exec"),
+        )
+        assertEquals(1, results.size)
+        assertEquals("ssh_exec", results[0].name)
+    }
+
+    @Test
+    fun `available filter scopes category browsing`() {
+        ToolRegistry.register(entry("read_file", "Read a file", category = "file"))
+        ToolRegistry.register(entry("write_file", "Write a file", category = "file"))
+
+        val results = ToolRegistry.search(
+            "",
+            category = "file",
+            availableToolNames = setOf("read_file"),
+        )
+        assertEquals(1, results.size)
+        assertEquals("read_file", results[0].name)
+    }
+
+    @Test
     fun `multi-keyword scoring prefers tools matching more keywords in name`() {
         ToolRegistry.register(entry("ssh_exec_saved", "Run a saved SSH command"))
         ToolRegistry.register(entry("ssh_exec", "Run SSH command"))

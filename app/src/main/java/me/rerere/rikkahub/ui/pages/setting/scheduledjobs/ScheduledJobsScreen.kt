@@ -78,6 +78,12 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
     // automatically instead of making them hunt for the switch again.
     var pendingKeepaliveEnable by remember { mutableStateOf(false) }
     var widgetPinUnsupported by remember { mutableStateOf(false) }
+    // Android 14+ lets the user revoke USE_FULL_SCREEN_INTENT; a revoked grant silently
+    // degrades setFullScreenIntent to a heads-up notification, so the wake-on-lock-screen
+    // switch must surface that state instead of promising a full-screen alert.
+    var fullScreenIntentGranted by remember {
+        mutableStateOf(PermissionHelper.canUseFullScreenIntent(context))
+    }
 
     fun refreshEligibility() {
         eligibility = KeepaliveEligibilityChecker.check(context)
@@ -96,6 +102,7 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
             if (event == Lifecycle.Event.ON_RESUME) {
                 exactAlarmGranted = PermissionHelper.canScheduleExactAlarms(context)
                 if (exactAlarmGranted) vm.reconcileSchedules()
+                fullScreenIntentGranted = PermissionHelper.canUseFullScreenIntent(context)
                 refreshEligibility()
             }
         }
@@ -270,16 +277,50 @@ fun ScheduledJobsScreen(vm: ScheduledJobsViewModel = koinViewModel()) {
                     },
                 )
                 item(
+                    onClick = if (!fullScreenIntentGranted && wakeOnLockScreen) {
+                        {
+                            runCatching {
+                                context.startActivity(
+                                    PermissionHelper.fullScreenIntentSettingsIntent(context)
+                                )
+                            }
+                        }
+                    } else null,
                     headlineContent = {
                         Text(stringResource(R.string.setting_page_scheduled_jobs_wake_lockscreen_title))
                     },
                     supportingContent = {
-                        Text(stringResource(R.string.setting_page_scheduled_jobs_wake_lockscreen_desc))
+                        Column {
+                            Text(stringResource(R.string.setting_page_scheduled_jobs_wake_lockscreen_desc))
+                            if (!fullScreenIntentGranted && wakeOnLockScreen) {
+                                Text(
+                                    text = stringResource(
+                                        R.string.setting_page_scheduled_jobs_wake_lockscreen_fsi_missing
+                                    ),
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
                     },
                     trailingContent = {
                         Switch(
                             checked = wakeOnLockScreen,
-                            onCheckedChange = { vm.setWakeOnLockScreen(it) },
+                            onCheckedChange = { enabled ->
+                                if (enabled && !PermissionHelper.canUseFullScreenIntent(context)) {
+                                    // Grant is revocable on Android 14+ — send the user to the
+                                    // grant page but still flip the pref: once re-granted the
+                                    // feature works without a second toggle, and until then the
+                                    // system degrades to a normal notification (note above).
+                                    runCatching {
+                                        context.startActivity(
+                                            PermissionHelper.fullScreenIntentSettingsIntent(context)
+                                        )
+                                    }
+                                    fullScreenIntentGranted = false
+                                }
+                                vm.setWakeOnLockScreen(enabled)
+                            },
                         )
                     },
                 )

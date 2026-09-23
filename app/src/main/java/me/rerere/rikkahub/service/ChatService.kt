@@ -956,6 +956,18 @@ class ChatService(
                 }
             }
 
+            // discoveredToolNames 是会话内存态，空闲 5s 后随 session 一起被回收（进程
+            // 重启同理）。这里从本轮要发送的消息历史重建：历史中出现过的工具调用名
+            // 重新并入声明集，模型才能持续看到并主动调用这些工具——历史在声明就在，
+            // 不需要额外持久化。
+            generationMessages.forEach { msg ->
+                msg.parts.forEach { part ->
+                    if (part is UIMessagePart.Tool) {
+                        session.discoveredToolNames.add(part.toolName)
+                    }
+                }
+            }
+
             val baseInvocationCtx = ToolInvocationContext(
                 callerAssistantId = assistant.id.toString(),
                 callerConversationId = conversationId.toString(),

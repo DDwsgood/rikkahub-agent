@@ -11,7 +11,10 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -231,6 +234,9 @@ class CronReconcileWorker(
         private const val PERIODIC_WORK_NAME = "cron_reconcile_periodic"
         private const val PERIODIC_INTERVAL_HOURS = 1L
 
+        /** Unique name for the widget/goAsync-timeout fallback reconcile. */
+        private const val ONE_TIME_FALLBACK_WORK_NAME = "cron_reconcile_one_time_fallback"
+
         private const val RECONCILE_CHANNEL_ID = "rikkahub_cron_reconcile"
         // Distinct from CronJobWorker's 0x50000000-prefixed execution notification IDs.
         private const val RECONCILE_NOTIFICATION_ID = 0x005EC0DE
@@ -250,6 +256,28 @@ class CronReconcileWorker(
                 WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                     PERIODIC_WORK_NAME,
                     ExistingPeriodicWorkPolicy.UPDATE,
+                    req,
+                )
+            }
+        }
+
+        /**
+         * Enqueue a durable one-shot reconcile of [kind] — the escape hatch for callers
+         * whose execution window may expire mid-sweep (e.g. the widget's goAsync budget in
+         * [me.rerere.rikkahub.widget.AgentWidgetProvider]). APPEND_OR_REPLACE keeps an
+         * already-queued fallback while still guaranteeing the pass eventually runs; the
+         * work is expedited with a graceful degrade on quota exhaustion. Fire-and-forget:
+         * never throws, matching [schedulePeriodic].
+         */
+        fun enqueueOneTime(context: Context, kind: String) {
+            runCatching {
+                val req = OneTimeWorkRequestBuilder<CronReconcileWorker>()
+                    .setInputData(Data.Builder().putString(KEY_KIND, kind).build())
+                    .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    .build()
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    ONE_TIME_FALLBACK_WORK_NAME,
+                    ExistingWorkPolicy.APPEND_OR_REPLACE,
                     req,
                 )
             }

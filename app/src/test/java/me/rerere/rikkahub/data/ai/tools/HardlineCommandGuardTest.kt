@@ -243,6 +243,83 @@ class HardlineCommandGuardTest {
         assertNotNull("expected hardline match on ssh_exec_saved", reason)
     }
 
+    // -----------------------------------------------------------------------
+    // adb shell bypass: a remote command hidden behind `adb … shell` must be
+    // extracted and re-checked — the raw text puts it off command position.
+    // -----------------------------------------------------------------------
+
+    @Test fun `termux command with adb shell reboot is blocked`() {
+        val reason = HardlineCommandGuard.checkTool(
+            "termux_run_command",
+            """{"command":"adb shell reboot"}"""
+        )
+        assertNotNull("adb shell reboot must be extracted and blocked", reason)
+    }
+
+    @Test fun `termux adb shell quoting forms are blocked`() {
+        for (json in listOf(
+            """{"command":"adb shell 'reboot'"}""",
+            """{"command":"adb shell \"shutdown -h now\""}""",
+            """{"command":"adb shell poweroff"}""",
+        )) {
+            val reason = HardlineCommandGuard.checkTool("termux_run_command", json)
+            assertNotNull("$json should block", reason)
+        }
+    }
+
+    @Test fun `termux adb shell with device options is blocked`() {
+        val reason = HardlineCommandGuard.checkTool(
+            "termux_run_command",
+            """{"command":"adb -s emulator-5554 -d shell reboot"}"""
+        )
+        assertNotNull("adb with options then shell reboot should block", reason)
+    }
+
+    @Test fun `termux adb shell rm -rf root is blocked`() {
+        val reason = HardlineCommandGuard.checkTool(
+            "termux_run_command",
+            """{"command":"adb shell 'rm -rf /etc'"}"""
+        )
+        assertNotNull("adb shell rm -rf /etc should block", reason)
+    }
+
+    @Test fun `ssh_exec with adb shell reboot is blocked`() {
+        val reason = HardlineCommandGuard.checkTool(
+            "ssh_exec",
+            """{"command":"adb shell reboot"}"""
+        )
+        assertNotNull("adb shell reboot over ssh should block", reason)
+    }
+
+    @Test fun `adb shell pm clear is allowed`() {
+        // pm clear wipes an app's data — destructive but recoverable, so it stays in the
+        // regular approval-required tier, not the no-recovery hardline floor. The
+        // extraction must NOT over-block: only the inner command's own patterns apply.
+        val reason = HardlineCommandGuard.checkTool(
+            "termux_run_command",
+            """{"command":"adb shell pm clear com.example.app"}"""
+        )
+        assertNull("pm clear is recoverable — approval tier, not hardline", reason)
+    }
+
+    @Test fun `adb shell mentioned in a string is not blocked`() {
+        // Command-position anchoring: quoting the phrase must not trip the extraction.
+        val reason = HardlineCommandGuard.checkTool(
+            "termux_run_command",
+            """{"command":"echo \"try adb shell reboot if stuck\""}"""
+        )
+        assertNull("adb shell inside an echo string should not match", reason)
+    }
+
+    @Test fun `adb shell with no remote command is allowed`() {
+        // `adb shell` alone opens an interactive session — nothing to re-check.
+        val reason = HardlineCommandGuard.checkTool(
+            "termux_run_command",
+            """{"command":"adb shell"}"""
+        )
+        assertNull("bare adb shell has no remote command", reason)
+    }
+
     @Test fun `safe ssh command is allowed`() {
         val reason = HardlineCommandGuard.checkTool(
             "ssh_exec",

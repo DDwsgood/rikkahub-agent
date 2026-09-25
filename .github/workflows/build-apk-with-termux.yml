@@ -24,6 +24,17 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Validate bootstrap_run_id
+        shell: bash
+        env:
+          BOOTSTRAP_RUN_ID: ${{ inputs.bootstrap_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BOOTSTRAP_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::bootstrap_run_id must be a numeric workflow run ID (got '$BOOTSTRAP_RUN_ID')."
+            exit 1
+          fi
+
       - name: Download validated aarch64 bootstrap
         uses: actions/download-artifact@v4
         with:
@@ -103,13 +114,15 @@ jobs:
 
       - name: Create local.properties with debug signing config
         shell: bash
+        env:
+          DEBUG_STORE_FILE: ${{ github.workspace }}/debug-signing.jks
+          DEBUG_STORE_PASSWORD: ${{ secrets.DEBUG_SIGNING_STORE_PASSWORD }}
+          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_SIGNING_KEY_ALIAS }}
+          DEBUG_KEY_PASSWORD: ${{ secrets.DEBUG_SIGNING_KEY_PASSWORD }}
         run: |
-          cat > local.properties <<EOF
-          debugStoreFile=${{ github.workspace }}/debug-signing.jks
-          debugStorePassword=${{ secrets.DEBUG_SIGNING_STORE_PASSWORD }}
-          debugKeyAlias=${{ secrets.DEBUG_SIGNING_KEY_ALIAS }}
-          debugKeyPassword=${{ secrets.DEBUG_SIGNING_KEY_PASSWORD }}
-          EOF
+          set -euo pipefail
+          printf 'debugStoreFile=%s\ndebugStorePassword=%s\ndebugKeyAlias=%s\ndebugKeyPassword=%s\n' \
+            "$DEBUG_STORE_FILE" "$DEBUG_STORE_PASSWORD" "$DEBUG_KEY_ALIAS" "$DEBUG_KEY_PASSWORD" > local.properties
 
       - name: Build debug APK
         shell: bash

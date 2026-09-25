@@ -4,6 +4,7 @@
 /.idea
 .DS_Store
 /build
+/build.stale/
 /captures
 .externalNativeBuild
 .cxx
@@ -11,6 +12,7 @@ local.properties
 .cursor
 .history
 .kotlin
+.kotlin-stale-sandboxed/
 
 # --- Personal / AI-agent workspace (not for the public fork) ---
 .claude/
@@ -41,3 +43,6 @@ app/google-services.json
 
 # bun.lock is generated from the tracked pnpm-lock.yaml on clean checkouts
 /web-ui/bun.lock
+
+# root-owned build dirs left by sandboxed builds
+**/build.nobody-stale/

@@ -10,7 +10,7 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 jobs:
   build-release:
@@ -23,6 +23,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Validate bootstrap_run_id
+        shell: bash
+        env:
+          BOOTSTRAP_RUN_ID: ${{ inputs.bootstrap_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BOOTSTRAP_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::bootstrap_run_id must be a numeric workflow run ID (got '$BOOTSTRAP_RUN_ID')."
+            exit 1
+          fi
 
       - name: Download validated release aarch64 bootstrap
         uses: actions/download-artifact@v4
@@ -97,23 +108,30 @@ jobs:
 
       - name: Decode signing keystore
         shell: bash
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
         run: |
-          set -euxo pipefail
-          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > rikkahub-release.jks
+          # No `set -x` here: it would echo the store password into the log.
+          set -euo pipefail
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > rikkahub-release.jks
           test -s rikkahub-release.jks
           keytool -list -keystore rikkahub-release.jks \
-            -storepass "${{ secrets.SIGNING_STORE_PASSWORD }}" \
-            -alias "${{ secrets.SIGNING_KEY_ALIAS }}" -v | head -5
+            -storepass "$SIGNING_STORE_PASSWORD" \
+            -alias "$SIGNING_KEY_ALIAS" -v | head -5
 
       - name: Create local.properties with signing config
         shell: bash
+        env:
+          STORE_FILE: ${{ github.workspace }}/rikkahub-release.jks
+          STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          cat > local.properties <<EOF
-          storeFile=${{ github.workspace }}/rikkahub-release.jks
-          storePassword=${{ secrets.SIGNING_STORE_PASSWORD }}
-          keyAlias=${{ secrets.SIGNING_KEY_ALIAS }}
-          keyPassword=${{ secrets.SIGNING_KEY_PASSWORD }}
-          EOF
+          set -euo pipefail
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_FILE" "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > local.properties
 
       - name: Build release APK
         shell: bash

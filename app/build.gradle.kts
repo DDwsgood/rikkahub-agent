@@ -340,19 +340,19 @@ dependencies {
     implementation(libs.sqlite.android)
 
     // Google Play Services Location (FusedLocationProvider)
-    implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation(libs.play.services.location)
     // kotlinx.coroutines.tasks.await for Task<*> (was previously transitive via Firebase)
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")
+    implementation(libs.kotlinx.coroutines.play.services)
 
     // AndroidX Biometric (BiometricPrompt)
-    implementation("androidx.biometric:biometric:1.2.0-alpha05")
+    implementation(libs.androidx.biometric)
 
     // AndroidX Media — MediaSessionCompat, MediaButtonReceiver, NotificationCompat.MediaStyle
-    implementation("androidx.media:media:1.7.0")
+    implementation(libs.androidx.media)
 
     // AndroidX DocumentFile — Phase 25 SAF tree traversal for the ExternalStorage tools
     // (USB / SD / Downloads / cloud DocumentsProvider access via persisted tree grants).
-    implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation(libs.androidx.documentfile)
 
     // modules
     implementation(project(":ai"))
@@ -370,10 +370,10 @@ dependencies {
     implementation(kotlin("reflect"))
 
     // SSH client (Mwiede fork — maintained, Android-friendly)
-    implementation("com.github.mwiede:jsch:0.2.21")
+    implementation(libs.jsch)
 
     // Cron utilities (expression parsing & validation)
-    implementation("com.cronutils:cron-utils:9.2.1")
+    implementation(libs.cron.utils)
 
     // Leak Canary
     // debugImplementation(libs.leakcanary.android)

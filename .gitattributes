@@ -10,6 +10,10 @@ app/src/release/generated/baselineProfiles/*.txt text eol=lf
 # All text files use LF in the repo. Git's autocrlf handles local checkout conversion.
 * text=auto eol=lf
 
+# Windows batch scripts must keep CRLF on checkout (gradlew.bat etc.); a later,
+# more specific pattern overrides the global eol=lf above.
+*.bat text eol=crlf
+
 # Binary files — never normalize line endings
 *.png binary
 *.jpg binary

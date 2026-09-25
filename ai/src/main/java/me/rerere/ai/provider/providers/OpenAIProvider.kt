@@ -28,8 +28,15 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.providers.openai.ChatCompletionsAPI
 import me.rerere.ai.provider.providers.openai.ResponseAPI
+import me.rerere.ai.provider.providers.openai.buildOpenRouterChatCompletionsImageBody
+import me.rerere.ai.provider.providers.openai.buildOpenRouterImagesRequestBody
+import me.rerere.ai.provider.providers.openai.collectSequentialImages
+import me.rerere.ai.provider.providers.openai.extractOpenRouterErrorMessage
 import me.rerere.ai.provider.providers.openai.openRouterModelFromJson
 import me.rerere.ai.provider.providers.openai.parseImageDataUri
+import me.rerere.ai.provider.providers.openai.parseOpenRouterChatCompletionsImageResponse
+import me.rerere.ai.provider.providers.openai.parseOpenRouterImagesResponse
+import me.rerere.ai.provider.providers.openai.shouldFallbackToChatCompletionsImage
 import me.rerere.ai.ui.ImageAspectRatio
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.MessageChunk

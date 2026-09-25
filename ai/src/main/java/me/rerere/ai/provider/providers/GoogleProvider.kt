@@ -58,7 +58,7 @@ import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.redactSecrets
-import me.rerere.ai.util.removeElements
+import me.rerere.ai.util.sanitizeForGeminiSchema
 import me.rerere.ai.util.stringSafe
 import me.rerere.ai.util.toHeaders
 import me.rerere.common.android.Logging
@@ -476,16 +476,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                                     put(
                                         key = "parameters",
                                         element = json.encodeToJsonElement(tool.parameters())
-                                            .removeElements(
-                                                listOf(
-                                                    "const",
-                                                    "exclusiveMaximum",
-                                                    "exclusiveMinimum",
-                                                    "format",
-                                                    "additionalProperties",
-                                                    "enum",
-                                                )
-                                            )
+                                            .sanitizeForGeminiSchema()
                                     )
                                 })
                             }

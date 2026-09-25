@@ -2,6 +2,7 @@ package me.rerere.rikkahub.service
 
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -145,5 +146,24 @@ class CatchupPlannerTest {
         )
         assertEquals(0, plan.fireDelaysMs.size)
         assertEquals(0, plan.skippedCatchupCount)
+    }
+
+    @Test
+    fun `createdAtMs epoch is floored to seven day lookback`() {
+        // An hourly cron with createdAtMs=0 must NOT be enumerated from the epoch. With
+        // the 7-day floor, fire_all returns at most the 20 most recent hourly slots, all
+        // within the lookback window, instead of ancient epoch slots.
+        val nowMs = ms(1, 13)
+        val plan = CatchupPlanner.plan(
+            job = job("fire_all", cron = "0 * * * *").copy(createdAtMs = 0L),
+            lastRunMs = null,
+            nowMs = nowMs,
+        )
+        assertEquals(20, plan.fireDelaysMs.size)
+        val lookbackFloor = nowMs - 7L * 24 * 60 * 60 * 1000
+        plan.fireSlotsMs.forEach { slot ->
+            assertTrue("slot $slot should be inside the 7-day lookback", slot >= lookbackFloor)
+            assertTrue("slot $slot should not be in the future", slot <= nowMs)
+        }
     }
 }

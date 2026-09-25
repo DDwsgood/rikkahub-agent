@@ -235,7 +235,7 @@ class SubAgentEngine(
             newConversation = true,
         ).copy(title = "[Sub-agent] ${request.label?.take(40) ?: request.task.take(40)}")
         conversationRepo.insertConversation(conv)
-        chatService.initializeConversation(conv.id)
+        chatService.initializeConversation(conv.id, updateGlobalAssistant = false)
         HeadlessConversations.mark(conv.id)
         try {
             // Prepend a wrap-up instruction. Some models naturally write a summary paragraph

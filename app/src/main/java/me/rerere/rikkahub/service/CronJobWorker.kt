@@ -18,9 +18,12 @@ import kotlin.uuid.Uuid
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.ui.UIMessagePart
@@ -343,9 +346,14 @@ class CronJobWorker(
             // Optional lock-screen wake (opt-in setting, default off): a full-screen
             // intent alert over the keyguard when a scheduled job fires — the alarm-app
             // pattern. Manual fires never wake the screen.
-            val wakeOnLockScreen = runCatching {
-                settingsStore.settingsFlow.first().scheduledJobWakeOnLockScreen
-            }.getOrDefault(false)
+            val wakeOnLockScreen = try {
+                settingsStore.awaitLoadedSettings().scheduledJobWakeOnLockScreen
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                Log.w(TAG, "wake-on-lockscreen settings read failed for $jobId", t)
+                false
+            }
             if (!isManual && wakeOnLockScreen) {
                 runCatching { postWakeNotification(job.name) }
                     .onFailure { Log.w(TAG, "wake notification failed for $jobId", it) }
@@ -391,24 +399,35 @@ class CronJobWorker(
             // don't bump runs_so_far or lastRunAtMs (per spec Decision 13). The regular
             // schedule continues unaffected.
             if (!isManual) {
-                // the terminal transition (lastRunAtMs / runsSoFar / once/maxRuns
+                // The terminal transition (lastRunAtMs / runsSoFar / once/maxRuns
                 // enabled flip + re-schedule) goes through the scheduler's linearized
                 // completeNaturalRun, which re-reads the latest Room row — preserving a
                 // user pause/mode edit that landed during the run and never re-arming a
                 // paused job. Derive runsSoFar from the authoritative success-count query
                 // (post-update, so the final outcome is already committed) to avoid
                 // runsSoFar drift after a replay.
-                val successCount = runRepo.countSuccessful(job.id)
-                // skipBackupSlotMs = this worker's own slot when it IS the backup, so the
-                // re-schedule never cancels the backup that is currently executing it.
-                scheduler.completeNaturalRun(
-                    jobId, nowMs, successCount,
-                    skipBackupSlotMs = if (isBackup) scheduledAtMs else null,
-                )
+                //
+                // This tail runs in NonCancellable: a fallback worker's completeNaturalRun
+                // re-enqueues the NEXT slot under the same unique name with REPLACE, and
+                // WorkManager may cancel the currently-running work while we await that
+                // enqueue. The next fire is already durable by then; the only thing that
+                // must not be lost is the post-transition cleanup (history trim) below.
+                withContext(NonCancellable) {
+                    val successCount = runRepo.countSuccessful(job.id)
+                    // skipBackupSlotMs = this worker's own slot when it IS the backup, so the
+                    // re-schedule never cancels the backup that is currently executing it.
+                    scheduler.completeNaturalRun(
+                        jobId, nowMs, successCount,
+                        skipBackupSlotMs = if (isBackup) scheduledAtMs else null,
+                    )
+                    // Trim history inside the same NonCancellable block so a self-REPLACE
+                    // cancellation can't skip it (see CronJobScheduler class KDoc).
+                    runRepo.trim(jobId, keep = 100)
+                }
+            } else {
+                // Manual fires don't go through completeNaturalRun; trim directly.
+                runRepo.trim(jobId, keep = 100)
             }
-
-            // Trim history at the end so this row's insert/update is reflected in the cap.
-            runRepo.trim(jobId, keep = 100)
 
             return Result.success()
         } catch (c: CancellationException) {
@@ -508,7 +527,7 @@ class CronJobWorker(
             newConversation = true,
         ).copy(title = "[Scheduled] ${job.name}")
         conversationRepo.insertConversation(conv)
-        chatService.initializeConversation(conv.id)
+        chatService.initializeConversation(conv.id, updateGlobalAssistant = false)
         HeadlessConversations.mark(conv.id)
         try {
             // sendMessage now returns a completion handle so the cron path observes
@@ -522,7 +541,17 @@ class CronJobWorker(
                 timeoutMs = 15L * 60_000L,
             )
             return when {
-                result == null -> Triple("timed_out", "llm turn exceeded 15min", conv.id)
+                result == null -> {
+                    // The wall-clock cap fired but ChatService's generation coroutine is
+                    // still running. Stop it explicitly so a timed-out LLM turn can't
+                    // keep burning tokens/network in the background until the next send.
+                    runCatching { chatService.stopGeneration(conv.id) }
+                        .onFailure {
+                            if (it is CancellationException) throw it
+                            Log.w(TAG, "runLlm: stopGeneration failed for ${conv.id}", it)
+                        }
+                    Triple("timed_out", "llm turn exceeded 15min", conv.id)
+                }
                 result.success -> Triple("success", null, conv.id)
                 else -> Triple("failed", result.errorMessage ?: "llm send failed", conv.id)
             }
@@ -665,8 +694,7 @@ class CronJobWorker(
             .setOngoing(true)
             .setSilent(true)
             .build()
-        val notificationId = FOREGROUND_NOTIFICATION_ID_PREFIX or
-            ((jobId ?: id.toString()).hashCode() and FOREGROUND_NOTIFICATION_ID_MASK)
+        val notificationId = executionNotificationIdFor(jobId ?: id.toString())
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ForegroundInfo(
                 notificationId,
@@ -677,6 +705,18 @@ class CronJobWorker(
             ForegroundInfo(notificationId, notification)
         }
     }
+
+    /**
+     * Allocate a stable, collision-free FGS notification id for one active job. The old
+     * `jobId.hashCode() and MASK` scheme could map two different UUIDs to the same id,
+     * letting one execution notification clobber another. Sequence-based allocation is
+     * the same pattern [ChatService] uses for per-conversation notifications: stable for
+     * repeated [getForegroundInfo] calls on the same job, unique across different jobs.
+     */
+    private fun executionNotificationIdFor(jobId: String): Int =
+        executionNotificationIds.computeIfAbsent(jobId) {
+            nextExecutionNotificationId.incrementAndGet()
+        }
 
     companion object {
         const val KEY_JOB_ID = "cron_job_id"
@@ -689,6 +729,7 @@ class CronJobWorker(
         private const val WAKE_NOTIFICATION_ID = Int.MAX_VALUE - 102
         private const val EXECUTION_CHANNEL_ID = "rikkahub_cron_execution"
         private const val FOREGROUND_NOTIFICATION_ID_PREFIX = 0x50000000
-        private const val FOREGROUND_NOTIFICATION_ID_MASK = 0x0fffffff
+        private val executionNotificationIds = ConcurrentHashMap<String, Int>()
+        private val nextExecutionNotificationId = AtomicInteger(FOREGROUND_NOTIFICATION_ID_PREFIX)
     }
 }

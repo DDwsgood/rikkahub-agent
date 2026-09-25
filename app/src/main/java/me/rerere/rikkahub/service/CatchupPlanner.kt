@@ -18,6 +18,23 @@ object CatchupPlanner {
     private const val FIRE_ALL_CAP = 20
     private const val FIRE_ALL_STAGGER_MS = 2_000L
 
+    /**
+     * Hard upper bound for one [matchesBetween] enumeration. With the 7-day lookback
+     * floor the largest legitimate enumeration is a per-minute cron (10,080 slots), so
+     * 20,000 is far above any real path while still guarding against an expression bug.
+     */
+    private const val MAX_ENUMERATED_SLOTS = 20_000
+
+    /**
+     * Catch-up planning never enumerates slots older than this. A job created with
+     * `createdAtMs = 0` (or restored with an epoch/very old cursor) would otherwise make
+     * [matchesBetween] walk from the epoch to `nowMs` one slot at a time — for a
+     * per-minute cron that is millions of iterations before the 10k safety net trips.
+     * Seven days of slots is enough for the fire_all cap and for meaningful skipped
+     * history; anything older is treated as missed and truncated by the existing cap.
+     */
+    private const val CATCHUP_LOOKBACK_MS = 7L * 24 * 60 * 60 * 1000
+
     data class CatchupPlan(
         /** Delays to pass to OneTimeWorkRequestBuilder.setInitialDelay. */
         val fireDelaysMs: List<Long>,
@@ -68,7 +85,13 @@ object CatchupPlanner {
         // lands exactly on startAtUnixMs remains eligible.
         val startBasis = job.startAtUnixMs?.let { if (it == Long.MIN_VALUE) it else it - 1L }
         val from = startBasis?.let { maxOf(rawFrom, it) } ?: rawFrom
-        val missedSlots = matchesBetween(et, zone, fromMsExclusive = from, toMsInclusive = nowMs)
+        // Floor the cursor at CATCHUP_LOOKBACK_MS behind now: very old cursors (notably
+        // createdAtMs=0) must not be enumerated one-by-one from the epoch. Slots older
+        // than the floor are still considered missed (they are never fired); the existing
+        // fire_all cap and the 100-row skipped-history cap are what make that truncation
+        // visible, matching how very long downtimes were already capped before this floor.
+        val boundedFrom = maxOf(from, nowMs - CATCHUP_LOOKBACK_MS)
+        val missedSlots = matchesBetween(et, zone, fromMsExclusive = boundedFrom, toMsInclusive = nowMs)
             .let { slots ->
                 job.endAtUnixMs?.let { end -> slots.filter { slot -> slot <= end } } ?: slots
             }
@@ -109,8 +132,9 @@ object CatchupPlanner {
             if (nextMs > toMsInclusive) break
             slots += nextMs
             cursor = next
-            // Safety net — should never happen but bail if we somehow loop > 10000.
-            if (slots.size > 10_000) break
+            // Safety net — should never happen with the 7-day lookback floor, but bail
+            // rather than looping forever if cron-utils ever returns a bad cursor.
+            if (slots.size >= MAX_ENUMERATED_SLOTS) break
         }
         return slots
     }

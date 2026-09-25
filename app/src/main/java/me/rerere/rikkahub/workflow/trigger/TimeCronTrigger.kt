@@ -100,10 +100,11 @@ internal class TimeCronTriggerFamily(
         val spec = wf.trigger as? TriggerSpec.TimeCron ?: return
         val zone = spec.timezone?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: ZoneId.systemDefault()
 
-        // Periodic path: time_of_day-based or @every - both reduce to a 24h period for
-        // time_of_day, or the parsed N-second period for @every. WorkManager's smallest
-        // period is 15 minutes, so very-short cycles fall back to one-shot rescheduling
-        // from the worker (worker re-enqueues itself).
+        // Periodic path: plain time_of_day (every day, no days_of_week) or @every — both
+        // reduce to a 24h period for time_of_day, or the parsed N-second period for @every.
+        // WorkManager's smallest period is 15 minutes, so very-short cycles and
+        // time_of_day+days_of_week (where drift would silently skip the requested weekday)
+        // fall back to one-shot rescheduling from the worker.
         val periodMs = derivePeriodMs(spec)
         if (periodMs != null && periodMs >= 15 * 60 * 1000L) {
             val nextFireMs = computeNextFireMs(spec, zone, System.currentTimeMillis())
@@ -127,6 +128,14 @@ internal class TimeCronTriggerFamily(
         }
 
         // One-shot path: schedule the next fire; the worker re-enqueues itself on completion.
+        // For time_of_day+days_of_week an older app version may have left a 24h periodic
+        // work under the same unique name. Cancel that stale periodic first — otherwise KEEP
+        // below would see the periodic and never enqueue the corrected one-shot chain.
+        if (!spec.timeOfDay.isNullOrBlank() && spec.daysOfWeek.isNotEmpty()) {
+            runCatching {
+                WorkManager.getInstance(context).cancelUniqueWork(workName(wf.id))
+            }.onFailure { Log.w(TAG, "time_cron: stale periodic cancel failed for ${wf.id}", it) }
+        }
         val nextFireMs = computeNextFireMs(spec, zone, System.currentTimeMillis())
         val delay = (nextFireMs - System.currentTimeMillis()).coerceAtLeast(60_000L)
         val req = OneTimeWorkRequestBuilder<WorkflowTimeCronWorker>()
@@ -214,12 +223,20 @@ internal class TimeCronTriggerFamily(
 
         /**
          * Returns null for arbitrary cron (one-shot path) or the period in ms for the
-         * supported subset. Daily HH:mm = 24h. @every Ns = N seconds. @hourly = 1h.
-         * @daily = 24h. days_of_week with time_of_day still uses 24h period (worker's
-         * fire skips when day doesn't match).
+         * supported subset. Daily HH:mm without days_of_week = 24h. @every Ns = N seconds.
+         * @hourly = 1h. @daily = 24h.
+         *
+         * `time_of_day` + `days_of_week` deliberately returns null so it uses the
+         * one-shot chain instead of a 24h periodic request: WorkManager periodic work
+         * drifts, and a drifted fire that lands on the wrong day was skipped silently and
+         * then re-armed with another 24h period, so the schedule never corrected back to
+         * the requested weekdays. The one-shot path recomputes the next eligible wall-clock
+         * fire after every fire/skip via [computeNextFireMs].
          */
         fun derivePeriodMs(spec: TriggerSpec.TimeCron): Long? {
-            if (!spec.timeOfDay.isNullOrBlank()) return 24L * 60 * 60 * 1000
+            if (!spec.timeOfDay.isNullOrBlank()) {
+                return if (spec.daysOfWeek.isEmpty()) 24L * 60 * 60 * 1000 else null
+            }
             val cron = spec.cron?.trim() ?: return null
             // @every Ns
             val every = Regex("^@every\\s+(\\d+)([smhd])$").find(cron)

@@ -134,8 +134,9 @@ internal fun decideAlarmCleanup(
  * Self-replacement note: the fallback worker runs under [workNameFor] and, at completion,
  * [completeNaturalRun] → [scheduleLocked] re-enqueues the NEXT slot under the SAME unique
  * name with REPLACE, and that enqueue's [Operation] is awaited. REPLACE cancels the
- * currently-running work with the same name, which can interrupt that await — the only
- * lost effect is that the current work's history trim may be skipped. The next work is
+ * currently-running work with the same name, which can interrupt that await; the worker
+ * now runs its post-transition tail (including the history trim) inside
+ * `withContext(NonCancellable)` so the replacement cannot skip cleanup. The next work is
  * committed by the awaited Operation itself, so a failure to persist it surfaces as an
  * exception (and WorkManager retries) rather than being silently dropped.
  */
@@ -566,13 +567,22 @@ class CronJobScheduler(
      * Heal schedules from the Room source of truth without replacing healthy future work.
      * Used after boot and after an explicit user launch (the only way to leave force-stop).
      * Per-job exceptions are isolated (see [scheduleAllEnabled]).
+     *
+     * @param fireBudget global per-reconcile budget for catchup fires. Jobs processed after
+     *  the budget is exhausted have every remaining catchup slot recorded as
+     *  `skipped_catchup` instead of being enqueued — a reconcile after a long downtime can
+     *  no longer queue hundreds/thousands of immediate WorkManager firings across jobs.
      */
-    suspend fun reconcileAllEnabled(): List<String> {
+    suspend fun reconcileAllEnabled(
+        fireBudget: Int = MAX_CATCHUP_FIRES_PER_RECONCILE,
+    ): List<String> {
         CronDailyKeepAliveReceiver.armIfAbsent(context)
         val failures = mutableListOf<String>()
+        var remainingBudget = fireBudget.coerceAtLeast(0)
         for (job in repo.getEnabled()) {
             try {
-                withJobLock(job.id) { reconcileJobLocked(job) }
+                val fired = withJobLock(job.id) { reconcileJobLocked(job, remainingBudget) }
+                remainingBudget = (remainingBudget - fired).coerceAtLeast(0)
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
@@ -583,19 +593,21 @@ class CronJobScheduler(
         return failures
     }
 
-    private suspend fun reconcileJobLocked(initial: ScheduledJobEntity) {
+    private suspend fun reconcileJobLocked(initial: ScheduledJobEntity, fireBudget: Int): Int {
         // The Room row is the control-plane truth — re-read in case the snapshot is stale.
-        val job = repo.getById(initial.id) ?: return
+        val job = repo.getById(initial.id) ?: return 0
         val nowMs = System.currentTimeMillis()
         val persistedNext = job.nextRunAtMs
         if (persistedNext != null && persistedNext > nowMs) {
             rearmFutureIfNeeded(job, persistedNext, nowMs)
-            return
+            return 0
         }
 
         val plan = CatchupPlanner.plan(job, lastRunMs = job.lastRunAtMs, nowMs = nowMs)
-        enqueueCatchupChain(job, plan)
-        recordSkippedCatchups(job, plan, nowMs)
+        val fired = enqueueCatchupChain(job, plan, fireBudget)
+        // Budget-limited slots are deliberately dropped, just like plan.skippedCatchupCount.
+        val budgetSkipped = (plan.fireDelaysMs.size - fired).coerceAtLeast(0)
+        recordSkippedCatchups(job, plan, nowMs, extraSkipped = budgetSkipped)
 
         // A missed one-shot is represented by the catchup worker itself. Re-arming the
         // original past RTC alarm would create a duplicate immediate delivery.
@@ -604,6 +616,7 @@ class CronJobScheduler(
         } else {
             scheduleLocked(job)
         }
+        return fired
     }
 
     private suspend fun rearmFutureIfNeeded(
@@ -657,8 +670,17 @@ class CronJobScheduler(
         }
     }
 
-    private suspend fun enqueueCatchupChain(job: ScheduledJobEntity, plan: CatchupPlanner.CatchupPlan) {
-        val requests = plan.fireDelaysMs.mapIndexed { index, delayMs ->
+    /**
+     * Enqueue at most [fireBudget] catchup fires from [plan]. Returns the number of fires
+     * actually enqueued. The caller converts the rest into `skipped_catchup` history rows.
+     */
+    private suspend fun enqueueCatchupChain(
+        job: ScheduledJobEntity,
+        plan: CatchupPlanner.CatchupPlan,
+        fireBudget: Int,
+    ): Int {
+        val fireCount = plan.fireDelaysMs.size.coerceAtMost(fireBudget.coerceAtLeast(0))
+        val requests = plan.fireDelaysMs.take(fireCount).mapIndexed { index, delayMs ->
             OneTimeWorkRequestBuilder<CronJobWorker>()
                 .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
                 .setInputData(Data.Builder()
@@ -670,7 +692,7 @@ class CronJobScheduler(
                 .addTag(workTagFor(job.id))
                 .build()
         }
-        if (requests.isEmpty()) return
+        if (requests.isEmpty()) return 0
 
         var chain = wm.beginUniqueWork(
             catchupWorkNameFor(job.id),
@@ -680,16 +702,19 @@ class CronJobScheduler(
         requests.drop(1).forEach { chain = chain.then(it) }
         // Await the chain enqueue so a missed catchup isn't silently dropped.
         chain.enqueue().await()
+        return fireCount
     }
 
     private suspend fun recordSkippedCatchups(
         job: ScheduledJobEntity,
         plan: CatchupPlanner.CatchupPlan,
         nowMs: Long,
+        extraSkipped: Int,
     ) {
         // History is capped at 100 rows per job. Avoid doing thousands of writes after a
         // long offline period only to trim them immediately.
-        repeat(plan.skippedCatchupCount.coerceAtMost(100)) {
+        val totalSkipped = plan.skippedCatchupCount + extraSkipped.coerceAtLeast(0)
+        repeat(totalSkipped.coerceAtMost(100)) {
             runRepo.insert(ScheduledJobRunEntity(
                 id = Uuid.random().toString(),
                 jobId = job.id,
@@ -702,7 +727,7 @@ class CronJobScheduler(
                 errorMessage = null,
             ))
         }
-        if (plan.skippedCatchupCount > 0) runRepo.trim(job.id, keep = 100)
+        if (totalSkipped > 0) runRepo.trim(job.id, keep = 100)
     }
 
     fun canScheduleExactAlarms(): Boolean {
@@ -864,6 +889,14 @@ class CronJobScheduler(
          * NOT window-based, so this constant does not need to track the replay window.
          */
         internal const val EXACT_BACKUP_GRACE_MS = 20L * 60_000L
+
+        /**
+         * Global per-reconcile budget for catchup fires (item 4). One reconcile pass over
+         * many enabled jobs must not enqueue an unbounded number of immediate WorkManager
+         * requests after a long offline period; jobs beyond this budget have their
+         * remaining catchup slots recorded as `skipped_catchup` instead.
+         */
+        internal const val MAX_CATCHUP_FIRES_PER_RECONCILE = 60
 
         // Retained for compatibility with legacy rows and external references. The
         // schedulePrecision column still exists (no Room migration), but it no longer

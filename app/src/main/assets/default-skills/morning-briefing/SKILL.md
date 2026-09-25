@@ -1,7 +1,7 @@
 ---
 name: morning-briefing
 description: Compose the user's morning summary — current weather, today's calendar, unread email count, scheduled jobs ahead, and any battery/storage warnings. Output one short paragraph so the user can read it in 10 seconds.
-allowed-tools: get_time_info get_battery_status get_storage_info list_active_notifications list_recent_notifications get_jobs_history list_call_log get_location launch_app read_window_tree
+allowed-tools: get_time_info get_battery_status get_storage_info list_active_notifications list_recent_notifications list_jobs get_job_history list_call_log get_location launch_app read_window_tree
 ---
 
 # Morning briefing
@@ -24,7 +24,7 @@ Run all reads in parallel where the tool surface allows; assemble at the end.
    - `list_active_notifications` filtered to packages the user has whitelisted in `notification_listener` settings — group by package, count unread.
    - `list_call_log(type = "missed", limit = 5)` — surface anyone the user missed since their last interaction.
 4. **Calendar / weather.** Both are app-driven. Pick whichever calendar app the user uses (`com.google.android.calendar`, `com.microsoft.office.outlook`, etc.) — `launch_app` + `read_window_tree` on the day view, pull today's events as text. Weather: same idea via the OEM weather app or the user's preferred (Pixel Weather, Google, AccuWeather).
-5. **Scheduled jobs.** `get_jobs_history(limit = 5, since_ms = <last 24h>)` — surface anything that failed overnight.
+5. **Scheduled jobs.** `list_jobs` to enumerate the user's jobs, then `get_job_history(id = <job id>, limit = 5)` on the ones that ran overnight — surface anything that failed.
 6. **Compose the paragraph.** Lead with the greeting + date. Then the warnings (if any). Then the meetings (if any). Then the comms summary. End with a one-line "anything else?" so the user can chain.
 
 ## Output shape

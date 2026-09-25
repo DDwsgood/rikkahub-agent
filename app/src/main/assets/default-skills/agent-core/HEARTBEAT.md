@@ -19,7 +19,7 @@ These tools are nearly free; call them whenever the user's request depends on th
 
 ## What to sample (expensive, only on demand)
 
-- **`take_screenshot`** — when `read_window_tree` doesn't show what you need (canvas-rendered UIs, games, captchas). Costs an OS-rate-limited capture and a vision-model turn.
+- **`read_window_tree` with `verbose:true`** — when the default filtered tree doesn't show what you need (odd layouts, deep hierarchies). Costs more tokens than the default read; use it instead of guessing.
 - **`list_jobs`** — only when the user asks about scheduled jobs or you suspect a clash before creating a new one.
 - **`list_installed_apps`** — only when you don't already know the package name. Cache the answer for the rest of the session.
 
@@ -35,8 +35,6 @@ Tools return structured `{error, recovery, ...}` envelopes when state is degrade
 | `error: "launch_did_not_focus", current_foreground: ...` | `launch_app` dispatched but the OS did not move focus | Do NOT pass `package_name` to the next `read_window_tree` — drop the guard and read whatever IS on screen. |
 | `error: "node_not_editable"` | `set_text` target is not an input field | If the surface is Termux or a terminal, switch to `termux_run_command`. Otherwise re-locate the actual input. |
 | `error: "termux_not_installed"` / `"termux_bootstrap_failed"` | Embedded Termux bootstrap issue | Surface the recovery hint to the user verbatim. The embedded Termux needs no external installation — this is a bootstrap failure, not a missing app. |
-| `error: "screenshot_unavailable", reason: "secure_surface"` | DRM / banking / password — never recoverable this session | Don't keep retrying. Tell the user what surface you can see instead. |
-| `error: "rate_limited"` | OS throttle on screenshot (~1/sec) | Wait, then retry. |
 | `recovery: "Enable RikkaHub in Settings ..."` | Some grant flow is missing | Surface the recovery hint to the user verbatim — it tells them exactly what to enable. |
 | `error: "notification_listener_not_bound"` | Listener service unbound | Surface the recovery hint verbatim. The user must enable RikkaHub in Settings → Notification access. |
 | `error: "requires_input"` (from notification_action_click) | The action needs typed input (RemoteInput) | Fall back to launch_app + set_text + click_node via screen automation. |
@@ -61,4 +59,4 @@ When in doubt, stop early and reply with what you have. Let the user redirect.
 
 - Don't repeatedly call `get_time_info` mid-turn. Once per turn is plenty.
 - Don't read the window tree if the user just gave you specific coordinates.
-- Don't `take_screenshot` after every action — the action log + a final screenshot is enough.
+- Don't re-read the window tree after every gesture — the action log + one final `read_window_tree` is usually enough.

@@ -21,6 +21,8 @@ A fork of [RikkaHub](https://github.com/rikkahub/rikkahub) that turns the native
 <a href="#quick-start">Quick Start</a> ·
 <a href="#building-from-source">Build</a>
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 </div>
 
 ---
@@ -114,7 +116,7 @@ Three transports supported:
 
 ### Notifications & External Triggers
 
-The AI can read, summarize, and forward incoming notifications from apps you choose. The whitelist starts empty. Notifications the agent posts deep-link back to the conversation that produced them, so a tap opens the full reply even from a cold start. Other apps (Tasker, automation tools, ADB) can hand the agent tasks through the External Automation Intent API.
+The AI can read, summarize, and forward incoming notifications from apps you choose. The whitelist starts empty. Notifications the agent posts deep-link back to the conversation that produced them, so a tap opens the full reply even from a cold start. Other apps (Tasker, automation tools) can hand the agent tasks through the External Automation Intent API.
 
 ### Safety & Privacy
 
@@ -144,10 +146,14 @@ This fork adds an on-device agent layer on top of upstream RikkaHub. Everything 
 | **Essential tools for sub-agents** | `get_time_info` + `eval_javascript` are always injected into every assistant (including sub-agents) regardless of tool config, so basic needs never fall back to shell workarounds. |
 | **WebServerHealthWorker** | 30-minute periodic health probe for the embedded web server, mirroring the Telegram bot's health check. |
 | **CI signing & release pipeline** | Fixed debug signing keystore (via GitHub Actions secrets) for consistent in-place updates; a release APK workflow; `build-info.txt` carries version + signing fingerprint + bootstrap hashes. |
+| **Embedded Termux:API shim** | `TermuxApiServer`: a `127.0.0.1` token-gated IPC endpoint inside the embedded runtime that answers `termux-*` commands — notification, toast, vibrate, torch, battery-status, clipboard get/set, tts-speak, notification-remove, volume — without the separate Termux:API app. |
+| **Background-delivery hardening** | Keepalive service + ROM detection (MIUI/ColorOS-class killers) + eligibility checks, wake-lock watchdog coverage, and end-to-end hardening so scheduled jobs and notifications survive OEM-aggressive power management. |
+| **Share files** | `share_file` hands any file to the Android system sharesheet. |
+| **Lazy tool declaration** | Tool schemas enter the request `tools` field only after `search_tools` discovery or first execution — first-prompt tools payload dropped from ~86KB to ~3KB. Tool descriptions were slimmed across ~30 tools and MCP descriptions capped at 500 chars. |
 
 ### Behavior changes vs upstream
 
-- **Browser runs headless, permanently** — `isHeadlessInvocation()` always returns `true`; the foreground browser Activity path was removed. The screenshot tooling (`browser_screenshot`, `take_screenshot`, streamers) was **deleted** — do not expect them back. 20 browser tools remain (navigation, DOM/text, cookies, dialogs, viewport, click-and-read).
+- **Browser runs headless, permanently** — the foreground browser Activity path was removed; every browser session runs in the background WebView. The screenshot tooling (`browser_screenshot`, `take_screenshot`, streamers) was **deleted** — do not expect them back. 20 browser tools remain (navigation, DOM/text, cookies, dialogs, viewport, click-and-read).
 - **Per-turn wall-clock limit removed** — a single user request no longer force-ends after 10 minutes of cumulative tool execution. Each individual tool still has its own timeout (plus a 300s per-tool execution cap in the generation loop), and `maxSteps` + the loop guard still bound runaway turns.
 - **Workspace (Linux) environment** — the proot-based workspace in the Features section is upstream functionality, not a fork addition. This fork builds on it: `ManagedWorkspaceProcess` (structured `command`+`args` spawning, process-tree teardown, lifecycle-lock registration) powers stdio MCP servers inside the workspace, and background-task management was hardened.
 - **Tool guidance in the system prompt** is a single stable line pointing at `search_tools`; no hardcoded tool names are injected.

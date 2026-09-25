@@ -1,7 +1,7 @@
 ---
 name: smart-forward
 description: Catch a notification from one app and forward its content to a contact in another (typically Telegram), with a one-line summary the recipient can act on. Useful for sharing OTPs, package tracking updates, news alerts, or "did you see this" moments.
-allowed-tools: list_recent_notifications notification_action_click launch_app read_window_tree find_node click_node set_text take_screenshot telegram_send_message global_action
+allowed-tools: list_recent_notifications notification_action_click launch_app read_window_tree find_node click_node set_text telegram_send_message global_action
 ---
 
 # Smart-forward
@@ -34,7 +34,6 @@ Pick up a notification from app A and forward its substance to a contact in app 
 
 - `list_recent_notifications`, `notification_action_click`
 - `launch_app`, `read_window_tree`, `find_node`, `click_node`, `set_text`
-- `take_screenshot` (debugging only)
 - `telegram_send_message`
 - `global_action`
 

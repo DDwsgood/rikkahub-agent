@@ -1,10 +1,12 @@
 # Embedded Termux bootstrap
 
+[English](termux-bootstrap.md) | [简体中文](termux-bootstrap.zh.md)
+
 Official Termux bootstrap archives are compiled for
 `/data/data/com.termux/files/usr` and cannot be relocated into RikkaHub's app sandbox.
 The app therefore deliberately refuses to download an official bootstrap.
 
-Build both bootstrap archives from `termux/termux-packages` for the exact Android
+Both bootstrap archives must be built for the exact Android
 application id and prefix used by the target variant:
 
 - release: package `excp.rikkahub`, prefix `/data/data/excp.rikkahub/files/termux/usr`
@@ -12,8 +14,9 @@ application id and prefix used by the target variant:
 
 ## Building the archives
 
-Use Linux with Docker. As of July 2026, Termux recommends the `infra-improvs` branch while
-the bootstrap builder changes are being upstreamed:
+Use Linux with Docker. As of July 2026, the bootstrap builder changes have not been
+fully upstreamed yet, so build from agnostic-apollo's `infra-improvs` branch of
+`termux-packages` rather than the main `termux/termux-packages` tree:
 
 ```bash
 git clone --depth 1 --branch infra-improvs \

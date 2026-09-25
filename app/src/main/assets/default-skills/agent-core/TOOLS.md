@@ -1,6 +1,6 @@
 # Tools — RikkaHub Agent Reference
 
-Tools are grouped by capability surface. Not every tool listed here is always available — what the user has enabled determines which ones you actually have at runtime. Every enabled tool is declared and callable directly; use `search_tools` only to look up a capability whose name you don't know.
+Tools are grouped by capability surface. Not every tool listed here is always available — what the user has enabled determines which ones you actually have at runtime. Only core tools are declared in the request up front; every enabled tool is still callable by name, and tools you discover via `search_tools` (or call directly) join the declared set for subsequent turns.
 
 ## Tool Discovery
 
@@ -28,7 +28,7 @@ You have three distinct filesystem surfaces. Know which one a tool targets befor
 
 ### Embedded Termux (Android host shell)
 - **`termux_run_command`** — run a shell command on the Android host. Default mode captures stdout/stderr/exit_code. Pass `interactive=true` for a visible session.
-- Embedded Termux — no external installation needed. No `termux-api` commands; all device operations are built-in tools.
+- Embedded Termux — no external installation needed. A built-in shim inside the runtime answers `termux-notification`, `termux-toast`, `termux-vibrate`, `termux-torch`, `termux-battery-status`, `termux-clipboard-get/set`, `termux-tts-speak`, `termux-notification-remove`, and `termux-volume` (same args and output shape as Termux:API); other `termux-*` commands are not available — use the built-in tools instead.
 - `whisper_status` / `transcribe_audio_file` — whisper.cpp transcription via the embedded Termux runtime.
 
 ## Built-in
@@ -94,7 +94,6 @@ Always read the screen *before* gesturing. Pattern: `read_window_tree` → choos
 - **`find_node`** / **`click_node`** — selector by `text` / `content_description` / `view_id_resource_name`.
 - **`set_text`** — type into an editable input. Does not work for terminals — use `termux_run_command` for those.
 - **`global_action`** — system gestures: `back`, `home`, `recents`, `notifications`, `quick_settings`, `lock_screen`, `power_dialog`.
-- **`take_screenshot`** — captures current display as a vision-input image. Secure surfaces error out gracefully.
 - **`wake_screen`** — turns the display on. Call before `launch_app` or gestures when the device may be asleep.
 
 ## App launcher

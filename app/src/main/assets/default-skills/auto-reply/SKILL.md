@@ -1,7 +1,7 @@
 ---
 name: auto-reply
 description: Reply to an incoming message in any chat app on behalf of the user. Reads the visible conversation, drafts a context-aware reply, and sends it. Composes the notification listener, the accessibility tap/scroll/read tools, and the back-to-home global action.
-allowed-tools: list_recent_notifications list_active_notifications launch_app read_window_tree find_node click_node set_text scroll global_action take_screenshot
+allowed-tools: list_recent_notifications list_active_notifications launch_app read_window_tree find_node click_node set_text scroll global_action
 ---
 
 # Auto-reply
@@ -22,7 +22,7 @@ Do NOT use this skill if the user just asked you to send a brand-new message to 
 4. **Read the visible context.** Call `read_window_tree` on the chat screen. Scroll up once with `scroll(direction = "up")` if the most recent few messages aren't visible. Pull the last 3-5 messages out of the tree as plain text.
 5. **Draft the reply.** Match the user's tone (you have memory; check `enableMemory`). Keep it short. If the incoming message is a question, answer it. If it's a status update, acknowledge it. If it's a request, decide whether the user can fulfil it now or needs to defer.
 6. **Send.** `find_node` for the message-input field, `set_text` with your draft, `find_node` for the send button (looks like a paper-plane / arrow), `click_node`.
-7. **Confirm.** Take a `take_screenshot` so the user can verify in the chat history.
+7. **Confirm.** Call `read_window_tree` once more on the chat screen and verify your draft now appears as the last sent message (or the input field is empty again). Report what you saw to the user.
 8. **Return home.** `global_action(action = "home")`.
 
 ## Tools used
@@ -30,7 +30,6 @@ Do NOT use this skill if the user just asked you to send a brand-new message to 
 - `list_recent_notifications`, `list_active_notifications`
 - `launch_app`, `notification_action_click`
 - `read_window_tree`, `find_node`, `click_node`, `set_text`, `scroll`
-- `take_screenshot`
 - `global_action`
 
 ## Failure modes

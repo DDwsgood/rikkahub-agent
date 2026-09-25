@@ -8,10 +8,10 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import me.rerere.rikkahub.data.termux.api.TermuxApiServer
+import me.rerere.workspace.terminateProcessTree
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
-import java.util.concurrent.TimeUnit
 
 /**
  * 内嵌 Termux 命令执行引擎。
@@ -209,56 +209,8 @@ internal fun findExecutableSystemLinker(candidates: List<String>): File? = candi
     .map(::File)
     .firstOrNull { it.isFile && it.canExecute() }
 
-internal fun terminateProcessTree(process: Process, graceSeconds: Long = 5L) {
-    val rootPid = processPid(process)
-    val descendants = rootPid?.let(::collectDescendantPids).orEmpty()
-    descendants.asReversed().forEach { pid ->
-        runCatching { android.os.Process.killProcess(pid) }
-    }
-    process.destroyForcibly()
-    runCatching { process.waitFor(graceSeconds, TimeUnit.SECONDS) }
-    descendants.forEach { pid ->
-        runCatching { android.os.Process.killProcess(pid) }
-    }
-}
-
-private fun processPid(process: Process): Int? = runCatching {
-    val pidMethod = process.javaClass.methods.firstOrNull {
-        (it.name == "pid" || it.name == "getPid") && it.parameterCount == 0
-    }
-    (pidMethod?.invoke(process) as? Number)?.toInt() ?: run {
-        var type: Class<*>? = process.javaClass
-        var pid: Int? = null
-        while (type != null && pid == null) {
-            val currentType = type
-            val field = runCatching { currentType.getDeclaredField("pid") }.getOrNull()
-            if (field != null) {
-                field.isAccessible = true
-                pid = (field.get(process) as? Number)?.toInt()
-            }
-            type = currentType.superclass
-        }
-        pid
-    }
-}.getOrNull()
-
-private fun collectDescendantPids(rootPid: Int): List<Int> {
-    val result = mutableListOf<Int>()
-    fun visit(pid: Int) {
-        val children = runCatching {
-            File("/proc/$pid/task/$pid/children").readText()
-                .trim()
-                .split(Regex("\\s+"))
-                .mapNotNull(String::toIntOrNull)
-        }.getOrDefault(emptyList())
-        children.forEach { child ->
-            visit(child)
-            result += child
-        }
-    }
-    visit(rootPid)
-    return result.distinct()
-}
+// 进程树终止实现已收敛到 workspace 模块(me.rerere.workspace.terminateProcessTree),
+// Termux 的 linker/bash 进程树同样会留下孙进程, 复用同一份枚举 /proc 强杀逻辑。
 
 /**
  * 命令执行结果。

@@ -1,5 +1,6 @@
 package me.rerere.workspace
 
+import android.util.Log
 import java.io.File
 
 data class WorkspaceBindMount(
@@ -191,6 +192,10 @@ class ProotShellRunner(
             if (mount.source.exists()) {
                 command += "-b"
                 command += "${mount.source.absolutePath}:${mount.target.trimEnd('/')}"
+            } else {
+                // source 缺失时静默跳过会让进程内挂载点变成 rootfs 里的空目录,
+                // 难以排查, 至少留一条日志说明跳过了哪个挂载
+                Log.w(TAG, "Bind mount source missing, skipped: ${mount.source.absolutePath} -> ${mount.target}")
             }
         }
 
@@ -216,6 +221,7 @@ class ProotShellRunner(
         isDirectory && File(this, "bin/sh").isFile
 
     private companion object {
+        private const val TAG = "ProotShellRunner"
         private const val PROOT_EXEC = "libproot_exec.so"
         private const val PROOT_LOADER = "libproot_loader.so"
         private val WORKSPACE_DIR = WorkspaceManager.ROOTFS_WORKSPACE_DIR

@@ -63,9 +63,13 @@ class ManagedWorkspaceProcess(
 /**
  * 强杀 [process] 的完整进程树: 枚举 /proc 下的 descendants, 逆序逐个 SIGKILL, 最后
  * destroyForcibly + waitFor 兜底。Android 的 Process.destroy* 只覆盖直接子进程, 而
- * proot 的孙进程 (真正的 MCP server) 不会因此退出, 必须显式枚举杀掉。
+ * proot 的孙进程 (真正的 MCP server / 后台命令) 不会因此退出, 必须显式枚举杀掉。
+ *
+ * 本函数是 workspace 模块内唯一的进程树终止实现: [ManagedWorkspaceProcess.close]、
+ * [WorkspaceBackgroundProcesses] 的 kill/killAll、[Process.readResult] 的超时/中断
+ * 清理都复用它。app 模块的 EmbeddedTermuxRunner 也复用同一实现。
  */
-internal fun terminateProcessTree(process: Process, graceSeconds: Long = 5L) {
+fun terminateProcessTree(process: Process, graceSeconds: Long = PROCESS_CLOSE_GRACE_SECONDS) {
     val rootPid = processPid(process)
     val descendants = rootPid?.let(::collectDescendantPids).orEmpty()
     descendants.asReversed().forEach { pid ->

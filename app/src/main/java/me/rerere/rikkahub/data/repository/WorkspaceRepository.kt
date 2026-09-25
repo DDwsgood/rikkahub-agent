@@ -121,9 +121,10 @@ class WorkspaceRepository(
     ): Boolean {
         val workspace = dao.getById(id) ?: return false
         updateShellState(workspace, WorkspaceShellStatus.INSTALLING.name)
-        // 重装会替换整个 rootfs: 先杀掉该 workspace 内所有托管进程 (stdio MCP server),
-        // 避免它们继续持有即将被替换的旧 rootfs 的 fd
-        manager.closeAllManagedProcesses(workspace.root)
+        // 重装会替换整个 rootfs: RootfsInstaller.install 在 WorkspaceManager 的进程
+        // 生命周期锁内先 killAllBackground + closeAllManagedProcesses, 再解压替换,
+        // 安装全程与 startBackground / startManagedProcess / deleteWorkspace 互斥,
+        // 不会残留持有旧 rootfs fd 的进程或安装到一半的孤儿目录。
         try {
             // runInterruptible 让协程取消转成线程中断, 打断 install 内阻塞的下载/解压循环
             runInterruptible(Dispatchers.IO) {
@@ -372,10 +373,16 @@ class WorkspaceRepository(
 
     suspend fun delete(id: String): Boolean {
         val workspace = dao.getById(id) ?: return false
-        dao.deleteById(id)
-        withContext(Dispatchers.IO) {
+        // 先杀进程 + 删目录, 成功后再删 DB 行: 顺序反过来时文件删除失败会留下
+        // 无法从 UI 重试删除的孤儿目录
+        val deleted = withContext(Dispatchers.IO) {
             manager.deleteWorkspace(workspace.root)
         }
+        if (!deleted && manager.workspaceDir(workspace.root).exists()) {
+            Log.w(TAG, "Workspace directory not fully deleted, keeping DB row for retry: id=$id")
+            return false
+        }
+        dao.deleteById(id)
         cleanupAssistantReferences(id)
         // workspace 已删除: 引用它的 stdio MCP 配置从此不可能连接, 禁用它们, 避免永久
         // 悬空配置 (会话停在 WaitingForWorkspace) 和残留的旧工具表。禁用会触发 McpManager

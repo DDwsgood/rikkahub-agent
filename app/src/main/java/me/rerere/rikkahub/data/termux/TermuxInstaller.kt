@@ -14,6 +14,7 @@ import me.rerere.rikkahub.BuildConfig
 import me.rerere.rikkahub.data.preferences.TermuxPreferences
 import me.rerere.rikkahub.data.preferences.TermuxRuntime
 import me.rerere.rikkahub.data.termux.api.TermuxApiShims
+import me.rerere.workspace.terminateProcessTree
 import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.File
@@ -358,9 +359,16 @@ class TermuxInstaller(
                     "${context.packageName} and ${environment.prefix.absolutePath}."
             )
         }
-        return template
+        val url = template
             .replace("{package}", context.packageName)
             .replace("{arch}", arch)
+        // bootstrap 下载只接受 https; sha256 校验仍是最终兜底, 但不给明文 HTTP
+        // 传输被降级/劫持的机会
+        val scheme = runCatching { java.net.URI(url).scheme }.getOrNull()
+        if (scheme == null || !scheme.equals("https", ignoreCase = true)) {
+            throw IOException("Embedded Termux bootstrap URL must use https: $url")
+        }
+        return url
     }
 
     private fun expectedSha256(arch: String): String {
@@ -488,13 +496,15 @@ class TermuxInstaller(
                             }
                             val target = parts[0].trim()
                             val linkPath = parts[1].trim()
-                            val linkFile = File(stagingDir, linkPath)
+                            // 防御纵深(sha256 已钉死 zip 内容): 链接路径仍不能越出 staging
+                            val linkFile = resolveWithin(stagingDir, linkPath)
                             linkFile.parentFile?.mkdirs()
                             symlinks.add(target to linkFile)
                             line = reader.readLine()
                         }
                     } else {
-                        val targetFile = File(stagingDir, entryName)
+                        // 防御纵深(sha256 已钉死 zip 内容): 拒绝 ../ 与绝对路径越出 staging
+                        val targetFile = resolveWithin(stagingDir, entryName)
                         if (entry.isDirectory) {
                             targetFile.mkdirs()
                         } else {
@@ -538,6 +548,21 @@ class TermuxInstaller(
             }
         }
         Log.i(TAG, "Extracted ${symlinks.size} symlinks")
+    }
+
+    /** 把归档内相对路径解析到 [base] 内; 越界(绝对路径/../)直接拒绝。 */
+    private fun resolveWithin(base: File, entryPath: String): File {
+        require(entryPath.isNotBlank() && !entryPath.contains('\u0000')) {
+            "Invalid archive entry path"
+        }
+        val baseCanonical = base.canonicalFile
+        val target = File(baseCanonical, entryPath).canonicalFile
+        if (target.path != baseCanonical.path &&
+            !target.path.startsWith(baseCanonical.path + File.separator)
+        ) {
+            throw IOException("Archive entry escapes staging directory: $entryPath")
+        }
+        return target
     }
 
     /**

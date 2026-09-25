@@ -184,7 +184,7 @@ class TermuxApiServer(context: Context) {
         val requestLine = runCatching {
             readRequestLine(socket.getInputStream())
         }.getOrNull() ?: return
-        val result = dispatch(requestLine)
+        val result = dispatchWithTimeout(requestLine)
         val stderrBytes = result.stderr.toByteArray(Charsets.UTF_8)
         val stdoutBytes = result.stdout.toByteArray(Charsets.UTF_8)
         val output = socket.getOutputStream()
@@ -194,6 +194,30 @@ class TermuxApiServer(context: Context) {
         output.flush()
         // 关闭写方向让 shim 的 `cat` 读到 EOF；随后由调用方关闭整个 socket。
         runCatching { socket.shutdownOutput() }
+    }
+
+    /**
+     * 在独立线程上跑 [dispatch] 并限时取结果。handler 是同步阻塞签名
+     * (例如 tts-speak 等 utterance 回调), 协程的 withTimeoutOrNull 无法取消阻塞调用,
+     * 必须把执行放进一个可丢弃的线程: 超时后本连接照常返回错误并释放槽位
+     * (上限 MAX_CONNECTIONS), 失控的 handler 线程会被留在后台直到自行结束。
+     */
+    private fun dispatchWithTimeout(line: String): TermuxApiResult {
+        val box = java.util.concurrent.atomic.AtomicReference<TermuxApiResult?>()
+        val done = java.util.concurrent.CountDownLatch(1)
+        Thread {
+            box.set(dispatch(line))
+            done.countDown()
+        }.apply {
+            isDaemon = true
+            name = "termux-api-dispatch"
+            start()
+        }
+        return if (done.await(HANDLER_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            box.get() ?: TermuxApiResult(EXIT_ERROR, stderr = "termux-api: no result\n")
+        } else {
+            TermuxApiResult(EXIT_ERROR, stderr = "termux-api: handler timed out\n")
+        }
     }
 
     /**
@@ -263,6 +287,7 @@ class TermuxApiServer(context: Context) {
         private const val BIND_PORT_ANY = 0
         private const val BACKLOG = 16
         private const val READ_TIMEOUT_MS = 15_000
+        private const val HANDLER_TIMEOUT_MS = 60_000L
         private const val MAX_CONNECTIONS = 8
         private const val MAX_TOKEN_FIELD_BYTES = 4 * 1024
         private const val MAX_REQUEST_LINE_BYTES = 64 * 1024

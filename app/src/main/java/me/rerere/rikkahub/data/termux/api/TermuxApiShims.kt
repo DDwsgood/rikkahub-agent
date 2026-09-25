@@ -67,7 +67,9 @@ has_content=0
 for arg in "${'$'}@"; do
   case "${'$'}arg" in -c|--content) has_content=1;; esac
 done
-if [ "${'$'}has_content" -eq 0 ]; then
+if [ "${'$'}has_content" -eq 0 ] && [ ! -t 0 ]; then
+  # 只有 stdin 不是终端(有管道/重定向或 /dev/null)时才读; stdin 是 TTY 时直接跳过,
+  # 不做无谓的 3s 等待
   content=""
   IFS= read -t 3 -r -d '' content || true
   if [ -n "${'$'}content" ]; then set -- "${'$'}@" -c "${'$'}content"; fi
@@ -86,7 +88,7 @@ while [ "${'$'}i" -lt "${'$'}{#rest[@]}" ]; do
     *) text_args+=("${'$'}{rest[${'$'}i]}"); i=$((i+1));;
   esac
 done
-if [ "${'$'}{#text_args[@]}" -eq 0 ]; then
+if [ "${'$'}{#text_args[@]}" -eq 0 ] && [ ! -t 0 ]; then
   t=""
   IFS= read -t 3 -r -d '' t || true
   if [ -n "${'$'}t" ]; then set -- "${'$'}@" "${'$'}t"; fi
@@ -95,7 +97,7 @@ fi
 
             // 官方行为：无位置参数时从 stdin 读剪贴板文本（3s 超时）。
             "termux-clipboard-set" -> """
-if [ "${'$'}#" -eq 0 ]; then
+if [ "${'$'}#" -eq 0 ] && [ ! -t 0 ]; then
   clip=""
   IFS= read -t 3 -r -d '' clip || true
   if [ -n "${'$'}clip" ]; then set -- "${'$'}clip"; fi
@@ -117,7 +119,7 @@ while [ "${'$'}i" -lt "${'$'}{#rest[@]}" ]; do
 done
 want_help=0
 for a in "${'$'}@"; do [ "${'$'}a" = "-h" ] && want_help=1; done
-if [ "${'$'}want_help" -eq 0 ] && [ "${'$'}{#text_args[@]}" -eq 0 ]; then
+if [ "${'$'}want_help" -eq 0 ] && [ "${'$'}{#text_args[@]}" -eq 0 ] && [ ! -t 0 ]; then
   t=""
   IFS= read -t 3 -r -d '' t || true
   if [ -n "${'$'}t" ]; then set -- "${'$'}@" "${'$'}t"; fi
@@ -163,9 +165,18 @@ header=""
 IFS= read -r -u "${'$'}fd" header || { echo "${'$'}CMD: no response from API server" >&2; exit 1; }
 code=${'$'}{header%% *}
 errlen=${'$'}{header#* }
-if [ "${'$'}errlen" -gt 0 ] 2>/dev/null; then
-  dd bs="${'$'}errlen" count=1 iflag=fullblock <&"${'$'}fd" >&2 2>/dev/null
-fi
+# errlen 必须是非负整数才可信; 畸形响应按 0 处理。分块(<=64KB)dd 而不是一次
+# 申请全部长度, 防止异常大的声明值让 dd 一次性分配巨大缓冲。
+case "${'$'}errlen" in
+  ''|*[!0-9]*) errlen=0;;
+esac
+remaining=${'$'}errlen
+while [ "${'$'}remaining" -gt 0 ]; do
+  chunk=${'$'}remaining
+  [ "${'$'}chunk" -gt 65536 ] && chunk=65536
+  dd bs="${'$'}chunk" count=1 iflag=fullblock <&"${'$'}fd" >&2 2>/dev/null || break
+  remaining=$((remaining - chunk))
+done
 cat <&"${'$'}fd"
 exec {fd}>&-
 case "${'$'}code" in ''|*[!0-9-]*) code=1;; esac

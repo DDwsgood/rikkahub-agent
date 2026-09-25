@@ -48,7 +48,14 @@ class WorkspaceManager(
 
     fun workspaceDir(root: String): File {
         requireValidRoot(root)
-        return File(baseDir, root)
+        // canonicalFile 兜底: 即使 ROOT_NAME_REGEX 将来被放宽, ".." / 符号链接等
+        // 也绝不能解析到 baseDir 之外 (deleteWorkspace 会递归删除返回值)。
+        val base = baseDir.canonicalFile
+        val dir = File(base, root).canonicalFile
+        require(dir.path.startsWith(base.path + File.separator)) {
+            "Workspace root escapes base directory: $root"
+        }
+        return dir
     }
 
     fun filesDir(root: String): File = File(workspaceDir(root), FILES_DIR)
@@ -63,7 +70,11 @@ class WorkspaceManager(
         // 先杀掉该 workspace 所有后台进程, 再删目录, 避免进程仍持有已删除目录下的 fd
         killAllBackground(root)
         closeAllManagedProcesses(root)
-        workspaceDir(root).deleteRecursively()
+        val dir = workspaceDir(root)
+        // 纵深防御: workspaceDir 已做 canonical 前缀校验, 这里再显式拒绝
+        // "等于 baseDir 本身"的退化情形, 防止任何改动把整个 baseDir wipe 掉。
+        require(dir != baseDir.canonicalFile) { "Refusing to delete workspace base directory" }
+        dir.deleteRecursively()
     }
 
     fun listFiles(
@@ -246,6 +257,7 @@ class WorkspaceManager(
                     tempDir = tempDir(root),
                     workingDir = workingDir,
                     timeoutMillis = 0L,
+                    bindMounts = bindMounts,
                 )
             )
             background.start(root, process, command, cwd)
@@ -258,6 +270,14 @@ class WorkspaceManager(
     fun killBackground(root: String, id: String): Boolean = background.kill(root, id)
 
     fun killAllBackground(root: String) = background.killAll(root)
+
+    /**
+     * 在 [backgroundLifecycleLock] 下执行 [block]。供 [RootfsInstaller.install] 使用:
+     * rootfs 重装全程与 startBackground / startManagedProcess / deleteWorkspace /
+     * closeAllManagedProcesses 互斥, 避免安装中途目录被删或被新进程持有 fd。
+     */
+    internal fun <T> withProcessLifecycleLock(block: () -> T): T =
+        synchronized(backgroundLifecycleLock) { block() }
 
     /**
      * Starts [command] (with structured [args], no shell evaluation) as a long-lived
@@ -371,7 +391,10 @@ class WorkspaceManager(
         /** 由宿主机透传的内核伪文件系统, 只能通过 shell 访问 */
         val KERNEL_FS_MOUNTS = listOf("/dev", "/proc", "/sys")
 
-        private val ROOT_NAME_REGEX = Regex("[A-Za-z0-9._-]+")
+        // 首字符必须是字母或数字: 排除 "." / ".." / ".hidden"。旧正则
+        // [A-Za-z0-9._-]+ 允许 "..", workspaceDir("..") 会解析成 baseDir 本身,
+        // deleteWorkspace("..") 即可 wipe 整个 filesDir。
+        private val ROOT_NAME_REGEX = Regex("[A-Za-z0-9][A-Za-z0-9._-]*")
     }
 }
 

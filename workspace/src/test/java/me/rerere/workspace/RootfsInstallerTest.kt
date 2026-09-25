@@ -2,6 +2,8 @@ package me.rerere.workspace
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -47,6 +49,57 @@ class RootfsInstallerTest {
 
         assertEquals(true, File(target, "dir").isDirectory)
         assertEquals("content", File(target, "dir/file.txt").readText())
+    }
+
+    @Test
+    fun `rootfs without bin slash sh is not usable`() {
+        val linuxDir = tmp.newFolder("linux")
+        assertFalse(hasUsableRootfsDir(linuxDir))
+        File(linuxDir, "bin").mkdirs()
+        assertFalse(hasUsableRootfsDir(linuxDir))
+    }
+
+    @Test
+    fun `rootfs with bin slash sh file is usable`() {
+        val linuxDir = tmp.newFolder("linux")
+        File(linuxDir, "bin").mkdirs()
+        File(linuxDir, "bin/sh").writeText("#!fake\n")
+        assertTrue(hasUsableRootfsDir(linuxDir))
+    }
+
+    @Test
+    fun `rootfs with bin slash sh symlink is usable`() {
+        val linuxDir = tmp.newFolder("linux")
+        File(linuxDir, "bin").mkdirs()
+        File(linuxDir, "bin/bash").writeText("#!fake\n")
+        java.nio.file.Files.createSymbolicLink(
+            File(linuxDir, "bin/sh").toPath(),
+            java.io.File("bash").toPath(),
+        )
+        assertTrue(hasUsableRootfsDir(linuxDir))
+    }
+
+    @Test
+    fun `extract rejects oversized LONG_NAME meta entry`() {
+        // 恶意归档可给 LONG_NAME/PAX 声明超大 size; readExactly 有 1MB 上限,
+        // 必须在分配缓冲前拒绝而不是 OOM。
+        val archive = tmp.newFile("evil.tar.gz")
+        GZIPOutputStream(archive.outputStream()).use { out ->
+            out.writeTarEntry("payload.txt", '0', "x".toByteArray())
+            val header = ByteArray(TAR_BLOCK)
+            "long.bin".toByteArray(Charsets.UTF_8).copyInto(header, 0)
+            "0000644".toByteArray().copyInto(header, 100)
+            (2L * 1024 * 1024).toOctalField().copyInto(header, 124)
+            header[156] = 'L'.code.toByte()
+            out.write(header)
+        }
+
+        val target = tmp.newFolder("out")
+        assertThrows(IllegalArgumentException::class.java) {
+            createInstaller().extractTar(archive, target) {}
+        }
+        // 已解压的正常条目保留, 但从巨型元数据条目起不再继续
+        assertEquals("x", File(target, "payload.txt").readText())
     }
 
     private fun createInstaller() = RootfsInstaller(WorkspaceManager(tmp.newFolder()))

@@ -11,7 +11,7 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.rikkahub.data.preferences.TermuxDefaults
+import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
 import me.rerere.rikkahub.data.preferences.TermuxRuntime
 import me.rerere.rikkahub.data.termux.EmbeddedTermuxRunner
 import me.rerere.rikkahub.data.termux.TermuxEnvironment
@@ -126,6 +126,14 @@ internal object TermuxIntegration {
         data class OtherError(val message: String) : VerifyResult()
     }
 }
+
+/**
+ * Hard ceiling for the LLM-exposed `timeout_seconds` argument. The generation loop
+ * cancels any tool call after [ToolRuntimeLimits.perToolExecutionTimeoutMs]
+ * (300 s by default), so a larger Termux-side timeout would never be reached.
+ */
+private val MAX_TIMEOUT_SECONDS =
+    (ToolRuntimeLimits.DEFAULT_PER_TOOL_EXECUTION_TIMEOUT_MS / 1000).toInt()
 
 internal sealed class CaptureResult {
     data class Success(
@@ -245,7 +253,11 @@ fun termuxRunCommandTool(
                 })
                 put("timeout_seconds", buildJsonObject {
                     put("type", "integer")
-                    put("description", "Timeout in seconds (0/omit = default, max ${TermuxDefaults.MAX_COMMAND_TIMEOUT_SECONDS}).")
+                    // 实际生效的上限是生成循环的 per-tool 执行硬帽
+                    // (ToolRuntimeLimits.DEFAULT_PER_TOOL_EXECUTION_TIMEOUT_MS = 300s),
+                    // 而非 TermuxDefaults.MAX_COMMAND_TIMEOUT_SECONDS(600s):
+                    // 超过 300s 的工具调用会先被外层超时取消, 给模型写 600 是误导。
+                    put("description", "Timeout in seconds (0/omit = default, max $MAX_TIMEOUT_SECONDS).")
                 })
             }
         )
@@ -263,12 +275,13 @@ fun termuxRunCommandTool(
             ?.toBooleanStrictOrNull() ?: false
         // Read the user-configured default command timeout at call time. The LLM can override
         // per-call with timeout_seconds (0 = use runtime default, otherwise capped at
-        // MAX_COMMAND_TIMEOUT_SECONDS = 600 s, raised from the old 300 s ceiling).
+        // MAX_TIMEOUT_SECONDS = 300 s — the per-tool execution hard cap that would cancel
+        // this call anyway, so accepting more is misleading).
         val configuredTimeoutMs = TermuxRuntime.commandTimeoutMs
         val rawTimeout = input.jsonObject["timeout_seconds"]?.jsonPrimitive?.intOrNull
         val timeoutMs = when {
             rawTimeout == null || rawTimeout == 0 -> configuredTimeoutMs
-            else -> rawTimeout.coerceIn(1, TermuxDefaults.MAX_COMMAND_TIMEOUT_SECONDS).toLong() * 1000
+            else -> rawTimeout.coerceIn(1, MAX_TIMEOUT_SECONDS).toLong() * 1000
         }
 
         if (rawCommand.isNullOrBlank() && executable.isNullOrBlank()) {

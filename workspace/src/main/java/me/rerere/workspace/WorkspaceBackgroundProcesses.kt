@@ -79,7 +79,7 @@ class WorkspaceBackgroundProcesses(
         synchronized(entries) {
             val runningForRoot = entries.values.count { it.root == root && it.process.isAlive }
             if (runningForRoot >= MAX_BG_PROCESSES) {
-                process.destroyForcibly()
+                terminateProcessTree(process, graceSeconds = 1L)
                 throw IllegalStateException(
                     "Too many running background processes for this workspace (max $MAX_BG_PROCESSES). " +
                         "Kill one with workspace_background_kill first."
@@ -121,7 +121,9 @@ class WorkspaceBackgroundProcesses(
         val entry = entries[id] ?: return@synchronized false
         if (entry.root != root) return@synchronized false
         entries.remove(id)
-        entry.process.destroyForcibly()
+        // destroyForcibly 只杀直接子进程, proot 孙进程会逃逸; 统一走进程树终止。
+        // 注意这会短暂持有 entries 锁做有界等待(graceSeconds), 换取不残留孤儿。
+        terminateProcessTree(entry.process)
         true
     }
 
@@ -129,7 +131,9 @@ class WorkspaceBackgroundProcesses(
     fun killAll(root: String): Unit = synchronized(entries) {
         entries.values
             .filter { it.root == root }
-            .forEach { entry -> entries.remove(entry.id)?.process?.destroyForcibly() }
+            .forEach { entry ->
+                entries.remove(entry.id)?.process?.let { terminateProcessTree(it) }
+            }
     }
 
     private fun evictOldestExited(root: String) {

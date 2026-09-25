@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.pages.extensions.workspace
 
 import android.content.Intent
+import android.os.Build
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.activity.compose.BackHandler
@@ -543,7 +544,7 @@ private fun InstallRootfsDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
-    var url by rememberSaveable(workspace.id) { mutableStateOf(DEFAULT_ROOTFS_URL) }
+    var url by rememberSaveable(workspace.id) { mutableStateOf(defaultRootfsUrl()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -840,5 +841,12 @@ internal fun String.toShellStatusLabel(): String = when (this) {
     else -> lowercase()
 }
 
-private const val DEFAULT_ROOTFS_URL =
-    "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz"
+private fun defaultRootfsUrl(): String {
+    // ubuntu-base 按设备 ABI 选架构: 仅支持 arm64-v8a / x86_64, 写死 arm64 会让
+    // x86_64 设备(模拟器/平板)默认装上跑不起来的 rootfs
+    val arch = when {
+        Build.SUPPORTED_ABIS.any { it.equals("x86_64", ignoreCase = true) } -> "amd64"
+        else -> "arm64"
+    }
+    return "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-$arch.tar.gz"
+}

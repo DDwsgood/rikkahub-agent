@@ -27,22 +27,47 @@ class RootfsInstaller(
         val tempDir = manager.tempDir(root)
         val archive = File(tempDir, "rootfs.${format.extension}")
         val stagingDir = File(tempDir, "rootfs-staging")
+        val backupDir = File(tempDir, "rootfs-old")
         val linuxDir = manager.linuxDir(root)
 
-        try {
-            stagingDir.deleteRecursively()
-            stagingDir.mkdirs()
-            download(url, archive, onProgress)
-            extractTar(archive, stagingDir, format, onProgress)
-            linuxDir.deleteRecursively()
-            require(stagingDir.renameTo(linuxDir)) {
-                "Failed to move rootfs into workspace"
+        // 全程持有 workspace 进程生命周期锁: 与 startBackground / startManagedProcess /
+        // deleteWorkspace / closeAllManagedProcesses 互斥。先杀掉该 workspace 的全部
+        // 后台与托管进程(它们持有即将被替换的旧 rootfs fd), 再解压替换; 否则安装中途
+        // 目录可能被并发删除, 或残留进程仍指向已移除的 rootfs。
+        manager.withProcessLifecycleLock {
+            manager.killAllBackground(root)
+            manager.closeAllManagedProcesses(root)
+            try {
+                stagingDir.deleteRecursively()
+                stagingDir.mkdirs()
+                download(url, archive, onProgress)
+                extractTar(archive, stagingDir, format, onProgress)
+                // 校验解压结果真是可用的 rootfs(存在 bin/sh)再替换旧目录,
+                // 避免一个内容错误的归档把可用的旧 rootfs 一起带走
+                require(hasUsableRootfsDir(stagingDir)) {
+                    "Rootfs archive does not contain a usable bin/sh"
+                }
+                backupDir.deleteRecursively()
+                if (linuxDir.exists() && !linuxDir.renameTo(backupDir)) {
+                    throw IOException("Failed to preserve existing rootfs before replacement")
+                }
+                if (!stagingDir.renameTo(linuxDir)) {
+                    // 新 rootfs 就位失败: 尽力恢复旧 rootfs, 不让 workspace 停留在无 rootfs 状态
+                    val restored = backupDir.exists() && backupDir.renameTo(linuxDir)
+                    throw IOException(
+                        "Failed to move rootfs into workspace" +
+                            if (restored) " (previous rootfs restored)"
+                            else " (previous rootfs could not be restored)"
+                    )
+                }
+                backupDir.deleteRecursively()
+                patcher.patch(linuxDir)
+                onProgress(RootfsInstallProgress(stage = RootfsInstallStage.INSTALLED))
+            } finally {
+                archive.delete()
+                stagingDir.deleteRecursively()
+                backupDir.deleteRecursively()
             }
-            patcher.patch(linuxDir)
-            onProgress(RootfsInstallProgress(stage = RootfsInstallStage.INSTALLED))
-        } finally {
-            archive.delete()
-            stagingDir.deleteRecursively()
         }
     }
 
@@ -284,7 +309,9 @@ class RootfsInstaller(
     }
 
     private fun InputStream.readExactly(bytes: Long): ByteArray {
-        require(bytes <= Int.MAX_VALUE) { "Tar entry is too large to buffer: $bytes" }
+        // 只用于 LONG_NAME/LONG_LINK/PAX 这类元数据条目; 正常路径不过几 KB,
+        // 加一个硬上限防止恶意归档声明巨型 size 直接撑爆内存
+        require(bytes <= MAX_META_ENTRY_BYTES) { "Tar meta entry is too large to buffer: $bytes" }
         val buffer = ByteArray(bytes.toInt())
         val read = readFullyOrEnd(buffer)
         if (read != buffer.size) throw EOFException("Unexpected EOF while reading tar entry")
@@ -411,8 +438,19 @@ class RootfsInstaller(
     companion object {
         private const val TAR_BLOCK_SIZE = 512
         private const val BUFFER_SIZE = 64 * 1024
+        private const val MAX_META_ENTRY_BYTES = 1024L * 1024
         private const val PROGRESS_STEP_BYTES = 512 * 1024
         private const val CONNECT_TIMEOUT_MS = 30_000
         private const val READ_TIMEOUT_MS = 60_000
     }
+}
+
+/**
+ * [linuxDir] 是否是一个可用的 rootfs: 存在 bin/sh(普通文件或符号链接皆可;
+ * 指向 rootfs 内相对路径的符号链接此处尚未就位, 故只看链接本身是否存在)。
+ * 解压后、替换旧 rootfs 前校验, 也是单测直接覆盖的判定点。
+ */
+internal fun hasUsableRootfsDir(linuxDir: File): Boolean {
+    val sh = File(linuxDir, "bin/sh").toPath()
+    return Files.isRegularFile(sh) || Files.isSymbolicLink(sh)
 }

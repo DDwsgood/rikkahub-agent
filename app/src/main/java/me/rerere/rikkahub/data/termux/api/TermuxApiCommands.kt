@@ -698,6 +698,7 @@ internal fun parseTtsArgs(args: List<String>): ParsedArgs<TtsOptions> {
 }
 
 private const val TTS_INIT_TIMEOUT_MS = 10_000L
+private const val TTS_SPEAK_TIMEOUT_MS = 60_000L
 
 private fun ttsSpeakHandler(context: Context, args: List<String>): TermuxApiResult =
     parseTtsArgs(args).intoResult("termux-tts-speak", TTS_USAGE) { opts ->
@@ -751,42 +752,52 @@ private suspend fun speakText(context: Context, opts: TtsOptions): TermuxApiResu
         val expected = AtomicInteger(-1)
         val finished = AtomicInteger(0)
         val resumed = AtomicBoolean(false)
-        suspendCancellableCoroutine<Unit> { cont ->
-            fun tryFinish() {
-                val exp = expected.get()
-                if (exp >= 0 && finished.get() >= exp && resumed.compareAndSet(false, true)) {
-                    cont.resume(Unit)
+        // utterance 回调依赖 TTS 引擎；引擎挂起时不能永久占住 API server 的连接槽
+        // (上限 8)，超时返回并让 invokeOnCancellation 的 tts.stop() 兜底清队列。
+        val completed = withTimeoutOrNull(TTS_SPEAK_TIMEOUT_MS) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                fun tryFinish() {
+                    val exp = expected.get()
+                    if (exp >= 0 && finished.get() >= exp && resumed.compareAndSet(false, true)) {
+                        cont.resume(Unit)
+                    }
                 }
-            }
-            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
+                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) = Unit
 
-                override fun onDone(utteranceId: String?) {
-                    finished.incrementAndGet()
-                    tryFinish()
-                }
+                    override fun onDone(utteranceId: String?) {
+                        finished.incrementAndGet()
+                        tryFinish()
+                    }
 
-                @Deprecated("Deprecated in Android API")
-                override fun onError(utteranceId: String?) {
-                    finished.incrementAndGet()
-                    tryFinish()
+                    @Deprecated("Deprecated in Android API")
+                    override fun onError(utteranceId: String?) {
+                        finished.incrementAndGet()
+                        tryFinish()
+                    }
+                })
+                cont.invokeOnCancellation { runCatching { tts.stop() } }
+                var submitted = 0
+                lines.forEachIndexed { index, line ->
+                    val utteranceId = "rikkahub-tts-$index"
+                    val params = Bundle().apply {
+                        putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, opts.stream)
+                        putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                    }
+                    if (tts.speak(line, TextToSpeech.QUEUE_ADD, params, utteranceId) == TextToSpeech.SUCCESS) {
+                        submitted++
+                    }
                 }
-            })
-            cont.invokeOnCancellation { runCatching { tts.stop() } }
-            var submitted = 0
-            lines.forEachIndexed { index, line ->
-                val utteranceId = "rikkahub-tts-$index"
-                val params = Bundle().apply {
-                    putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, opts.stream)
-                    putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                }
-                if (tts.speak(line, TextToSpeech.QUEUE_ADD, params, utteranceId) == TextToSpeech.SUCCESS) {
-                    submitted++
-                }
+                expected.set(submitted)
+                // submitted == 0（全部 speak() 同步失败）或回调已全部到达时立即返回。
+                tryFinish()
             }
-            expected.set(submitted)
-            // submitted == 0（全部 speak() 同步失败）或回调已全部到达时立即返回。
-            tryFinish()
+        }
+        if (completed == null) {
+            return TermuxApiResult(
+                exitCode = TermuxApiServer.EXIT_ERROR,
+                stderr = "termux-tts-speak: timed out waiting for TTS engine\n",
+            )
         }
         return TermuxApiResult(exitCode = TermuxApiServer.EXIT_OK)
     } finally {

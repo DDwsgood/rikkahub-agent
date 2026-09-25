@@ -260,7 +260,8 @@ internal object LoopGuard {
 internal fun resumableToolsIncludingUnexecutedAuto(
     tools: List<UIMessagePart.Tool>,
 ): List<UIMessagePart.Tool> = tools.filter { tool ->
-    tool.canResumeExecution || (tool.approvalState is ToolApprovalState.Auto && !tool.isExecuted)
+    tool.canResumeExecution ||
+        (tool.approvalState is ToolApprovalState.Auto && !tool.isExecuted && tool.executionStartedAt == null)
 }
 
 /** Result of a single tool execution under the per-tool execution timeout. */

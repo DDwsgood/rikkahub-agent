@@ -358,10 +358,24 @@ private fun ChatPageContent(
                             return@ChatInput
                         }
                         if (inputState.isEditing()) {
+                            // (Editing + generating never co-occurs here: the button
+                            // stays in Stop mode while editing mid-generation.)
                             vm.handleMessageEdit(
                                 parts = inputState.getContents(),
                                 messageId = inputState.editingMessage!!,
                             )
+                        } else if (loadingJob != null) {
+                            // Generation running: steer — inject into the current turn
+                            // instead of interrupting it. ChatService falls back to a
+                            // normal send if the turn already finished.
+                            vm.handleMessageSteer(inputState.getContents())
+                            toaster.show(
+                                context.getString(R.string.chat_input_steer_sent),
+                                type = ToastType.Normal,
+                            )
+                            scope.launch {
+                                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                            }
                         } else {
                             vm.handleMessageSend(inputState.getContents())
                             scope.launch {

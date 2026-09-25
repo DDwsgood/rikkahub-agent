@@ -463,12 +463,25 @@ class ChatService(
 
     // ---- 初始化对话 ----
 
-    suspend fun initializeConversation(conversationId: Uuid) {
+    /**
+     * @param updateGlobalAssistant when true (interactive entry points), opening an existing
+     *  conversation also switches the app's current assistant to that conversation's
+     *  assistant. Headless callers (cron / sub-agent) pass false so a background run can't
+     *  change the user's globally selected assistant.
+     */
+    suspend fun initializeConversation(
+        conversationId: Uuid,
+        updateGlobalAssistant: Boolean = true,
+    ) {
         getOrCreateSession(conversationId) // 确保 session 存在
         val conversation = conversationRepo.getConversationById(conversationId)
         if (conversation != null) {
             updateConversation(conversationId, conversation)
-            settingsStore.updateAssistant(conversation.assistantId)
+            // Headless callers (cron / sub-agent) must not yank the user's globally
+            // selected assistant to whatever assistant a background conversation uses.
+            if (updateGlobalAssistant) {
+                settingsStore.updateAssistant(conversation.assistantId)
+            }
         } else {
             // 新建对话, 并添加预设消息
             val currentSettings = settingsStore.settingsFlowRaw.first()
@@ -572,6 +585,122 @@ class ChatService(
         job.invokeOnCompletion { cause -> ensureSendMessageResultCompleted(result, cause) }
         session.setJob(job)
         return result
+    }
+
+    // ---- Steer（生成中注入用户消息） ----
+
+    /**
+     * Steer path for "send while generating": instead of interrupting the running turn,
+     * append the user message to the transcript and enqueue it on the session's steer
+     * queue. GenerationHandler drains that queue at the next model-call boundary, so the
+     * model sees the message and adjusts — in-flight tool calls are never interrupted.
+     *
+     * Race: if the turn ends before the next boundary (or between our checks), the
+     * leftover is turned into a normal follow-up generation instead — never dropped.
+     * Delivery is claimed by whichever side drains the queue first (drainSteer is
+     * atomic), and any enqueue made after the last drain is caught by the job's
+     * completion hook, which drains again when the generation job finishes.
+     *
+     * Falls back to a plain [sendMessage] when no generation is running.
+     */
+    fun steerMessage(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+    ): CompletableDeferred<SendMessageResult> {
+        val session = getOrCreateSession(conversationId)
+        val job = session.getJob()
+        if (job == null || !job.isActive || content.isEmptyInputMessage()) {
+            // Not generating (or nothing to send): identical semantics to sendMessage.
+            return sendMessage(conversationId, content)
+        }
+
+        val result = CompletableDeferred<SendMessageResult>()
+
+        // Completion hook registered BEFORE the message is enqueued: guarantees that a
+        // steer which misses every in-loop drain (e.g. enqueued during the very last
+        // model call) is still picked up when the job finishes, because
+        // invokeOnCompletion also fires immediately for an already-completed job.
+        job.invokeOnCompletion { cause ->
+            if (cause is CancellationException || sessions[conversationId]?.isGenerating == true) {
+                // Cancelled turn: no follow-up — the message stays in the transcript and
+                // will be part of the next turn's context. New generation already
+                // running: it owns any leftovers via its own boundary drains.
+                return@invokeOnCompletion
+            }
+            launchSteerContinuation(conversationId)
+        }
+
+        appScope.launch {
+            runCatching {
+                val settings = settingsStore.awaitLoadedSettings()
+                val conversation = getConversationFlow(conversationId).value
+                val assistant = settings.getAssistantById(conversation.assistantId)
+                    ?: settings.getCurrentAssistant()
+                val processedContent = preprocessUserInputParts(content, assistant)
+                val message = UIMessage(role = MessageRole.USER, parts = processedContent)
+
+                // Transcript first: the user sees their bubble immediately, and the
+                // queue entry is only a delivery hint for the in-flight generation.
+                updateConversationState(conversationId) { current ->
+                    current.copy(
+                        messageNodes = current.messageNodes + message.toMessageNode()
+                    )
+                }
+                sessions[conversationId]?.enqueueSteer(message)
+                // Persist right away: generation chunks only write to disk at specific
+                // points, and a process kill shouldn't eat a message the user saw sent.
+                saveConversation(conversationId, getConversationFlow(conversationId).value)
+                // The steer is delivered (transcript + queue) — the handle completes now;
+                // the follow-up-generation outcome is observed through the normal turn
+                // machinery (errors surface via addError like any other generation).
+                result.complete(SendMessageResult(success = true))
+
+                // Post-enqueue race check: if the generation already ended, claim the
+                // leftover and run it as a follow-up ourselves. (If the job is still
+                // alive, either a future boundary drain picks it up or — if the job is
+                // in its final step — the completion hook above does.)
+                if (sessions[conversationId]?.isGenerating != true) {
+                    launchSteerContinuation(conversationId)
+                }
+            }.onFailure {
+                if (it is CancellationException) {
+                    result.complete(SendMessageResult(false, "cancelled: ${it.message}"))
+                } else {
+                    addError(it, conversationId, title = context.getString(R.string.error_title_send_message))
+                    result.complete(sendFailureResult(it))
+                }
+            }
+        }
+        return result
+    }
+
+    /**
+     * Turn leftover steered messages (transcript already contains them) into a normal
+     * follow-up generation on a TRACKED session job, so stopGeneration and the loading
+     * indicator behave exactly like a regular send. Drain-first is the claim: only the
+     * side that observes leftovers runs the continuation, so concurrent claimers
+     * (completion hook vs post-enqueue check vs a second enqueue) can't double-run.
+     * Entries claimed while ANOTHER generation is active are requeued — that generation
+     * will consume them at its own boundary drains.
+     */
+    private fun launchSteerContinuation(conversationId: Uuid) {
+        val pending = sessions[conversationId]?.drainSteer().orEmpty()
+        if (pending.isEmpty()) return
+        if (sessions[conversationId]?.isGenerating == true) {
+            pending.forEach { sessions[conversationId]?.enqueueSteer(it) }
+            return
+        }
+        val job = appScope.launch {
+            try {
+                handleMessageComplete(conversationId)
+                _generationDoneFlow.emit(conversationId)
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    addError(e, conversationId, title = context.getString(R.string.error_title_generation))
+                }
+            }
+        }
+        sessions[conversationId]?.setJob(job)
     }
 
     /**
@@ -943,6 +1072,13 @@ class ChatService(
                 }
             }
 
+            // A new generation snapshot is about to be read from the transcript, which
+            // already contains every steered message — any queue entries stranded by a
+            // cancelled turn would otherwise be injected AGAIN at a drain boundary.
+            // Entries enqueued in the gap between this clear and the snapshot below are
+            // deduplicated by id inside mergeSteeredMessages.
+            getOrCreateSession(conversationId).clearSteerQueue()
+
             // check invalid messages
             checkInvalidMessages(conversationId)
             val conversation = getConversationFlow(conversationId).value
@@ -1188,6 +1324,9 @@ class ChatService(
                 outputTransformers = outputTransformers,
                 tools = tools,
                 invocationContext = invocationCtx,
+                // Steer drain: claimed entries are injected into the running turn at the
+                // next model-call boundary (see GenerationHandler / session queue docs).
+                pendingSteerProvider = session::drainSteer,
             ).onCompletion {
                 // 取消 Live Update 通知
                 cancelLiveUpdateNotification(conversationId)

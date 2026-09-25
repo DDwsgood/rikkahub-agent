@@ -299,6 +299,20 @@ internal fun buildToolCancelledTimeoutEnvelope(json: Json, timeoutMs: Long): Lis
         )
     )
 
+/**
+ * Merge steered user messages into the running turn's working message list. A steered
+ * message is appended to the transcript before it is enqueued, so a message enqueued
+ * into the tiny gap between "next generation snapshot read" and "steer queue cleared"
+ * can appear in BOTH — deduplicate by message id so it is never injected twice.
+ */
+internal fun mergeSteeredMessages(
+    messages: List<UIMessage>,
+    steered: List<UIMessage>,
+): List<UIMessage> {
+    val existingIds = messages.mapTo(HashSet()) { it.id }
+    return messages + steered.filter { it.id !in existingIds }
+}
+
 class GenerationHandler(
     private val context: Context,
     private val providerManager: ProviderManager,
@@ -339,6 +353,12 @@ class GenerationHandler(
         // ToolSearch hybrid: the context supplies tools discovered during earlier steps so
         // they are declared in the next provider request. Null for callers without ToolSearch.
         invocationContext: ToolInvocationContext? = null,
+        // Steer hook: called just before every model call. Returns user messages sent
+        // while this turn was running; they are injected into the working message list
+        // so the model sees them at the NEXT step boundary (never mid-tool-call). The
+        // provider drains a per-conversation queue — calling it claims the entries, so
+        // callers must not invoke it more than once per boundary.
+        pendingSteerProvider: (() -> List<UIMessage>)? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -435,6 +455,19 @@ class GenerationHandler(
 
             // Skip generation if we have approved/denied tool calls to handle
             if (pendingTools.isEmpty()) {
+                // Steer boundary: inject user messages that arrived while the turn was
+                // running so the model sees them on this next model call. Placed after
+                // the Pending-approval bail-out above so a waiting-for-approval turn
+                // doesn't consume the queue, and before generateInternal so steered
+                // content lands in the request we are about to send. (A message that
+                // arrives DURING the final generateInternal is intentionally not
+                // consumed here — ChatService's completion hook turns it into a
+                // follow-up generation instead.)
+                val steered = pendingSteerProvider?.invoke().orEmpty()
+                if (steered.isNotEmpty()) {
+                    messages = mergeSteeredMessages(messages, steered)
+                    emit(GenerationChunk.Messages(messages))
+                }
                 try {
                     generateInternal(
                         assistant = assistant,

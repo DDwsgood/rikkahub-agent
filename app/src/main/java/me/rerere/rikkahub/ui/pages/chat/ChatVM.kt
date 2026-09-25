@@ -177,6 +177,18 @@ class ChatVM(
         chatService.sendMessage(_conversationId, content, answer)
     }
 
+    /**
+     * Send while a generation is in flight: the message is appended to the transcript
+     * and injected into the running turn at the next model-call boundary (steer),
+     * rather than interrupting generation. Falls back to a normal send if the turn
+     * already finished.
+     */
+    fun handleMessageSteer(content: List<UIMessagePart>) {
+        if (content.isEmptyInputMessage()) return
+
+        chatService.steerMessage(_conversationId, content)
+    }
+
     fun handleMessageEdit(parts: List<UIMessagePart>, messageId: Uuid) {
         if (parts.isEmptyInputMessage()) return
 

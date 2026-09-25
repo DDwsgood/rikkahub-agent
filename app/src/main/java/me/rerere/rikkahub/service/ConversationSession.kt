@@ -9,8 +9,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.launch
+import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.model.Conversation
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.uuid.Uuid
 
@@ -38,6 +40,35 @@ class ConversationSession(
      * the first prompt stays small; execution itself is not gated by membership here.
      */
     val discoveredToolNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Steer queue: user messages sent while a generation is in flight. The sender
+     * (ChatService.steerMessage) appends the message to the transcript FIRST and then
+     * enqueues it here, so every queued entry is already persisted/visible — this queue
+     * is only a delivery hint, not the source of truth. GenerationHandler drains it at
+     * the next model-call boundary and injects the message into the running turn;
+     * whoever drains leftovers after a turn ends (atomic drainAll = claim) owns the
+     * follow-up generation. Entries stranded by a cancelled turn are cleared at the
+     * start of the next generation — the transcript already contains them.
+     */
+    private val pendingSteerMessages = ConcurrentLinkedQueue<UIMessage>()
+
+    fun enqueueSteer(message: UIMessage) {
+        pendingSteerMessages.add(message)
+    }
+
+    /** Atomic drain: returns all queued messages in FIFO order and empties the queue. */
+    fun drainSteer(): List<UIMessage> {
+        val drained = mutableListOf<UIMessage>()
+        while (true) {
+            drained += pendingSteerMessages.poll() ?: break
+        }
+        return drained
+    }
+
+    fun clearSteerQueue() {
+        pendingSteerMessages.clear()
+    }
 
     // 生成任务（内聚在 session 中）
     private val _generationJob = MutableStateFlow<Job?>(null)

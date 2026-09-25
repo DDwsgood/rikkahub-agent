@@ -277,6 +277,7 @@ private fun toolDisplayTitle(toolName: String): String = when (toolName) {
     BrowserToolDefaults.GET_TEXT -> stringResource(R.string.setting_browser_tool_get_text_title)
     BrowserToolDefaults.GET_DOM -> stringResource(R.string.setting_browser_tool_get_dom_title)
     BrowserToolDefaults.GET_LINKS -> stringResource(R.string.setting_browser_tool_get_links_title)
+    BrowserToolDefaults.GET_COOKIES -> stringResource(R.string.setting_browser_tool_get_cookies_title)
     BrowserToolDefaults.BACK -> stringResource(R.string.setting_browser_tool_back_title)
     BrowserToolDefaults.FORWARD -> stringResource(R.string.setting_browser_tool_forward_title)
     BrowserToolDefaults.WAIT_FOR -> stringResource(R.string.setting_browser_tool_wait_for_title)
@@ -287,6 +288,9 @@ private fun toolDisplayTitle(toolName: String): String = when (toolName) {
     BrowserToolDefaults.SELECT -> stringResource(R.string.setting_browser_tool_select_title)
     BrowserToolDefaults.PRESS_KEY -> stringResource(R.string.setting_browser_tool_press_key_title)
     BrowserToolDefaults.EVAL_JS -> stringResource(R.string.setting_browser_tool_eval_js_title)
+    BrowserToolDefaults.HANDLE_DIALOG -> stringResource(R.string.setting_browser_tool_handle_dialog_title)
+    BrowserToolDefaults.SET_VIEWPORT -> stringResource(R.string.setting_browser_tool_set_viewport_title)
+    BrowserToolDefaults.CLICK_AND_READ -> stringResource(R.string.setting_browser_tool_click_and_read_title)
     BrowserToolDefaults.DONE -> stringResource(R.string.setting_browser_tool_done_title)
     else -> toolName
 }
@@ -298,6 +302,7 @@ private fun toolDisplayDesc(toolName: String): String = when (toolName) {
     BrowserToolDefaults.GET_TEXT -> stringResource(R.string.setting_browser_tool_get_text_desc)
     BrowserToolDefaults.GET_DOM -> stringResource(R.string.setting_browser_tool_get_dom_desc)
     BrowserToolDefaults.GET_LINKS -> stringResource(R.string.setting_browser_tool_get_links_desc)
+    BrowserToolDefaults.GET_COOKIES -> stringResource(R.string.setting_browser_tool_get_cookies_desc)
     BrowserToolDefaults.BACK -> stringResource(R.string.setting_browser_tool_back_desc)
     BrowserToolDefaults.FORWARD -> stringResource(R.string.setting_browser_tool_forward_desc)
     BrowserToolDefaults.WAIT_FOR -> stringResource(R.string.setting_browser_tool_wait_for_desc)
@@ -308,6 +313,9 @@ private fun toolDisplayDesc(toolName: String): String = when (toolName) {
     BrowserToolDefaults.SELECT -> stringResource(R.string.setting_browser_tool_select_desc)
     BrowserToolDefaults.PRESS_KEY -> stringResource(R.string.setting_browser_tool_press_key_desc)
     BrowserToolDefaults.EVAL_JS -> stringResource(R.string.setting_browser_tool_eval_js_desc)
+    BrowserToolDefaults.HANDLE_DIALOG -> stringResource(R.string.setting_browser_tool_handle_dialog_desc)
+    BrowserToolDefaults.SET_VIEWPORT -> stringResource(R.string.setting_browser_tool_set_viewport_desc)
+    BrowserToolDefaults.CLICK_AND_READ -> stringResource(R.string.setting_browser_tool_click_and_read_desc)
     BrowserToolDefaults.DONE -> stringResource(R.string.setting_browser_tool_done_desc)
     else -> ""
 }

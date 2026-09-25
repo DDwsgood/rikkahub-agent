@@ -29,7 +29,6 @@ import me.rerere.rikkahub.browser.ReadabilityRunner.runReadability
 import me.rerere.rikkahub.browser.awaitReadyState
 import me.rerere.rikkahub.browser.evaluateJavascriptAsync
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
-import kotlin.uuid.ExperimentalUuidApi
 
 /**
  * Browser tool factories that drive a headless WebView through
@@ -59,14 +58,6 @@ private const val EVAL_JS_MAX_RESULT_CHARS = 64 * 1024
  * keeps in sync with the persisted value.
  */
 private val toolTimeoutMs: Long get() = BrowserController.perToolTimeoutMs
-
-/**
- * Always returns true — browser tools permanently run in headless mode.
- */
-@OptIn(ExperimentalUuidApi::class)
-private fun isHeadlessInvocation(ctx: ToolInvocationContext?): Boolean {
-    return true
-}
 
 // ---- Common envelope helpers --------------------------------------------------------------
 
@@ -206,7 +197,7 @@ fun browserCurrentUrlTool(): Tool = Tool(
 
 fun browserGetTextTool(): Tool = Tool(
     name = BrowserToolDefaults.GET_TEXT,
-    description = "Returns the main article content via Readability.js by default, falling back to selector-based extraction if Readability fails. Pass extract_mode:'raw' for the unfiltered text. Pass selector (e.g. 'article', 'main', '.content') for explicit scoping — selectors override Readability. max_chars (default 8000) caps the result. Use this BEFORE screenshot if you only need text content. {text, truncated, extract_mode}",
+    description = "Returns the main article content via Readability.js by default, falling back to selector-based extraction if Readability fails. Pass extract_mode:'raw' for the unfiltered text. Pass selector (e.g. 'article', 'main', '.content') for explicit scoping — selectors override Readability. max_chars (default 8000) caps the result. Prefer this when you only need the page's readable text content. {text, truncated, extract_mode}",
     parameters = { getTextSchema(defaultMax = 8000) },
     execute = { input -> textPart(runGetText(input)) },
 )
@@ -717,7 +708,7 @@ fun browserEvalJsTool(): Tool = Tool(
 
 fun browserGetCookiesTool(): Tool = Tool(
     name = BrowserToolDefaults.GET_COOKIES,
-    description = "Get cookies for the current page URL. Returns a string in the 'name=value; name2=value2' format, or an empty string if no cookies are set.",
+    description = "Get cookies for the current page URL. Returns a string in the 'name=value; name2=value2' format, or an empty string if no cookies are set. Cookies are login-state credentials and are sensitive: avoid exposing them in plain text, and prefer agent-browser/Playwright-style CLI automation via Termux/workspace for full browser automation. Not recommended to keep enabled unless needed.",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {}, required = emptyList())
     },
@@ -771,7 +762,7 @@ fun browserHandleDialogTool(): Tool = Tool(
 
 fun browserSetViewportTool(): Tool = Tool(
     name = BrowserToolDefaults.SET_VIEWPORT,
-    description = "Set the browser viewport dimensions. Useful for testing responsive layouts or capturing screenshots at specific sizes. Resizes the headless WebView.",
+    description = "Set the browser viewport dimensions. Useful for testing responsive layouts or forcing a desktop/mobile layout. Resizes the headless WebView.",
     parameters = {
         InputSchema.Obj(properties = buildJsonObject {
             put("width", buildJsonObject {

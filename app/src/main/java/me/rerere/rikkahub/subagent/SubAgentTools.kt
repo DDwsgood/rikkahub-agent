@@ -59,6 +59,9 @@ fun subagentDispatchTool(
         conversation — restate any context it needs. Set run_in_background=true and
         poll with subagent_get for long tasks; foreground (default) blocks until done.
         Per-assistant and global concurrency caps apply; over-cap calls fail — retry later.
+        Warning: while a sub-agent runs, its tool calls are auto-approved and unattended,
+        and it inherits the parent assistant's full enabled toolset. This is a high-trust
+        tool and is not recommended to keep enabled unless needed.
     """.trimIndent(),
     parameters = {
         InputSchema.Obj(
@@ -70,6 +73,10 @@ fun subagentDispatchTool(
                 put("tools", buildJsonObject {
                     put("type", "array")
                     put("items", buildJsonObject { put("type", "string") })
+                    put(
+                        "description",
+                        "Currently ignored; the sub-agent inherits the parent assistant's full enabled toolset.",
+                    )
                 })
                 put("run_in_background", buildJsonObject { put("type", "boolean") })
                 put("timeout_seconds", buildJsonObject { put("type", "integer") })

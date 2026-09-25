@@ -53,16 +53,6 @@ object BrowserController {
     @Volatile
     var perToolTimeoutMs: Long = BrowserToolDefaults.DEFAULT_PER_TOOL_TIMEOUT_MS
 
-    /**
-     * Global browser execution mode — controls whether browser tools run in the foreground
-     * (visible Activity) or headless (background WebView). User-configurable via Settings →
-     * Browser; kept in sync by [BrowserPreferences]. Defaults to ALWAYS_BACKGROUND.
-     *
-     * When set to ALWAYS_FOREGROUND, browser tools launch the browser Activity on screen.
-     */
-    @Volatile
-    var backgroundMode: BrowserBackgroundMode = BrowserBackgroundMode.ALWAYS_BACKGROUND
-
     private const val TAG = "BrowserController"
 
     /**
@@ -136,9 +126,6 @@ object BrowserController {
         if (!bindDeferred.isCompleted) {
             bindDeferred.complete(Unit)
         }
-        // Sweep stale cache files from any prior session (including ones killed by
-        // process-stop). No-op when there are no cache subdirs to sweep.
-        runCatching { BrowserCacheSweeper.sweep(webView.context.applicationContext) }
     }
 
     /** Activity calls this in onDestroy. Only clears if the live ref still points at the same WebView. */
@@ -208,8 +195,6 @@ object BrowserController {
         if (!bindDeferred.isCompleted) {
             bindDeferred.complete(Unit)
         }
-        // Sweep stale cache files — same reasoning as bindForeground.
-        runCatching { BrowserCacheSweeper.sweep(webView.context.applicationContext) }
         return true
     }
 

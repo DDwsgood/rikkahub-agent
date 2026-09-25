@@ -113,8 +113,9 @@ fun keyboardTypeTool(client: KeyboardApiClient): Tool = Tool(
         "after typing, as one atomic action - prefer this over a separate keyboard_press_key " +
         "call, which can race the app and garble input (especially in terminals). Fails if " +
         "no field is focused or the field is a password field. In terminal-like apps " +
-        "keyboard_read_field returns empty, so take a screenshot first to confirm the prompt " +
-        "is ready before typing. Example: keyboard_type(text=\"whoami\", submit=true).",
+        "keyboard_read_field returns empty, so use read_window_tree / accessibility node " +
+        "text to confirm the prompt is ready before typing. " +
+        "Example: keyboard_type(text=\"whoami\", submit=true).",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -165,7 +166,8 @@ fun keyboardReadFieldTool(client: KeyboardApiClient): Tool = Tool(
         "agent-keyboard IME. Returns the field text and the selected substring (if any). " +
         "Read-only. Note: terminal emulators (e.g. Termux) and some custom views do not " +
         "expose their buffer to the IME, so this can return empty even when text is " +
-        "visible on screen - take a screenshot to read those. Example: keyboard_read_field().",
+        "visible on screen - use read_window_tree / accessibility node text to read those. " +
+        "Example: keyboard_read_field().",
     parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
     execute = {
         when (val text = client.getCurrentText()) {

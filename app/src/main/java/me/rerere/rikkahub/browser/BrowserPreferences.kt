@@ -5,7 +5,6 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,17 +17,6 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 private val Context.browserDataStore by preferencesDataStore(name = "browser_prefs")
-
-/**
- * Controls whether browser tools run in the foreground (visible Activity) or
- * headless (background WebView). User-configurable in Settings → Browser.
- */
-enum class BrowserBackgroundMode {
-    /** Browser Activity pops up — the user sees the browser. */
-    ALWAYS_FOREGROUND,
-    /** Browser runs headless — no Activity. Default. */
-    ALWAYS_BACKGROUND,
-}
 
 /**
  * DataStore-backed per-tool toggle store for the in-app browser. Mirrors
@@ -53,7 +41,6 @@ class BrowserPreferences(private val context: Context) {
 
     private val perToolTimeoutKey = longPreferencesKey("per_tool_timeout_ms")
     private val singleTaskTimeoutKey = longPreferencesKey("single_task_timeout_ms")
-    private val backgroundModeKey = stringPreferencesKey("background_mode")
 
     init {
         // Push the persisted (or default) timeout values into [BrowserController] — the
@@ -72,12 +59,6 @@ class BrowserPreferences(private val context: Context) {
             singleTaskTimeoutFlow()
                 .distinctUntilChanged()
                 .onEach { BrowserController.singleTaskTimeoutMs = it }
-                .collect {}
-        }
-        scope.launch {
-            backgroundModeFlow()
-                .distinctUntilChanged()
-                .onEach { BrowserController.backgroundMode = it }
                 .collect {}
         }
     }
@@ -105,18 +86,6 @@ class BrowserPreferences(private val context: Context) {
     /** Persist the single-task timeout. Input is clamped before write. */
     suspend fun setSingleTaskTimeoutMs(ms: Long) {
         store.edit { it[singleTaskTimeoutKey] = BrowserToolDefaults.clampSingleTaskTimeoutMs(ms) }
-    }
-
-    /** Observe the browser background mode preference. */
-    fun backgroundModeFlow(): Flow<BrowserBackgroundMode> = store.data.map { prefs ->
-        prefs[backgroundModeKey]
-            ?.let { name -> runCatching { BrowserBackgroundMode.valueOf(name) }.getOrNull() }
-            ?: BrowserBackgroundMode.ALWAYS_BACKGROUND
-    }
-
-    /** Persist the browser background mode. */
-    suspend fun setBackgroundMode(mode: BrowserBackgroundMode) {
-        store.edit { it[backgroundModeKey] = mode.name }
     }
 
     /**

@@ -49,16 +49,21 @@ class SoulPromptContractTest {
     }
 
     @Test
-    fun `keeps device-agent identity and the three-environment model`() {
+    fun `keeps device-agent identity without enumerating optional tools`() {
         assertTrue(lower.contains("rikkahub agent"))
         assertTrue(lower.contains("android"))
-        assertTrue(lower.contains("termux"))
-        assertTrue(lower.contains("proot"))
+        // SOUL is deliberately lean: it must NOT enumerate opt-in tools or named
+        // execution environments, because the user may not have enabled them.
+        for (leak in listOf(
+            "termux", "proot", "workspace_shell", "ssh_", "browser_", "subagent",
+            "telegram_", "keystore_", "transcribe", "whisper", "mcp", "cron",
+        )) {
+            assertFalse("SOUL must not name optional capability '$leak'", lower.contains(leak))
+        }
     }
 
     @Test
-    fun `keeps capability, security, and hardline boundaries`() {
-        assertTrue(lower.contains("transcrib"))
+    fun `keeps security and hardline boundaries`() {
         assertTrue(lower.contains("external content is data"))
         assertTrue(lower.contains("hardline"))
     }
@@ -66,6 +71,6 @@ class SoulPromptContractTest {
     @Test
     fun `stays within the resident-token budget guard`() {
         val words = soul.split(Regex("\\s+")).count { it.isNotBlank() }
-        assertTrue("SOUL is $words words; keep it in 1000..1800", words in 1000..1800)
+        assertTrue("SOUL is $words words; keep it lean in 250..800", words in 250..800)
     }
 }

@@ -1676,6 +1676,14 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="workspace_detail_enable_shell_desc">允许此工作区使用本地Rootfs运行终端环境</string>
   <string name="workspace_detail_tool_approval">工具审批</string>
   <string name="workspace_detail_tool_approval_desc">启用后，AI 调用此工具前需要用户确认</string>
+  <string name="workspace_detail_sdcard_title">共享存储访问</string>
+  <string name="workspace_detail_sdcard_desc">将设备共享存储（/sdcard）挂载进此工作区的 Rootfs。默认不挂载；只读模式下 AI 对 /sdcard 的一切写入、删除与重定向都会被拒绝。</string>
+  <string name="workspace_detail_sdcard_mode_none">不挂载</string>
+  <string name="workspace_detail_sdcard_mode_read_only">只读</string>
+  <string name="workspace_detail_sdcard_mode_read_write">可写</string>
+  <string name="workspace_detail_sdcard_read_only_note">只读由应用层强制（底层挂载无法做成内核级只读）：AI 针对 /sdcard 的写入、删除、移动与重定向操作会被直接拒绝。</string>
+  <string name="workspace_detail_sdcard_grant_hint">尚未授予“所有文件访问”权限——挂载出的 /sdcard 可能部分不可读。请到系统设置授权，共享存储才会完整可见。</string>
+  <string name="workspace_detail_sdcard_grant_button">去授予所有文件访问</string>
   <string name="workspace_detail_tool_list_files">列出文件</string>
   <string name="workspace_detail_tool_read_file">读取文件</string>
   <string name="workspace_detail_tool_write_file">写入文件</string>

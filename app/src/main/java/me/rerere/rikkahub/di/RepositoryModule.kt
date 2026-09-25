@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.di
 
 import android.content.Context
+import android.os.Environment
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
@@ -45,6 +46,10 @@ val repositoryModule = module {
 
     single {
         val context: Context = get()
+        @Suppress("DEPRECATION") // Environment.getExternalStorageDirectory() is deprecated but
+        // is the only raw-path API for the shared-storage root; proot binds need a real
+        // filesystem path (not a content URI). ProotShellRunner guards on source.exists().
+        val sdcardDir = Environment.getExternalStorageDirectory()
         WorkspaceManager(
             baseDir = File(context.filesDir, "workspaces"),
             shellRunner = ProotShellRunner(
@@ -65,6 +70,8 @@ val repositoryModule = module {
                     target = "/upload",
                 ),
             ),
+            // per-workspace 的 /sdcard 绑定源; 未挂载模式的 workspace 不追加绑定
+            sdcardDir = sdcardDir,
         )
     }
 

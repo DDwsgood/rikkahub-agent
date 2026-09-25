@@ -12,6 +12,13 @@ class WorkspaceManager(
     private val config: WorkspaceConfig = WorkspaceConfig(),
     private val shellRunner: WorkspaceShellRunner = HostShellRunner(),
     private val bindMounts: List<WorkspaceBindMount> = emptyList(),
+    /**
+     * 宿主侧共享存储根 (通常 /storage/emulated/0)。非 null 时, [executeCommand]/
+     * [startBackground] 可按 workspace 的 sdcard 模式在静态绑定表之上追加
+     * `/sdcard` 绑定。解析 (resolveRootfsPath) 同样用它把 rootfs 内 /sdcard 路径
+     * 映射到宿主真实目录。
+     */
+    private val sdcardDir: File? = null,
 ) {
     private val fileSystem = WorkspaceFileSystem(config)
     private val background = WorkspaceBackgroundProcesses()
@@ -140,9 +147,24 @@ class WorkspaceManager(
      * 可以直接用文件 IO 访问, 无需经过 PRoot; 只是 Rootfs 目录里对应位置是个空挂载点,
      * 按 [WorkspaceStorageArea.LINUX] 解析必然落空。
      */
-    fun resolveRootfsPath(root: String, path: String): RootfsLocation {
+    fun resolveRootfsPath(
+        root: String,
+        path: String,
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+    ): RootfsLocation {
         val trimmed = path.trim().trimEnd('/').ifBlank { "/" }
         require(trimmed.startsWith("/")) { "Rootfs path must be absolute: $path" }
+
+        // /sdcard 只在启用挂载时才是真实绑定; 与 resolveRootfsFile 的调用方约定:
+        // 未挂载时保持既有回退 (linuxDir 下解析), 由调用方给出 "File does not
+        // exist" 类错误 — 不在纯解析函数里抛 "未挂载", 保持函数无副作用。
+        if (sdcardMode != WorkspaceSdcardMode.NONE && WorkspaceSdcard.isWithin(trimmed)) {
+            val sdcard = requireNotNull(sdcardDir) { "sdcardDir is required for sdcard mode $sdcardMode" }
+            return RootfsLocation(
+                rootDir = sdcard,
+                relativePath = trimmed.removePrefix(WorkspaceSdcard.MOUNT_TARGET).trimStart('/'),
+            )
+        }
 
         sortedBindMounts.forEach { mount ->
             val target = mount.target.trimEnd('/')
@@ -167,17 +189,29 @@ class WorkspaceManager(
         return RootfsLocation(linuxDir(root), trimmed.trimStart('/'))
     }
 
-    fun rootfsFileSize(root: String, path: String): Long =
-        resolveRootfsFile(root, path).also { it.requireReadableFile(path) }.length()
+    fun rootfsFileSize(
+        root: String,
+        path: String,
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+    ): Long = resolveRootfsFile(root, path, sdcardMode).also { it.requireReadableFile(path) }.length()
 
-    fun exportRootfsFile(root: String, path: String, outputStream: OutputStream) {
-        val file = resolveRootfsFile(root, path)
+    fun exportRootfsFile(
+        root: String,
+        path: String,
+        outputStream: OutputStream,
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+    ) {
+        val file = resolveRootfsFile(root, path, sdcardMode)
         file.requireReadableFile(path)
         outputStream.use { out -> file.inputStream().use { it.copyTo(out) } }
     }
 
-    private fun resolveRootfsFile(root: String, path: String): File {
-        val location = resolveRootfsPath(root, path)
+    private fun resolveRootfsFile(
+        root: String,
+        path: String,
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+    ): File {
+        val location = resolveRootfsPath(root, path, sdcardMode)
         return fileSystem.resolve(location.rootDir, location.relativePath)
     }
 
@@ -216,6 +250,7 @@ class WorkspaceManager(
         cwd: String = "",
         timeoutMillis: Long = DEFAULT_COMMAND_TIMEOUT_MS,
         stdin: ByteArray? = null,
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
     ): WorkspaceCommandResult {
         require(command.isNotBlank()) { "Command is required" }
         val workingDir = resolveCommandWorkingDir(root, cwd)
@@ -231,7 +266,7 @@ class WorkspaceManager(
                 workingDir = workingDir,
                 timeoutMillis = timeoutMillis,
                 stdin = stdin,
-                bindMounts = bindMounts,
+                bindMounts = effectiveBindMounts(sdcardMode),
             )
         )
     }
@@ -242,7 +277,12 @@ class WorkspaceManager(
      * [backgroundStatus]/[killBackground]. Throws IllegalStateException if [root] is
      * already at the running-process cap.
      */
-    fun startBackground(root: String, command: String, cwd: String = ""): BackgroundStatus =
+    fun startBackground(
+        root: String,
+        command: String,
+        cwd: String = "",
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+    ): BackgroundStatus =
         synchronized(backgroundLifecycleLock) {
             require(command.isNotBlank()) { "Command is required" }
             val workingDir = resolveCommandWorkingDir(root, cwd)
@@ -257,7 +297,7 @@ class WorkspaceManager(
                     tempDir = tempDir(root),
                     workingDir = workingDir,
                     timeoutMillis = 0L,
-                    bindMounts = bindMounts,
+                    bindMounts = effectiveBindMounts(sdcardMode),
                 )
             )
             background.start(root, process, command, cwd)
@@ -314,6 +354,9 @@ class WorkspaceManager(
                     tempDir = tempDir(root),
                     workingDir = workingDir,
                     timeoutMillis = 0L,
+                    // stdio MCP 进程刻意不透传 /sdcard 绑定 (保持 NONE): MCP server
+                    // 的文件面应由其自身协议约束, 工作区 sdcard 模式只作用于 shell 工具
+                    // 与人类终端 (executeCommand/startBackground)。
                     bindMounts = bindMounts,
                 ),
                 args = args,
@@ -353,6 +396,15 @@ class WorkspaceManager(
         require(workingDir.exists()) { "Working directory does not exist: $cwd" }
         require(workingDir.isDirectory) { "Working path is not a directory: $cwd" }
         return workingDir
+    }
+
+    /**
+     * 静态绑定表 + 按模式的 /sdcard 追加绑定。sdcardDir 缺失 (宿主无共享存储,
+     * 或旧注入路径未传) 时追加绑定退化为不追加, 行为与 NONE 一致。
+     */
+    private fun effectiveBindMounts(sdcardMode: WorkspaceSdcardMode): List<WorkspaceBindMount> {
+        val sdcardBind = sdcardDir?.let { WorkspaceSdcard.bindMount(it, sdcardMode) } ?: return bindMounts
+        return bindMounts + sdcardBind
     }
 
     private fun requireValidRoot(root: String) {

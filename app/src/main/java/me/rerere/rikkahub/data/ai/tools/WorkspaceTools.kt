@@ -216,6 +216,10 @@ private fun createShellTool(
     description = buildString {
         append("Run a shell command in the assistant's bound workspace Rootfs. The workspace files area is mounted at /workspace. ")
         append("Use cwd for a path relative to the workspace files root. ")
+        append("Shared device storage may be mounted at /sdcard depending on the workspace's sdcard mode: ")
+        append("when mounted, treat files under /sdcard as the USER'S PERSONAL data (photos, documents) — ")
+        append("never bulk-delete or overwrite public directories such as /sdcard/DCIM, /sdcard/Pictures or /sdcard/Download; ")
+        append("in read-only mode all writes, deletes and redirects into /sdcard are refused. ")
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")
         }
@@ -254,6 +258,12 @@ private fun createShellTool(
     execute = {
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
+        // sdcard 挂载守卫: 只拦指向 /sdcard 挂载区的写/删形状 (READ_ONLY 全拦,
+        // READ_WRITE 拦公共目录级毁灭)。模式在调用时新鲜读取, 与挂载决策一致。
+        // 注意: 即使工具被 "Always Allow", 这里也会拒绝 (proot 绑定内核层可写,
+        // 这层是 READ_ONLY 语义的唯一强制点)。
+        val sdcardMode = workspaceRepository.sdcardMode(workspaceId)
+        WorkspaceSdcardGuard.check(command, sdcardMode)?.let { error(it) }
         val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
             .removePrefix("/workspace/").removePrefix("/workspace")
         val timeoutMillis = params.string("timeout")?.toLongOrNull()
@@ -317,6 +327,9 @@ private fun createRunBackgroundTool(
     execute = {
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
+        // 与 workspace_shell 相同的 sdcard 守卫: 后台进程同样以 app uid 跑在 proot 里
+        val sdcardMode = workspaceRepository.sdcardMode(workspaceId)
+        WorkspaceSdcardGuard.check(command, sdcardMode)?.let { error(it) }
         val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
             .removePrefix("/workspace/").removePrefix("/workspace")
         val status = workspaceRepository.startBackground(workspaceId, command, cwd)
@@ -466,6 +479,9 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
     text: String,
     overwrite: Boolean,
 ): WorkspaceFileEntry {
+    // 文件 API 层的 sdcard RO 门禁: 写入经由 rootfs shell 的 `cat >` 执行, proot
+    // 绑定内核层可写, 所以 READ_ONLY 的强制点必须在实际落盘之前
+    requireRootfsWritable(workspaceId, path)
     val pathArg = path.shellQuote()
     val result = runRootfsCommand(
         workspaceId = workspaceId,

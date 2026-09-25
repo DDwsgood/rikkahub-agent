@@ -69,6 +69,7 @@ import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share08
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
 import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolApproval
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import androidx.compose.ui.res.stringResource
@@ -83,6 +84,7 @@ import me.rerere.rikkahub.utils.plus
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
 import me.rerere.workspace.WorkspaceFileEntry
+import me.rerere.workspace.WorkspaceSdcardMode
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import org.koin.androidx.compose.koinViewModel
@@ -190,6 +192,7 @@ fun WorkspaceDetailPage(id: String) {
                     installProgress = installProgress,
                     onInstallRootfs = { showInstallDialog = true },
                     onToolApprovalChange = vm::setToolApproval,
+                    onSdcardModeChange = vm::setSdcardMode,
                 )
 
                 1 -> WorkspaceFilesPage(
@@ -313,6 +316,7 @@ private fun WorkspaceBasicPage(
     installProgress: RootfsInstallProgress?,
     onInstallRootfs: () -> Unit,
     onToolApprovalChange: (String, Boolean) -> Unit,
+    onSdcardModeChange: (WorkspaceSdcardMode) -> Unit,
 ) {
     val shellStatus = workspace?.shellStatus
     val installing = installProgress != null || shellStatus == WorkspaceShellStatus.INSTALLING.name
@@ -395,6 +399,13 @@ private fun WorkspaceBasicPage(
                 onToolApprovalChange = onToolApprovalChange,
             )
         }
+
+        item {
+            WorkspaceSdcardCard(
+                workspace = workspace,
+                onModeChange = onSdcardModeChange,
+            )
+        }
     }
 }
 
@@ -470,6 +481,95 @@ private fun workspaceToolApprovalItems() = listOf(
     "workspace_background_status" to stringResource(R.string.workspace_detail_tool_background_status),
     "workspace_background_kill" to stringResource(R.string.workspace_detail_tool_background_kill),
 )
+
+/**
+ * 共享存储 (sdcard) 挂载模式三档选择。
+ *
+ * 挂载实现是 proot 的路径绑定 (无内核级只读): READ_ONLY 的只读语义由工具层
+ * (文件 API 门禁 + WorkspaceSdcardGuard 命令分类器) 强制; READ_WRITE 需要系统
+ * 的 "所有文件访问" 授权 (MANAGE_EXTERNAL_STORAGE 已在 manifest 声明), 未
+ * 授权时显示引导按钮跳转系统设置页, 复用 PermissionHelper 现有入口。
+ */
+@Composable
+private fun WorkspaceSdcardCard(
+    workspace: WorkspaceEntity?,
+    onModeChange: (WorkspaceSdcardMode) -> Unit,
+) {
+    val context = LocalContext.current
+    val selectedMode = workspace?.sdcardModeEnum() ?: WorkspaceSdcardMode.NONE
+    val needsAllFilesGrant =
+        selectedMode != WorkspaceSdcardMode.NONE && !PermissionHelper.hasAllFilesAccess(context)
+    val options = listOf(
+        WorkspaceSdcardMode.NONE to stringResource(R.string.workspace_detail_sdcard_mode_none),
+        WorkspaceSdcardMode.READ_ONLY to stringResource(R.string.workspace_detail_sdcard_mode_read_only),
+        WorkspaceSdcardMode.READ_WRITE to stringResource(R.string.workspace_detail_sdcard_mode_read_write),
+    )
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CustomColors.cardColorsOnSurfaceContainer,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = stringResource(R.string.workspace_detail_sdcard_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.workspace_detail_sdcard_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                options.forEachIndexed { index, (mode, label) ->
+                    SegmentedButton(
+                        selected = selectedMode == mode,
+                        onClick = { onModeChange(mode) },
+                        shape = SegmentedButtonDefaults.itemShape(index, options.size),
+                        enabled = workspace != null,
+                    ) {
+                        Text(label)
+                    }
+                }
+            }
+
+            when (selectedMode) {
+                WorkspaceSdcardMode.READ_ONLY -> Text(
+                    text = stringResource(R.string.workspace_detail_sdcard_read_only_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                WorkspaceSdcardMode.READ_WRITE -> if (needsAllFilesGrant) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = stringResource(R.string.workspace_detail_sdcard_grant_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Button(
+                            onClick = {
+                                runCatching { context.startActivity(PermissionHelper.allFilesAccessIntent(context)) }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.workspace_detail_sdcard_grant_button))
+                        }
+                    }
+                }
+
+                WorkspaceSdcardMode.NONE -> Unit
+            }
+        }
+    }
+}
 
 @Composable
 private fun WorkspaceInfoRow(

@@ -6,6 +6,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.Workspace
+import me.rerere.workspace.WorkspaceSdcardMode
 import me.rerere.workspace.WorkspaceShellStatus
 
 @Entity(
@@ -33,10 +34,16 @@ data class WorkspaceEntity(
     // 工具审批的用户覆盖项 (toolName -> needsApproval)，未覆盖的工具沿用默认值
     @ColumnInfo("tool_approvals", defaultValue = "{}")
     val toolApprovals: String = "{}",
+    // 共享存储挂载模式 (WorkspaceSdcardMode.name): NONE 不挂载 / READ_ONLY 只读
+    // (由应用层 guard 强制, proot 无内核级只读) / READ_WRITE 可写。默认 NONE。
+    @ColumnInfo("sdcard_mode", defaultValue = "NONE")
+    val sdcardMode: String = WorkspaceSdcardMode.NONE.name,
 ) {
     fun toolApprovalOverrides(): Map<String, Boolean> = runCatching {
         JsonInstant.decodeFromString<Map<String, Boolean>>(toolApprovals)
     }.getOrDefault(emptyMap())
+
+    fun sdcardModeEnum(): WorkspaceSdcardMode = WorkspaceSdcardMode.fromName(sdcardMode)
 
     fun toWorkspace(): Workspace = Workspace(
         id = id,

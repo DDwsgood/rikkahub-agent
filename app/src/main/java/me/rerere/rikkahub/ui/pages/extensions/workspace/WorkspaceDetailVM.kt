@@ -17,6 +17,7 @@ import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceCommandResult
+import me.rerere.workspace.WorkspaceSdcardMode
 import me.rerere.workspace.WorkspaceStorageArea
 
 class WorkspaceDetailVM(
@@ -172,6 +173,15 @@ class WorkspaceDetailVM(
         viewModelScope.launch {
             val workspace = state.value.workspace ?: return@launch
             repository.setToolApproval(workspace.id, toolName, needsApproval)
+            loadWorkspace()
+        }
+    }
+
+    /** 切换共享存储挂载模式; 持久化到 per-workspace 配置并立即生效于下一次 shell/文件操作 */
+    fun setSdcardMode(mode: WorkspaceSdcardMode) {
+        viewModelScope.launch {
+            val workspace = state.value.workspace ?: return@launch
+            repository.setSdcardMode(workspace.id, mode)
             loadWorkspace()
         }
     }

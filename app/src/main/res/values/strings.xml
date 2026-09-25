@@ -1785,6 +1785,14 @@
   <string name="workspace_detail_enable_shell_desc">Allow this workspace to run a terminal environment using local Rootfs</string>
   <string name="workspace_detail_tool_approval">Tool Approval</string>
   <string name="workspace_detail_tool_approval_desc">When enabled, user confirmation is required before AI calls this tool</string>
+  <string name="workspace_detail_sdcard_title">Shared Storage Access</string>
+  <string name="workspace_detail_sdcard_desc">Mount the device\'s shared storage (/sdcard) into this workspace\'s Rootfs. Off by default; read-only blocks all agent writes, deletions and redirects under /sdcard.</string>
+  <string name="workspace_detail_sdcard_mode_none">Off</string>
+  <string name="workspace_detail_sdcard_mode_read_only">Read-only</string>
+  <string name="workspace_detail_sdcard_mode_read_write">Read-write</string>
+  <string name="workspace_detail_sdcard_read_only_note">Read-only is enforced by the app (the underlying mount cannot be made read-only by the kernel): AI write, delete, move and redirect operations targeting /sdcard are refused.</string>
+  <string name="workspace_detail_sdcard_grant_hint">\"All files access\" is not granted — the mounted /sdcard may be partially unreadable. Grant it in system settings to make shared storage fully visible.</string>
+  <string name="workspace_detail_sdcard_grant_button">Grant All Files Access</string>
   <string name="workspace_detail_tool_list_files">List Files</string>
   <string name="workspace_detail_tool_read_file">Read File</string>
   <string name="workspace_detail_tool_write_file">Write File</string>

@@ -19,6 +19,8 @@ import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
+import me.rerere.workspace.WorkspaceSdcard
+import me.rerere.workspace.WorkspaceSdcardMode
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import java.io.ByteArrayOutputStream
@@ -112,6 +114,42 @@ class WorkspaceRepository(
             )
         )
         return true
+    }
+
+    /** 设置工作区的共享存储挂载模式 (NONE / READ_ONLY / READ_WRITE)。 */
+    suspend fun setSdcardMode(id: String, mode: WorkspaceSdcardMode): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        if (workspace.sdcardModeEnum() == mode) return true
+        dao.upsert(
+            workspace.copy(
+                sdcardMode = mode.name,
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+        return true
+    }
+
+    /** 当前工作区的共享存储挂载模式 (workspace 不存在时按 NONE 处理)。 */
+    suspend fun sdcardMode(id: String): WorkspaceSdcardMode =
+        dao.getById(id)?.sdcardModeEnum() ?: WorkspaceSdcardMode.NONE
+
+    /**
+     * 文件 API 层的 sdcard 写入门禁: READ_ONLY 模式下, 指向 /sdcard 挂载区的写入
+     * (write/edit 经由 rootfs shell 的 cat >) 一律拒绝 — proot 绑定在内核层是可写的,
+     * 这里是文件 API 的唯一强制点。
+     */
+    suspend fun requireRootfsWritable(id: String, path: String) {
+        val workspace = dao.getById(id) ?: return
+        val mode = workspace.sdcardModeEnum()
+        if (mode != WorkspaceSdcardMode.READ_ONLY) return
+        val trimmed = path.trim().trimEnd('/').ifBlank { "/" }
+        if (WorkspaceSdcard.isWithin(trimmed)) {
+            error(
+                "Cannot write to $path: the workspace's shared-storage (/sdcard) mount is " +
+                    "read-only. Ask the user to switch the workspace sdcard mode to " +
+                    "read-write in workspace settings if this write is intended."
+            )
+        }
     }
 
     suspend fun installRootfs(
@@ -244,7 +282,7 @@ class WorkspaceRepository(
     ): Long = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         manager.ensureWorkspace(workspace.root)
-        manager.rootfsFileSize(workspace.root, path)
+        manager.rootfsFileSize(workspace.root, path, workspace.sdcardModeEnum())
     }
 
     /** 按 Rootfs 内绝对路径导出文件内容, 支持 /workspace、bind mount 与 Rootfs 内部路径 */
@@ -255,7 +293,7 @@ class WorkspaceRepository(
     ) = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         manager.ensureWorkspace(workspace.root)
-        manager.exportRootfsFile(workspace.root, path, outputStream)
+        manager.exportRootfsFile(workspace.root, path, outputStream, workspace.sdcardModeEnum())
     }
 
     suspend fun deleteFile(
@@ -290,10 +328,14 @@ class WorkspaceRepository(
         stdin: ByteArray? = null,
     ): WorkspaceCommandResult {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        // 挂载模式随命令生效: READ_ONLY/READ_WRITE 时在绑定表上追加 /sdcard; 这里是
+        // 人类终端与 shell 工具的共用入口, 守卫拦截发生在工具层 (WorkspaceSdcardGuard),
+        // 人类终端刻意不走守卫 (HardlineCommandGuard 同一原则: 用户自己执行的命令不拦)
+        val sdcardMode = workspace.sdcardModeEnum()
         // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor 并杀掉进程
         return runInterruptible(Dispatchers.IO) {
             manager.ensureWorkspace(workspace.root)
-            manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin)
+            manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin, sdcardMode)
         }
     }
 
@@ -308,9 +350,10 @@ class WorkspaceRepository(
         // turn 预算到期)绝不能打断启动或丢弃刚拿到的 id, 否则进程已经起来(端口已绑定/名额
         // 已占用), 但调用方永远拿不到 id 去查询或杀掉它。NonCancellable 让启动+注册这一步
         // 不可被取消、结果不会被丢弃；Dispatchers.IO 仍然只是把阻塞的进程启动挪到后台线程。
+        val sdcardMode = workspace.sdcardModeEnum()
         return withContext(NonCancellable + Dispatchers.IO) {
             manager.ensureWorkspace(workspace.root)
-            manager.startBackground(workspace.root, command, cwd)
+            manager.startBackground(workspace.root, command, cwd, sdcardMode)
         }
     }
 

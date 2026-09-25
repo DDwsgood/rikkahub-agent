@@ -61,7 +61,7 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         WorkspaceEntity::class,
         FolderEntity::class,
     ],
-    version = 29,
+    version = 30,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -101,6 +101,10 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         // (Migration_28_29, registered in DataSourceModule) because a plain AutoMigration only
         // creates indices and cannot heal an upstream-v28 backup whose scheduled_jobs table is
         // missing the schedulePrecision column. 28.json stays the fork's original schema.
+        // v30: pure column addition — workspaces.sdcard_mode (shared-storage mount mode,
+        // default 'NONE'). defaultValue is declared on the entity, so a plain AutoMigration
+        // suffices; no hand-written migration is needed.
+        AutoMigration(from = 29, to = 30),
     ]
 )
 @TypeConverters(TokenUsageConverter::class)

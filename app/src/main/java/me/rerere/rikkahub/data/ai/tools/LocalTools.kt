@@ -204,7 +204,6 @@ sealed class LocalToolOption {
     @Serializable @SerialName("external_storage")     data object ExternalStorage     : LocalToolOption()
     @Serializable @SerialName("archive")              data object Archive             : LocalToolOption()
     @Serializable @SerialName("keyboard_control")     data object KeyboardControl     : LocalToolOption()
-    @Serializable @SerialName("adb")                  data object Adb                 : LocalToolOption()
 }
 
 /**
@@ -1063,13 +1062,6 @@ class LocalTools(
             tools.add(keyboardSetCursorTool(keyboardApiClient))
             tools.add(keyboardSelectRangeTool(keyboardApiClient))
         }
-        if (options.contains(LocalToolOption.Adb)) {
-            // adb over TCP/IP via the embedded Termux android-tools package. adb_shell
-            // auto-connects to this device's wireless debugging (127.0.0.1) once paired;
-            // adb_pair performs the one-time pairing ceremony.
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.adbShellTool(context, embeddedTermuxRunner))
-            tools.add(me.rerere.rikkahub.data.ai.tools.local.adbPairTool(context, embeddedTermuxRunner))
-        }
         // Register all tools to ToolRegistry so search_tools can discover them by keyword
         // or category. The schema lambda is invoked eagerly here (wrapped in runCatching so
         // a factory that throws doesn't abort the whole registration pass).
@@ -1108,7 +1100,7 @@ class LocalTools(
  * Order matters: prefix checks run first, then exact-name sets.
  */
 internal fun categorizeTool(name: String): String = when {
-    name.startsWith("termux_") || name.startsWith("ssh_") || name.startsWith("adb_") -> "shell"
+    name.startsWith("termux_") || name.startsWith("ssh_") -> "shell"
     name.startsWith("telegram_") -> "telegram"
     name.startsWith("browser_") -> "browser"
     name.startsWith("workflow_") -> "workflow"

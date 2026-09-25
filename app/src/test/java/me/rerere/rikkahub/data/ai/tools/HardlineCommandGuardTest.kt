@@ -453,6 +453,45 @@ class HardlineCommandGuardTest {
     }
 
     // -----------------------------------------------------------------------
+    // workspace_shell / workspace_run_background: the proot rootfs is disposable,
+    // but bind mounts (/workspace, /skills, /tool_outputs, /upload) are real app
+    // dirs — the shell floor must still apply to the command string.
+    // -----------------------------------------------------------------------
+
+    @Test fun `workspace shell rm -rf root is blocked`() {
+        for (tool in listOf("workspace_shell", "workspace_run_background")) {
+            val reason = HardlineCommandGuard.checkTool(tool, """{"command":"rm -rf /"}""")
+            assertNotNull("$tool rm -rf / must be blocked (bind mounts hold real data)", reason)
+        }
+    }
+
+    @Test fun `workspace shell blocked shapes are enforced`() {
+        val reason = HardlineCommandGuard.checkTool(
+            "workspace_shell",
+            """{"command":"mkfs.ext4 /dev/sda1"}"""
+        )
+        assertNotNull("workspace_shell mkfs must be blocked", reason)
+        val reason2 = HardlineCommandGuard.checkTool(
+            "workspace_run_background",
+            """{"command":"echo cm0gLXJmIC8= | base64 -d | sh"}"""
+        )
+        assertNotNull("workspace_run_background encoded pipe must be blocked", reason2)
+    }
+
+    @Test fun `workspace shell normal commands pass`() {
+        for (tool in listOf("workspace_shell", "workspace_run_background")) {
+            for (cmd in listOf(
+                "rm -rf /workspace/scratch",          // inside-workspace delete is allowed
+                "rm -rf /tmp/build",                  // disposable paths stay thin
+                "mkdir -p /workspace/app && cd /workspace/app && make",
+            )) {
+                val reason = HardlineCommandGuard.checkTool(tool, """{"command":"$cmd"}""")
+                assertNull("$tool '$cmd' should pass", reason)
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 

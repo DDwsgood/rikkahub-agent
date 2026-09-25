@@ -146,8 +146,8 @@ object HardlineCommandGuard {
     /**
      * Extract the remote command from each `adb … shell …` invocation and run it through
      * [checkCommand]. `adb shell reboot` hides `reboot` behind two argv words, so the raw
-     * text never puts it at command position — the same gap the adb_shell tool's `command`
-     * arg closes by construction, reopened by termux/ssh strings that invoke `adb` inline.
+     * text never puts it at command position — a gap reopened by termux/ssh strings that
+     * invoke `adb` inline.
      *
      * Handles all three quoting forms the remote shell accepts: `adb shell reboot`,
      * `adb shell 'reboot'` and `adb shell "shutdown -h now"`. A missing remote command
@@ -168,7 +168,7 @@ object HardlineCommandGuard {
 
     /**
      * [checkCommand] plus the [checkAdbShellPayloads] re-check. Used for every tool arg
-     * whose text is evaluated by a shell (termux command/argv, ssh_exec, adb_shell), so a
+     * whose text is evaluated by a shell (termux command/argv, ssh_exec), so a
      * nested `adb shell <blocked>` can't slip through any of them.
      */
     private fun checkShellCommand(command: String?): String? {
@@ -266,12 +266,6 @@ object HardlineCommandGuard {
             }
             toolName == "ssh_exec" || toolName == "ssh_exec_saved" ->
                 checkShellCommand(input["command"]?.jsonPrimitive?.contentOrNull)
-            // adb_shell: the `command` arg is evaluated by the target device's shell as
-            // uid 2000 — a strictly higher privilege than the app sandbox (pm uninstall,
-            // settings put, input injection), so the same deny floor applies. adb_pair's
-            // args are validated host/port/code fields, no shell content.
-            toolName == "adb_shell" ->
-                checkShellCommand(input["command"]?.jsonPrimitive?.contentOrNull)
             // Sub-agent dispatch — the spawned LLM gets the parent's full tool surface
             // headlessly, so a `task` / `prompt` containing a literal hardline-blocked
             // command (e.g. `rm -rf /`) shouldn't be authorised even if the parent
@@ -296,6 +290,15 @@ object HardlineCommandGuard {
                 val matched = JS_HARDLINE_PATTERNS.firstOrNull { (rx, _) -> rx.containsMatchIn(code) }
                 matched?.second
             }
+            // workspace_shell / workspace_run_background: the command is evaluated by the
+            // proot workspace shell. The proot rootfs itself is disposable, but it
+            // bind-mounts real directories (/workspace, /skills, /tool_outputs,
+            // /upload), so `rm -rf /` would walk into the bind mounts and destroy real
+            // data — the same floor applies. Deliberately thin: inside-workspace file
+            // ops are the agent's own sandbox and stay unfiltered here; a path-aware
+            // layer (e.g. sdcard/boundary rules) belongs in a separate guard.
+            toolName == "workspace_shell" || toolName == "workspace_run_background" ->
+                checkShellCommand(input["command"]?.jsonPrimitive?.contentOrNull)
             // eval_javascript: no shell to match. JS-side hardline patterns are out of
             // scope because QuickJS in this repo has no DOM / Node / fetch — realistic
             // blast radius is bounded to local CPU. Add JS rules here when the surface

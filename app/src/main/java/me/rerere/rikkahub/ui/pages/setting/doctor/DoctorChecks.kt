@@ -124,7 +124,6 @@ private fun LocalToolOption.shortName(): String = when (this) {
     LocalToolOption.Nfc -> "NFC"
     LocalToolOption.ExternalStorage -> "External storage"
     LocalToolOption.Archive -> "Archive (zip)"
-    LocalToolOption.Adb -> "ADB"
     else -> this::class.simpleName ?: "?"
 }
 
@@ -177,7 +176,6 @@ class DoctorChecks(
             addAll(databaseChecks(enabled))
             addAll(networkChecks())
             addAll(termuxChecks(enabled))
-            addAll(adbChecks(enabled))
             addAll(browserChecks(enabled))
             addAll(maintenanceChecks())
             addAll(diagnosticsChecks(enabled))
@@ -1145,74 +1143,6 @@ class DoctorChecks(
                     detail = if (runCommandPerm) "Granted — RikkaHub can dispatch shell commands to Termux."
                     else "Not granted. Re-toggle the Termux row in Local Tools to see the post-grant dialog.",
                     severity = if (runCommandPerm) Severity.OK else Severity.WARN,
-                )
-            )
-        }
-    }
-
-    // ----- ADB (wireless debugging via embedded Termux) ----------------------------------
-
-    /**
-     * adb status rows, emitted only when an assistant enabled [LocalToolOption.Adb]:
-     *  - `adb.android_tools` — is the adb client installed in the embedded Termux prefix.
-     *  - `adb.connection` — live `adb devices` snapshot: authorised device count and
-     *    whether this device itself (127.0.0.1) is currently connected.
-     */
-    private suspend fun adbChecks(enabled: Set<LocalToolOption>): List<DoctorCheck> = buildList {
-        if (LocalToolOption.Adb !in enabled) return@buildList
-
-        val env = me.rerere.rikkahub.data.termux.TermuxEnvironment(context)
-        val adbInstalled = runCatching { File(env.prefix, "bin/adb").canExecute() }
-            .getOrDefault(false)
-        add(
-            DoctorCheck(
-                id = "adb.android_tools",
-                category = DoctorCategory.Termux,
-                label = "android-tools (adb)",
-                detail = if (adbInstalled)
-                    "adb client is installed in the embedded Termux."
-                else
-                    "Not installed. adb_shell auto-installs it on first use (needs network), " +
-                        "or run `pkg install android-tools` in the embedded Termux.",
-                severity = if (adbInstalled) Severity.OK else Severity.WARN,
-            )
-        )
-
-        if (adbInstalled) {
-            val runner = me.rerere.rikkahub.data.ai.tools.local.EmbeddedRunnerHolder.get()
-            val devices = runner?.let { r ->
-                runCatching {
-                    withTimeoutOrNull(15_000L) {
-                        me.rerere.rikkahub.data.ai.tools.local.parseAdbDevices(
-                            r.runCommand("adb devices", timeoutMs = 15_000L, wrapApt = false).stdout
-                        )
-                    }
-                }.getOrNull()
-            }
-            val authorized = devices?.filter { it.authorized }.orEmpty()
-            val localAuthorized = authorized.any { it.isLocal }
-            add(
-                DoctorCheck(
-                    id = "adb.connection",
-                    category = DoctorCategory.Termux,
-                    label = "ADB connection",
-                    detail = when {
-                        devices == null ->
-                            "Could not read `adb devices` (runner busy or timed out)."
-                        authorized.isEmpty() ->
-                            "No authorised devices. For local shell access: Developer options -> " +
-                                "Wireless debugging -> pair once via the adb_pair tool."
-                        else ->
-                            "${authorized.size} authorised device(s): " +
-                                authorized.joinToString(", ") { it.serial } + "." +
-                                (if (localAuthorized) " This device (127.0.0.1) is connected."
-                                 else " This device (127.0.0.1) is not connected.")
-                    },
-                    severity = when {
-                        devices == null -> Severity.INFO
-                        authorized.isEmpty() -> Severity.WARN
-                        else -> Severity.OK
-                    },
                 )
             )
         }

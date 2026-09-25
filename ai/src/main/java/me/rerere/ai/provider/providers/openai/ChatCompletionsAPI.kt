@@ -8,6 +8,7 @@ import kotlinx.coroutines.channels.onFailure
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -27,6 +28,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
@@ -198,24 +200,30 @@ class ChatCompletionsAPI(
                             val id = it["id"]?.jsonPrimitive?.contentOrNull ?: ""
                             val model = it["model"]?.jsonPrimitive?.contentOrNull ?: ""
 
-                            val choices = it["choices"]?.jsonArray ?: JsonArray(emptyList())
+                            // Some OpenAI-compatible backends serialise choices/delta/tool_calls
+                            // as an explicit JSON null. Use the OrNull accessors so a null
+                            // container degrades to an empty chunk instead of throwing inside
+                            // this SSE callback and skipping the whole line.
+                            val choices = it["choices"]?.jsonArrayOrNull ?: JsonArray(emptyList())
                             val choiceList = buildList {
-                                if (choices.isNotEmpty()) {
-                                    val choice = choices[0].jsonObject
+                                val choice = choices.firstOrNull()?.jsonObjectOrNull
+                                if (choice != null) {
                                     val message =
-                                        choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
-                                        ?: throw Exception("delta/message is null")
-                                    val finishReason =
-                                        choice["finish_reason"]?.jsonPrimitive?.contentOrNull
-                                            ?: "unknown"
-                                    add(
-                                        UIMessageChoice(
-                                            index = 0,
-                                            delta = parseMessage(message),
-                                            message = null,
-                                            finishReason = finishReason,
+                                        choice["delta"]?.jsonObjectOrNull
+                                            ?: choice["message"]?.jsonObjectOrNull
+                                    if (message != null) {
+                                        val finishReason =
+                                            choice["finish_reason"]?.jsonPrimitive?.contentOrNull
+                                                ?: "unknown"
+                                        add(
+                                            UIMessageChoice(
+                                                index = 0,
+                                                delta = parseMessage(message),
+                                                message = null,
+                                                finishReason = finishReason,
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                             }
                             val usage = parseTokenUsage(it["usage"] as? JsonObject)
@@ -268,7 +276,7 @@ class ChatCompletionsAPI(
             eventSource.cancel()
         }
         // trySend 在缓冲满时会静默丢弃 delta，导致回复中间缺字 (#1295)，因此缓冲必须无界
-    }.buffer(Channel.UNLIMITED)
+    }.buffer(Channel.UNLIMITED).flowOn(Dispatchers.IO)
 
 
     private fun buildChatCompletionRequest(
@@ -485,6 +493,7 @@ class ChatCompletionsAPI(
                                     "parameters",
                                     json.encodeToJsonElement(
                                         tool.parameters()
+                                            ?: InputSchema.Obj(properties = JsonObject(emptyMap()))
                                     )
                                 )
                             })
@@ -932,7 +941,7 @@ class ChatCompletionsAPI(
             ?: jsonObject["content"]?.takeIf { it is JsonArray }?.let { arr ->
                 // Mistral接口
                 // {"id":"","object":"chat.completion.chunk","created":1772351733,"model":"magistral-medium-2509","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"好的"}]}]},"finish_reason":null}]}
-                arr.jsonArrayOrNull?.getOrNull(0)?.jsonObject?.get("thinking")?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull?.get(
+                arr.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull?.get("thinking")?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull?.get(
                     "text"
                 )?.jsonPrimitiveOrNull?.contentOrNull
             }

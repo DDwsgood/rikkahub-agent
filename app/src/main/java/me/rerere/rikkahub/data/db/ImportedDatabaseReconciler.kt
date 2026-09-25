@@ -47,12 +47,12 @@ object ImportedDatabaseReconciler {
     private const val DB_NAME = "rikka_hub"
 
     /**
-     * Room's schema version and identity hash for [AppDatabase]. Both are copied verbatim
-     * from app/schemas/me.rerere.rikkahub.data.db.AppDatabase/28.json (the identity hash also
-     * appears in the generated AppDatabase_Impl RoomOpenDelegate). When the schema version is
-     * bumped, update BOTH constants (and the table DDL below if the fork-only tables changed,
-     * and MODERN_COLUMN_SENTINELS if newer conversation columns were added) or this
-     * reconciliation will silently stop matching.
+     * Baseline Room version/identity the reconciler normalizes a restored file TO. This is
+     * deliberately the fork's v28 (from app/schemas/.../28.json), not the current v29: after
+     * a restored file has every fork-only table and the v28 precision column, it is stamped
+     * v28 and the normal Room migration path runs 28→29 (indices, and the precision column
+     * heal for upstream-v28 files that reach this far). Update these constants only if the
+     * v28 baseline itself changes; current-version backups are simply left untouched.
      */
     private const val EXPECTED_VERSION = 28
     private const val EXPECTED_IDENTITY_HASH = "f16c87ce1946b4661c2090b38ed74fb8"
@@ -139,11 +139,13 @@ object ImportedDatabaseReconciler {
                 try {
                     FORK_ONLY_DDL.forEach(db::execSQL)
 
-                    if (version == EXPECTED_VERSION || alreadyCurrent) {
-                        // No migration should run: the file is either already stamped at the
-                        // fork's version, or it is an upstream file whose shared schema already
-                        // matches it. Point Room's identity row and user_version at the fork so
-                        // the integrity check passes now that every fork-only table is present.
+                    if (alreadyCurrent && version <= EXPECTED_VERSION) {
+                        // No migration should run only when the shared schema AND the fork-only
+                        // scheduled_jobs precision column already match. An upstream v28 file
+                        // with indices but no schedulePrecision must NOT be stamped here — it
+                        // goes through Migration_28_29 so the column is added.
+                        // Point Room's identity row and user_version at the fork so the
+                        // integrity check passes now that every fork-only table is present.
                         db.execSQL(
                             "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY, identity_hash TEXT)"
                         )

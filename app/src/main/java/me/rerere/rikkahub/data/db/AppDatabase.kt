@@ -90,21 +90,17 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         // table) plus a folder_id column on ConversationEntity (defaultValue ""). Both are pure
         // additions; upstream numbered it as their v24, folded into the fork's version space here.
         AutoMigration(from = 26, to = 27),
-        // v28: two independent pure-addition changes, both handled by one AutoMigration:
-        // (a) scheduled jobs can opt into AlarmManager exact delivery via a new column;
-        //     existing jobs stay on the battery-friendly WorkManager backend through the column
-        //     default.
-        // (b) indices only: conversation listing, assistant memory lookup, the enabled-job scan
-        //     and per-job run history were all full table scans. Room generates the CREATE INDEX
-        //     statements itself.
+        // v28: pure column addition — scheduled jobs can opt into AlarmManager exact delivery
+        // via schedulePrecision; existing jobs stay on the battery-friendly WorkManager backend
+        // through the column default. No indices were added in this step.
         AutoMigration(from = 27, to = 28),
-        // v29: the fork↔upstream 2.4.5 merge folded the upstream's v28 indices (conversation
+        // v29: the fork↔upstream 2.4.5 merge folded upstream's v28 indices (conversation
         // listing, memory lookup, enabled-job scan, run history) into the fork's own v28
         // (schedulePrecision column). Both sides were already stamped v28 with DIFFERENT
-        // schemas, so the merged build must bump to v29 so Room runs a migration for existing
-        // users: the fork's v28 schema (no indices) → v29 (indices added). 28.json stays the
-        // fork's original schema so the auto-generated diff is exactly the CREATE INDEX set.
-        AutoMigration(from = 28, to = 29),
+        // schemas, so the merged build bumps to v29. The 28→29 transition is hand-written
+        // (Migration_28_29, registered in DataSourceModule) because a plain AutoMigration only
+        // creates indices and cannot heal an upstream-v28 backup whose scheduled_jobs table is
+        // missing the schedulePrecision column. 28.json stays the fork's original schema.
     ]
 )
 @TypeConverters(TokenUsageConverter::class)

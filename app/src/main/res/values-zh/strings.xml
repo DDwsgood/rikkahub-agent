@@ -231,6 +231,7 @@
   <string name="chat_input_placeholder">输入消息与AI聊天</string>
   <string name="chat_input_unsupported_file_type">不支持的文件类型：%s</string>
   <string name="chat_input_file_read_failed">文件读取失败：%s</string>
+  <string name="chat_input_steer_sent">已发送，将在当前回复中生效</string>
   <string name="chat_message_add_favorite">添加收藏</string>
   <string name="chat_message_remove_favorite">取消收藏</string>
   <string name="chat_message_tool_approve">批准</string>
@@ -1288,8 +1289,6 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="assistant_page_local_tools_wifi_desc">读取当前 Wi-Fi 连接（SSID、IP、信号）。读取 SSID 需要位置权限。</string>
   <string name="assistant_page_local_tools_wifi_title">Wi-Fi 信息</string>
   <string name="assistant_page_local_tools_workflows_desc">让助手创建由触发器运行的自动化 — WiFi 连接、定时、地理围栏、通知到达等。</string>
-  <string name="assistant_page_local_tools_adb_title">ADB（无线调试）</string>
-  <string name="assistant_page_local_tools_adb_desc">通过内置 Termux 的 adb 客户端提供 adb_shell / adb_pair。在开发者选项 → 无线调试中配对一次后，助手可通过 127.0.0.1 获得本机 shell（uid 2000）权限，也可连接局域网设备。高权限 —— 每条命令都需审批。</string>
   <string name="assistant_page_local_tools_workflows_hint_message">工作流已启用。某些触发器类型需要开关无法请求的权限：\n\n• 地理围栏（你到达某地）：设置 → 应用 → RikkaHub → 权限 → 位置 → 始终允许。\n• 通知到达：设置 → 应用 → 特殊访问权限 → 通知使用权 → 启用 RikkaHub。\n• 应用启动/关闭：设置 → 无障碍 → 启用 RikkaHub。\n• 蓝牙连接/断开：在系统询问时授予 BLUETOOTH_CONNECT。\n\n定时、WiFi、耳机、电源、屏幕开/关和电池触发器开箱即用。当你创建需要额外设置的工作流时，助手会即时提示。</string>
   <string name="assistant_page_local_tools_workflows_hint_title">工作流需要额外设置</string>
   <string name="assistant_page_local_tools_workflows_title">工作流</string>
@@ -1403,12 +1402,20 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_browser_tool_done_title">浏览器完成</string>
   <string name="setting_browser_tool_eval_js_desc">在页面中执行任意 JS（经 HARDLINE 检查）。</string>
   <string name="setting_browser_tool_eval_js_title">运行 JavaScript</string>
+  <string name="setting_browser_tool_handle_dialog_desc">自动接受或关闭页面 JavaScript 弹窗。</string>
+  <string name="setting_browser_tool_handle_dialog_title">处理弹窗</string>
+  <string name="setting_browser_tool_set_viewport_desc">调整无头浏览器视口大小。</string>
+  <string name="setting_browser_tool_set_viewport_title">设置视口</string>
+  <string name="setting_browser_tool_click_and_read_desc">点击元素并返回页面差异或文本。</string>
+  <string name="setting_browser_tool_click_and_read_title">点击并读取</string>
   <string name="setting_browser_tool_forward_desc">在浏览器历史中前进。</string>
   <string name="setting_browser_tool_forward_title">前进</string>
   <string name="setting_browser_tool_get_dom_desc">从页面提取简化的 HTML。</string>
   <string name="setting_browser_tool_get_dom_title">获取 DOM</string>
   <string name="setting_browser_tool_get_links_desc">列出所有链接的网址和标签。</string>
   <string name="setting_browser_tool_get_links_title">获取链接</string>
+  <string name="setting_browser_tool_get_cookies_desc">读取当前页面的 Cookie。登录态凭据属于敏感信息——完整浏览器自动化更推荐经 Termux/workspace 运行 agent-browser/Playwright 类 CLI。</string>
+  <string name="setting_browser_tool_get_cookies_title">获取 Cookie</string>
   <string name="setting_browser_tool_get_text_desc">从页面提取可读文本。</string>
   <string name="setting_browser_tool_get_text_title">获取文本</string>
   <string name="setting_browser_tool_open_desc">导航到一个网址。</string>

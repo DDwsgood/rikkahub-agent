@@ -231,6 +231,7 @@
   <string name="chat_input_placeholder">Chat with AI</string>
   <string name="chat_input_unsupported_file_type">Unsupported file type: %s</string>
   <string name="chat_input_file_read_failed">Failed to read file: %s</string>
+  <string name="chat_input_steer_sent">Sent into the running reply</string>
   <string name="chat_message_add_favorite">Add Favorite</string>
   <string name="chat_message_remove_favorite">Remove Favorite</string>
   <string name="chat_message_tool_approve">Approve</string>
@@ -1528,8 +1529,6 @@
   <string name="assistant_page_local_tools_keyboard_setup_message">Keyboard control needs the companion agent-keyboard app installed AND set as the active keyboard. Install it, then go to Settings &gt; System &gt; Languages &amp; input &gt; On-screen keyboard and switch to agent-keyboard. Without both, every keyboard tool will return an error.</string>
   <string name="assistant_page_local_tools_keyboard_status_not_installed">agent-keyboard app not installed</string>
   <string name="assistant_page_local_tools_keyboard_status_installed">agent-keyboard installed - set it as the active keyboard to use these tools</string>
-  <string name="assistant_page_local_tools_adb_title">ADB (wireless debugging)</string>
-  <string name="assistant_page_local_tools_adb_desc">adb_shell / adb_pair via the embedded Termux adb client. Pair once in Developer options → Wireless debugging to give the agent shell (uid 2000) access to this device via 127.0.0.1, or to LAN devices. High privilege — every command requires approval.</string>
   <string name="setting_browser_title">Browser</string>
   <string name="setting_browser_section_browser">Browser</string>
   <string name="setting_browser_open">Open browser</string>
@@ -1556,6 +1555,8 @@
   <string name="setting_browser_tool_get_dom_desc">Extract simplified HTML from the page.</string>
   <string name="setting_browser_tool_get_links_title">Get links</string>
   <string name="setting_browser_tool_get_links_desc">List all link URLs and labels.</string>
+  <string name="setting_browser_tool_get_cookies_title">Get cookies</string>
+  <string name="setting_browser_tool_get_cookies_desc">Read cookies for the current page. Login-state credentials are sensitive — prefer agent-browser/Playwright-style CLI automation for full browser tasks.</string>
   <string name="setting_browser_tool_back_title">Back</string>
   <string name="setting_browser_tool_back_desc">Navigate back in browser history.</string>
   <string name="setting_browser_tool_forward_title">Forward</string>
@@ -1576,6 +1577,12 @@
   <string name="setting_browser_tool_press_key_desc">Synthesize a keyboard event.</string>
   <string name="setting_browser_tool_eval_js_title">Run JavaScript</string>
   <string name="setting_browser_tool_eval_js_desc">Execute arbitrary JS in the page (HARDLINE-checked).</string>
+  <string name="setting_browser_tool_handle_dialog_title">Handle dialogs</string>
+  <string name="setting_browser_tool_handle_dialog_desc">Auto-accept or auto-dismiss JavaScript dialogs.</string>
+  <string name="setting_browser_tool_set_viewport_title">Set viewport</string>
+  <string name="setting_browser_tool_set_viewport_desc">Resize the headless browser viewport.</string>
+  <string name="setting_browser_tool_click_and_read_title">Click and read</string>
+  <string name="setting_browser_tool_click_and_read_desc">Click an element and read back the page diff or text.</string>
   <string name="setting_browser_tool_done_title">Browser-done</string>
   <string name="setting_browser_tool_done_desc">Let the AI signal it has finished a task.</string>
   <string name="setting_browser_section_defaults">Defaults &amp; limits</string>

@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="org.rikkahub.calendarprobe">
+  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.INSERT" />
+      <data android:mimeType="vnd.android.cursor.dir/event" />
+    </intent>
+  </queries>
+  <application android:label="Calendar Reminder Probe" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+    <activity android:name=".ProbeActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

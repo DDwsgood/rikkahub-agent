@@ -1,176 +1,31 @@
-name: Build APK with embedded Termux
+name: Calendar reminder probe
 
 on:
   workflow_dispatch:
     inputs:
       bootstrap_run_id:
-        description: Successful Build Termux bootstraps workflow run ID
-        required: true
+        description: Not used by the probe build on this test branch
+        required: false
         type: string
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
-  build-apk:
-    name: Debug APK
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Check out application source
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Validate bootstrap_run_id
-        shell: bash
-        env:
-          BOOTSTRAP_RUN_ID: ${{ inputs.bootstrap_run_id }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$BOOTSTRAP_RUN_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::bootstrap_run_id must be a numeric workflow run ID (got '$BOOTSTRAP_RUN_ID')."
-            exit 1
-          fi
-
-      - name: Download validated aarch64 bootstrap
-        uses: actions/download-artifact@v4
-        with:
-          name: termux-bootstrap-debug-aarch64
-          path: bootstrap-artifacts/aarch64
-          run-id: ${{ inputs.bootstrap_run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download validated x86_64 bootstrap
-        uses: actions/download-artifact@v4
-        with:
-          name: termux-bootstrap-debug-x86_64
-          path: bootstrap-artifacts/x86_64
-          run-id: ${{ inputs.bootstrap_run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Revalidate embedded bootstraps
-        shell: bash
-        run: |
-          set -euxo pipefail
-          bash .github/termux-bootstrap/validate-bootstrap.sh \
-            debug aarch64 bootstrap-artifacts/aarch64
-          bash .github/termux-bootstrap/validate-bootstrap.sh \
-            debug x86_64 bootstrap-artifacts/x86_64
-
-      - name: Prepare embedded bootstrap assets
-        id: bootstraps
-        shell: bash
-        run: |
-          set -euxo pipefail
-          asset_dir=app/src/debug/assets/termux
-          mkdir -p "$asset_dir"
-          aarch64_zip=$(find bootstrap-artifacts -type f -name bootstrap-aarch64.zip -print -quit)
-          x86_64_zip=$(find bootstrap-artifacts -type f -name bootstrap-x86_64.zip -print -quit)
-          test -n "$aarch64_zip" && test -s "$aarch64_zip"
-          test -n "$x86_64_zip" && test -s "$x86_64_zip"
-          cp "$aarch64_zip" "$asset_dir/bootstrap-aarch64.zip"
-          cp "$x86_64_zip" "$asset_dir/bootstrap-x86_64.zip"
-          aarch64_sha=$(sha256sum "$aarch64_zip" | awk '{print $1}')
-          x86_64_sha=$(sha256sum "$x86_64_zip" | awk '{print $1}')
-          echo "aarch64_sha=$aarch64_sha" >> "$GITHUB_OUTPUT"
-          echo "x86_64_sha=$x86_64_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
-
-      - name: Install Android SDK 37
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          sdkmanager="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
-          test -x "$sdkmanager"
-          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
-          "$sdkmanager" --channel=3 "platforms;android-37.0" "build-tools;36.0.0"
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - run: bash tools/calendar-reminder-probe/build.sh
+      - uses: actions/upload-artifact@v7
         with:
-          bun-version: latest
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Decode fixed debug signing keystore
-        shell: bash
-        run: |
-          set -euxo pipefail
-          echo "${{ secrets.DEBUG_SIGNING_KEYSTORE_BASE64 }}" | base64 -d > debug-signing.jks
-          test -s debug-signing.jks
-
-      - name: Create local.properties with debug signing config
-        shell: bash
-        env:
-          DEBUG_STORE_FILE: ${{ github.workspace }}/debug-signing.jks
-          DEBUG_STORE_PASSWORD: ${{ secrets.DEBUG_SIGNING_STORE_PASSWORD }}
-          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_SIGNING_KEY_ALIAS }}
-          DEBUG_KEY_PASSWORD: ${{ secrets.DEBUG_SIGNING_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          printf 'debugStoreFile=%s\ndebugStorePassword=%s\ndebugKeyAlias=%s\ndebugKeyPassword=%s\n' \
-            "$DEBUG_STORE_FILE" "$DEBUG_STORE_PASSWORD" "$DEBUG_KEY_ALIAS" "$DEBUG_KEY_PASSWORD" > local.properties
-
-      - name: Build debug APK
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ./gradlew :app:assembleDebug \
-            -PtermuxBootstrapAarch64Sha256=${{ steps.bootstraps.outputs.aarch64_sha }} \
-            -PtermuxBootstrapX8664Sha256=${{ steps.bootstraps.outputs.x86_64_sha }}
-
-      - name: Verify and describe APK
-        shell: bash
-        run: |
-          set -euxo pipefail
-          apk=$(find app/build/outputs/apk/debug -type f -name '*universal*.apk' -print -quit)
-          test -n "$apk" && test -s "$apk"
-          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          apksigner=$(find "$sdk_root/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)
-          test -n "$apksigner" && test -x "$apksigner"
-          "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee apk-artifact-signature.txt
-          aapt=$(find "$sdk_root/build-tools" -type f -name aapt2 -print | sort -V | tail -n 1)
-          mkdir -p apk-artifact
-          cp "$apk" apk-artifact/rikkahub-agent-debug-with-termux.apk
-          (
-            cd apk-artifact
-            sha256sum rikkahub-agent-debug-with-termux.apk | tee SHA256SUMS
-          )
-          # Extract signing cert SHA-256 fingerprint for update-compatibility verification
-          cert_sha256=$(grep -oP 'SHA-256 digest:\s*\K[0-9a-f:]+' apk-artifact-signature.txt | head -1 || echo "unknown")
-          # Extract version info from APK
-          version_code=$("$aapt" dump badging "$apk" 2>/dev/null | grep -oP "versionCode='\K[^']+" || echo "unknown")
-          version_name=$("$aapt" dump badging "$apk" 2>/dev/null | grep -oP "versionName='\K[^']+" || echo "unknown")
-          {
-            echo "source_commit=$GITHUB_SHA"
-            echo "source_branch=${{ github.ref_name }}"
-            echo "bootstrap_run_id=${{ inputs.bootstrap_run_id }}"
-            echo "application_id=excp.rikkahub.debug"
-            echo "version_code=$version_code"
-            echo "version_name=$version_name"
-            echo "signing_cert_sha256=$cert_sha256"
-            echo "aarch64_sha256=${{ steps.bootstraps.outputs.aarch64_sha }}"
-            echo "x86_64_sha256=${{ steps.bootstraps.outputs.x86_64_sha }}"
-            echo "completed_at=$(date --utc --iso-8601=seconds)"
-          } > apk-artifact/build-info.txt
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: rikkahub-agent-debug-with-termux
-          path: apk-artifact/
+          name: calendar-reminder-probe
+          path: tools/calendar-reminder-probe/out/calendar-reminder-probe.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7

@@ -70,7 +70,7 @@ fun SettingPreferencesUIPage(vm: SettingVM = koinViewModel()) {
 
     fun updateDisplaySetting(setting: DisplaySetting) {
         displaySetting = setting
-        vm.updateSettings(settings.copy(displaySetting = setting))
+        vm.updateSettings { it.copy(displaySetting = setting) }
     }
 
     val importSuccessMsg = stringResource(R.string.setting_display_page_custom_font_import_success)
@@ -457,15 +457,18 @@ private fun importCustomChatFontInternal(context: Context, uri: Uri): ImportedCh
             tempFile.outputStream().use { output ->
                 input.copyTo(output)
             }
-        } ?: error("Unable to open selected font")
+        } ?: error(context.getString(R.string.setting_font_import_open_failed))
 
         runCatching {
             Typeface.createFromFile(tempFile)
         }.onFailure { error ->
-            throw IllegalArgumentException(error.message ?: "Invalid font file", error)
+            throw IllegalArgumentException(
+                error.message ?: context.getString(R.string.setting_font_import_invalid_file),
+                error,
+            )
         }
 
-        replaceCustomChatFontInternal(fontDir, tempFile, targetFile)
+        replaceCustomChatFontInternal(context, fontDir, tempFile, targetFile)
     } catch (error: Throwable) {
         tempFile.delete()
         throw error
@@ -476,7 +479,12 @@ private fun importCustomChatFontInternal(context: Context, uri: Uri): ImportedCh
     return ImportedChatFontUI(relativePath = relativePath, displayName = displayName)
 }
 
-private fun replaceCustomChatFontInternal(fontDir: File, tempFile: File, targetFile: File) {
+private fun replaceCustomChatFontInternal(
+    context: Context,
+    fontDir: File,
+    tempFile: File,
+    targetFile: File,
+) {
     val existingFiles = fontDir.listFiles { file ->
         file.isFile && file.name.startsWith("chat_font.") && file != tempFile
     }?.toList().orEmpty()
@@ -486,9 +494,13 @@ private fun replaceCustomChatFontInternal(fontDir: File, tempFile: File, targetF
 
     try {
         backups.forEach { (file, backup) ->
-            check(file.renameTo(backup)) { "Unable to prepare existing font for replacement" }
+            check(file.renameTo(backup)) {
+                context.getString(R.string.setting_font_import_prepare_failed)
+            }
         }
-        check(tempFile.renameTo(targetFile)) { "Unable to save selected font" }
+        check(tempFile.renameTo(targetFile)) {
+            context.getString(R.string.setting_font_import_save_failed)
+        }
         backups.forEach { (_, backup) -> backup.delete() }
     } catch (error: Throwable) {
         tempFile.delete()

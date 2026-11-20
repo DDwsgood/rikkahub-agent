@@ -78,9 +78,13 @@ fun SettingSearchDetailPage(
 
     fun save(updated: SearchServiceOptions) {
         options = updated
-        val newServices = settings.searchServices.toMutableList()
-        newServices[serviceIndex] = updated
-        vm.updateSettings(settings.copy(searchServices = newServices))
+        vm.updateSettings { latest ->
+            val newServices = latest.searchServices.toMutableList()
+            if (serviceIndex in newServices.indices) {
+                newServices[serviceIndex] = updated
+            }
+            latest.copy(searchServices = newServices)
+        }
     }
 
     Scaffold(
@@ -96,9 +100,13 @@ fun SettingSearchDetailPage(
                     if (settings.searchServices.size > 1) {
                         IconButton(
                             onClick = {
-                                val newServices = settings.searchServices.toMutableList()
-                                newServices.removeAt(serviceIndex)
-                                vm.updateSettings(settings.copy(searchServices = newServices))
+                                vm.updateSettings { latest ->
+                                    val newServices = latest.searchServices.toMutableList()
+                                    if (serviceIndex in newServices.indices) {
+                                        newServices.removeAt(serviceIndex)
+                                    }
+                                    latest.copy(searchServices = newServices)
+                                }
                                 nav.popBackStack()
                             }
                         ) {

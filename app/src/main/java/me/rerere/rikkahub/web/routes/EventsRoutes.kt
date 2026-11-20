@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.takeWhile
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
@@ -16,6 +17,8 @@ import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.web.dto.ConversationListInvalidateEvent
 import me.rerere.rikkahub.web.dto.FolderListEvent
 import me.rerere.rikkahub.web.dto.toDto
+import me.rerere.rikkahub.web.dto.toWebSettingsDto
+import me.rerere.rikkahub.web.webAccessError
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -41,10 +44,14 @@ fun Route.eventsRoutes(
             period = 15.seconds
         }
 
-        // Full settings snapshot; StateFlow emits the current value immediately on connect.
-        val settingsEvents = settingsStore.settingsFlow.map { settings ->
-            EventPayload(event = "settings", json = JsonInstant.encodeToString(settings))
-        }
+        // Redacted settings snapshot (allowlist DTO; never streams API keys/passwords/tokens).
+        // distinctUntilChanged AFTER projection so credential-only changes never emit noisy events.
+        val settingsEvents = settingsStore.settingsFlow
+            .map { settings -> settings.toWebSettingsDto() }
+            .distinctUntilChanged()
+            .map { dto ->
+                EventPayload(event = "settings", json = JsonInstant.encodeToString(dto))
+            }
 
         // Conversation list invalidation, scoped to the currently selected assistant.
         val conversationListEvents = settingsStore.settingsFlow
@@ -103,7 +110,9 @@ fun Route.eventsRoutes(
                 }
             }
 
-        merge(settingsEvents, conversationListEvents, folderEvents).collect { payload ->
+        merge(settingsEvents, conversationListEvents, folderEvents).takeWhile {
+            call.webAccessError(settingsStore) == null
+        }.collect { payload ->
             send(data = payload.json, event = payload.event)
         }
     }

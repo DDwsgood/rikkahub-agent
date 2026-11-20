@@ -5,6 +5,8 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.util.concurrent.ConcurrentHashMap
 
 class WorkspaceManager(
@@ -29,6 +31,12 @@ class WorkspaceManager(
     // rootfs 重装时能无条件杀掉, 不会残留孤儿 proot 进程。
     private val managedProcesses = ConcurrentHashMap<String, MutableSet<ManagedWorkspaceProcess>>()
 
+    // 正在执行的前台 shell 命令进程注册表: root -> 存活进程集合。
+    // 与 startTrackedForegroundCommand / killAllForeground / deleteWorkspace 共享
+    // backgroundLifecycleLock，确保挂载策略变更、权限撤销或工作区删除能即时终止所有运行中
+    // 的前台命令。
+    private val foregroundProcesses = ConcurrentHashMap<String, MutableSet<Process>>()
+
     // 让 startBackground / startManagedProcess 的启动+注册 与 deleteWorkspace /
     // closeAllManagedProcesses 的 killAll+移除注册表+关闭 互斥: 要么启动先完成(随后被
     // killAll/closeAll 杀掉), 要么删除先完成(随后 start 因 rootfs 缺失而失败并抛出),
@@ -40,6 +48,9 @@ class WorkspaceManager(
 
     // 按 target 长度降序, 保证 /a/b 优先于 /a 匹配
     private val sortedBindMounts = bindMounts.sortedByDescending { it.target.trimEnd('/').length }
+
+    val workspacesBaseDir: File
+        get() = baseDir
 
     init {
         baseDir.mkdirs()
@@ -55,33 +66,49 @@ class WorkspaceManager(
 
     fun workspaceDir(root: String): File {
         requireValidRoot(root)
-        // canonicalFile 兜底: 即使 ROOT_NAME_REGEX 将来被放宽, ".." / 符号链接等
-        // 也绝不能解析到 baseDir 之外 (deleteWorkspace 会递归删除返回值)。
+        // Refuse symlinked baseDir or workspace root so a replaced root directory can never
+        // redirect file reads/writes/deletes outside baseDir.
+        require(!Files.isSymbolicLink(baseDir.toPath())) {
+            "Workspace base directory must not be a symbolic link"
+        }
+        val child = WorkspaceSafeFiles.requireChildPathNoSymlink(baseDir, root)
         val base = baseDir.canonicalFile
-        val dir = File(base, root).canonicalFile
-        require(dir.path.startsWith(base.path + File.separator)) {
+        val resolved = child.canonicalFile
+        require(resolved.path.startsWith(base.path + File.separator)) {
             "Workspace root escapes base directory: $root"
         }
-        return dir
+        return child
     }
 
-    fun filesDir(root: String): File = File(workspaceDir(root), FILES_DIR)
+    fun filesDir(root: String): File =
+        WorkspaceSafeFiles.requireChildPathNoSymlink(workspaceDir(root), FILES_DIR)
 
-    fun linuxDir(root: String): File = File(workspaceDir(root), LINUX_DIR)
+    fun linuxDir(root: String): File =
+        WorkspaceSafeFiles.requireChildPathNoSymlink(workspaceDir(root), LINUX_DIR)
 
-    fun tempDir(root: String): File = File(workspaceDir(root), TEMP_DIR)
+    fun tempDir(root: String): File =
+        WorkspaceSafeFiles.requireChildPathNoSymlink(workspaceDir(root), TEMP_DIR)
 
-    fun hasRootfs(root: String): Boolean = File(linuxDir(root), "bin/sh").isFile
+    fun hasRootfs(root: String): Boolean {
+        val sh = File(linuxDir(root), "bin/sh").toPath()
+        return Files.isRegularFile(sh) || Files.isSymbolicLink(sh)
+    }
 
     fun deleteWorkspace(root: String): Boolean = synchronized(backgroundLifecycleLock) {
-        // 先杀掉该 workspace 所有后台进程, 再删目录, 避免进程仍持有已删除目录下的 fd
+        // 先杀掉该 workspace 所有前台、后台与托管进程, 再删目录, 避免进程仍持有已删除目录下的 fd
+        killAllForeground(root)
         killAllBackground(root)
         closeAllManagedProcesses(root)
-        val dir = workspaceDir(root)
-        // 纵深防御: workspaceDir 已做 canonical 前缀校验, 这里再显式拒绝
-        // "等于 baseDir 本身"的退化情形, 防止任何改动把整个 baseDir wipe 掉。
-        require(dir != baseDir.canonicalFile) { "Refusing to delete workspace base directory" }
-        dir.deleteRecursively()
+        requireValidRoot(root)
+        require(!Files.isSymbolicLink(baseDir.toPath())) {
+            "Workspace base directory must not be a symbolic link"
+        }
+        // Delete strictly relative to the pinned uncontrolled baseDir FD (unlinkat/NOFOLLOW).
+        // If `root` was replaced with a symlink, only the symlink itself is unlinked.
+        if (!Files.exists(baseDir.toPath().resolve(root), LinkOption.NOFOLLOW_LINKS)) {
+            return@synchronized true
+        }
+        WorkspaceSafeFiles.deleteChildInRootNoFollow(baseDir, root, recursive = true)
     }
 
     fun listFiles(
@@ -95,7 +122,24 @@ class WorkspaceManager(
         root: String,
         path: String,
         charset: Charset = StandardCharsets.UTF_8,
-    ): String = fileSystem.readText(filesDir(root), path, charset)
+    ): String {
+        val baseRel = baseRelativePath(root, WorkspaceStorageArea.FILES, path)
+        val attrs = try {
+            WorkspaceSafeFiles.statRegularFileNoFollow(baseDir, baseRel, displayPath = path)
+        } catch (e: java.nio.file.NoSuchFileException) {
+            throw IllegalArgumentException("File does not exist: $path", e)
+        }
+        require(attrs.size() <= config.maxReadBytes) {
+            "File is too large to read: ${attrs.size()} bytes"
+        }
+        return WorkspaceSafeFiles.openInputStreamNoFollow(baseDir, baseRel, displayPath = path).use { inp ->
+            val bytes = inp.readBytes()
+            require(bytes.size <= config.maxReadBytes) {
+                "File is too large to read: ${bytes.size} bytes"
+            }
+            String(bytes, charset)
+        }
+    }
 
     fun writeText(
         root: String,
@@ -103,7 +147,28 @@ class WorkspaceManager(
         text: String,
         overwrite: Boolean = true,
         charset: Charset = StandardCharsets.UTF_8,
-    ): WorkspaceFileEntry = fileSystem.writeText(filesDir(root), path, text, overwrite, charset)
+    ): WorkspaceFileEntry {
+        val bytes = text.toByteArray(charset)
+        require(bytes.size <= config.maxWriteBytes) {
+            "Content is too large to write: ${bytes.size} bytes"
+        }
+        val relSegs = WorkspaceSafeFiles.parseRelativeSegments(path)
+        require(relSegs.isNotEmpty()) { "Path is not a file: $path" }
+        val written = WorkspaceSafeFiles.writeBytesNoFollowWithMeta(
+            root = baseDir,
+            relPath = baseRelativePath(root, WorkspaceStorageArea.FILES, path),
+            bytes = bytes,
+            overwrite = overwrite,
+            displayPath = path,
+        )
+        return WorkspaceFileEntry(
+            path = relSegs.joinToString("/"),
+            name = written.leafName,
+            isDirectory = false,
+            sizeBytes = written.sizeBytes,
+            updatedAt = written.lastModifiedMs,
+        )
+    }
 
     fun importFile(
         root: String,
@@ -112,20 +177,49 @@ class WorkspaceManager(
         fileName: String,
         inputStream: InputStream,
     ): WorkspaceFileEntry {
-        val areaRoot = areaDir(root, area)
         val targetPath = if (destinationPath.isBlank()) fileName else "$destinationPath/$fileName"
-        return fileSystem.importBytes(areaRoot, targetPath, inputStream)
+        val relSegs = WorkspaceSafeFiles.parseRelativeSegments(targetPath)
+        require(relSegs.isNotEmpty()) { "Path is not a file: $targetPath" }
+        val written = WorkspaceSafeFiles.importStreamNoFollowWithMeta(
+            root = baseDir,
+            relPath = baseRelativePath(root, area, targetPath),
+            inputStream = inputStream,
+            maxBytes = config.maxImportBytes,
+        )
+        val finalRel = (relSegs.dropLast(1) + written.leafName).joinToString("/")
+        return WorkspaceFileEntry(
+            path = finalRel,
+            name = written.leafName,
+            isDirectory = false,
+            sizeBytes = written.sizeBytes,
+            updatedAt = written.lastModifiedMs,
+        )
+    }
+
+    private fun areaDirName(area: WorkspaceStorageArea): String = when (area) {
+        WorkspaceStorageArea.FILES -> FILES_DIR
+        WorkspaceStorageArea.LINUX -> LINUX_DIR
+    }
+
+    private fun baseRelativePath(root: String, area: WorkspaceStorageArea, relPath: String): String {
+        requireValidRoot(root)
+        val segments = WorkspaceSafeFiles.parseRelativeSegments(relPath)
+        require(segments.isNotEmpty()) { "Path is not a file: $relPath" }
+        return (listOf(root, areaDirName(area)) + segments).joinToString("/")
     }
 
     fun fileSize(
         root: String,
         path: String,
         area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
-    ): Long {
-        val file = fileSystem.resolve(areaDir(root, area), path)
-        require(file.exists()) { "File does not exist: $path" }
-        require(file.isFile) { "Path is not a file: $path" }
-        return file.length()
+    ): Long = try {
+        WorkspaceSafeFiles.statRegularFileNoFollow(
+            root = baseDir,
+            relPath = baseRelativePath(root, area, path),
+            displayPath = path,
+        ).size()
+    } catch (e: java.nio.file.NoSuchFileException) {
+        throw IllegalArgumentException("File does not exist: $path", e)
     }
 
     fun exportFile(
@@ -134,10 +228,16 @@ class WorkspaceManager(
         area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
         outputStream: OutputStream,
     ) {
-        val file = fileSystem.resolve(areaDir(root, area), path)
-        require(file.exists()) { "File does not exist: $path" }
-        require(file.isFile) { "Path is not a file: $path" }
-        outputStream.use { out -> file.inputStream().use { it.copyTo(out) } }
+        try {
+            WorkspaceSafeFiles.exportFileNoFollow(
+                root = baseDir,
+                relPath = baseRelativePath(root, area, path),
+                outputStream = outputStream,
+                displayPath = path,
+            )
+        } catch (e: java.nio.file.NoSuchFileException) {
+            throw IllegalArgumentException("File does not exist: $path", e)
+        }
     }
 
     /**
@@ -151,9 +251,20 @@ class WorkspaceManager(
         root: String,
         path: String,
         sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
     ): RootfsLocation {
-        val trimmed = path.trim().trimEnd('/').ifBlank { "/" }
-        require(trimmed.startsWith("/")) { "Rootfs path must be absolute: $path" }
+        val raw = path.replace('\\', '/').trim()
+        require(raw.startsWith("/")) { "Rootfs path must be absolute: $path" }
+        require(!raw.contains('\u0000')) { "Rootfs path contains invalid character" }
+        val normalizedSegments = ArrayDeque<String>()
+        for (part in raw.split('/')) {
+            when (part) {
+                "", "." -> continue
+                ".." -> throw IllegalArgumentException("Path escapes workspace root: $path")
+                else -> normalizedSegments.addLast(part)
+            }
+        }
+        val trimmed = if (normalizedSegments.isEmpty()) "/" else "/" + normalizedSegments.joinToString("/")
 
         // /sdcard 只在启用挂载时才是真实绑定; 与 resolveRootfsFile 的调用方约定:
         // 未挂载时保持既有回退 (linuxDir 下解析), 由调用方给出 "File does not
@@ -166,7 +277,12 @@ class WorkspaceManager(
             )
         }
 
-        sortedBindMounts.forEach { mount ->
+        val allMounts = if (extraBindMounts.isEmpty()) {
+            sortedBindMounts
+        } else {
+            (bindMounts + extraBindMounts).sortedByDescending { it.target.trimEnd('/').length }
+        }
+        allMounts.forEach { mount ->
             val target = mount.target.trimEnd('/')
             if (trimmed == target) return RootfsLocation(mount.source, "")
             if (trimmed.startsWith("$target/")) {
@@ -189,35 +305,183 @@ class WorkspaceManager(
         return RootfsLocation(linuxDir(root), trimmed.trimStart('/'))
     }
 
+    private data class PinnedRootfsTarget(
+        val trustedRoot: File,
+        val relativePath: String,
+    )
+
+    private fun joinRelativeSegments(prefix: String, suffix: String): String {
+        val parts = WorkspaceSafeFiles.parseRelativeSegments(prefix) + WorkspaceSafeFiles.parseRelativeSegments(suffix)
+        return parts.joinToString("/")
+    }
+
+    private fun lexicalRelativeIfUnder(ancestor: File, candidate: File): String? {
+        val ancPath = ancestor.toPath().toAbsolutePath().normalize()
+        val candPath = candidate.toPath().toAbsolutePath().normalize()
+        if (!candPath.startsWith(ancPath)) return null
+        val rel = ancPath.relativize(candPath)
+        return rel.toString().replace(File.separatorChar, '/').trim('/')
+    }
+
+    /**
+     * Resolves a Rootfs absolute path to a **trusted uncontrolled volume root** plus relative path
+     * segments so every subsequent stat/read/write walks strictly by FD-relative `O_NOFOLLOW` from
+     * the trusted root (`baseDir` for `/workspace` and rootfs interior, `sdcardDir` for `/sdcard`,
+     * or `mount.trustedAnchorRoot` / containing volume root for bind mounts) — never promoting
+     * mutable subdirectories like `filesDir(root)`, `linuxDir(root)`, or `/shared` into roots.
+     */
+    private fun resolvePinnedRootfsTarget(
+        root: String,
+        path: String,
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
+    ): PinnedRootfsTarget {
+        requireValidRoot(root)
+        val raw = path.replace('\\', '/').trim()
+        require(raw.startsWith("/")) { "Rootfs path must be absolute: $path" }
+        require(!raw.contains('\u0000')) { "Rootfs path contains invalid character" }
+        val normalizedSegments = ArrayDeque<String>()
+        for (part in raw.split('/')) {
+            when (part) {
+                "", "." -> continue
+                ".." -> throw IllegalArgumentException("Path escapes workspace root: $path")
+                else -> normalizedSegments.addLast(part)
+            }
+        }
+        val trimmed = if (normalizedSegments.isEmpty()) "/" else "/" + normalizedSegments.joinToString("/")
+
+        if (sdcardMode != WorkspaceSdcardMode.NONE && WorkspaceSdcard.isWithin(trimmed)) {
+            val sdcard = requireNotNull(sdcardDir) { "sdcardDir is required for sdcard mode $sdcardMode" }
+            return PinnedRootfsTarget(
+                trustedRoot = sdcard,
+                relativePath = trimmed.removePrefix(WorkspaceSdcard.MOUNT_TARGET).trimStart('/'),
+            )
+        }
+
+        val allMounts = if (extraBindMounts.isEmpty()) {
+            sortedBindMounts
+        } else {
+            (bindMounts + extraBindMounts).sortedByDescending { it.target.trimEnd('/').length }
+        }
+        allMounts.forEach { mount ->
+            val target = mount.target.trimEnd('/')
+            val matched = trimmed == target || trimmed.startsWith("$target/")
+            if (matched) {
+                val subRel = if (trimmed == target) "" else trimmed.removePrefix("$target/")
+                val explicitAnchor = mount.trustedAnchorRoot
+                if (explicitAnchor != null) {
+                    return PinnedRootfsTarget(
+                        trustedRoot = explicitAnchor,
+                        relativePath = joinRelativeSegments(mount.anchorRelativePath, subRel),
+                    )
+                }
+                val sdcard = sdcardDir
+                if (sdcard != null) {
+                    val relUnderSdcard = lexicalRelativeIfUnder(sdcard, mount.source)
+                    if (relUnderSdcard != null) {
+                        return PinnedRootfsTarget(
+                            trustedRoot = sdcard,
+                            relativePath = joinRelativeSegments(relUnderSdcard, subRel),
+                        )
+                    }
+                }
+                val relUnderBase = lexicalRelativeIfUnder(baseDir, mount.source)
+                if (relUnderBase != null) {
+                    return PinnedRootfsTarget(
+                        trustedRoot = baseDir,
+                        relativePath = joinRelativeSegments(relUnderBase, subRel),
+                    )
+                }
+                return PinnedRootfsTarget(
+                    trustedRoot = mount.source,
+                    relativePath = subRel,
+                )
+            }
+        }
+
+        if (trimmed == ROOTFS_WORKSPACE_DIR || trimmed.startsWith("$ROOTFS_WORKSPACE_DIR/")) {
+            val subRel = trimmed.removePrefix(ROOTFS_WORKSPACE_DIR).trimStart('/')
+            return PinnedRootfsTarget(
+                trustedRoot = baseDir,
+                relativePath = joinRelativeSegments("$root/$FILES_DIR", subRel),
+            )
+        }
+
+        KERNEL_FS_MOUNTS.firstOrNull { trimmed == it || trimmed.startsWith("$it/") }?.let {
+            error("$it is a kernel filesystem and cannot be read as a file, use workspace_shell instead")
+        }
+
+        return PinnedRootfsTarget(
+            trustedRoot = baseDir,
+            relativePath = joinRelativeSegments("$root/$LINUX_DIR", trimmed.trimStart('/')),
+        )
+    }
+
     fun rootfsFileSize(
         root: String,
         path: String,
         sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
-    ): Long = resolveRootfsFile(root, path, sdcardMode).also { it.requireReadableFile(path) }.length()
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
+    ): Long {
+        val target = resolvePinnedRootfsTarget(root, path, sdcardMode, extraBindMounts)
+        return try {
+            WorkspaceSafeFiles.statRegularFileNoFollow(target.trustedRoot, target.relativePath, displayPath = path)
+                .size()
+        } catch (e: java.nio.file.NoSuchFileException) {
+            throw IllegalArgumentException("File does not exist: $path", e)
+        }
+    }
 
     fun exportRootfsFile(
         root: String,
         path: String,
         outputStream: OutputStream,
         sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
     ) {
-        val file = resolveRootfsFile(root, path, sdcardMode)
-        file.requireReadableFile(path)
-        outputStream.use { out -> file.inputStream().use { it.copyTo(out) } }
+        val target = resolvePinnedRootfsTarget(root, path, sdcardMode, extraBindMounts)
+        try {
+            WorkspaceSafeFiles.exportFileNoFollow(target.trustedRoot, target.relativePath, outputStream, displayPath = path)
+        } catch (e: java.nio.file.NoSuchFileException) {
+            throw IllegalArgumentException("File does not exist: $path", e)
+        }
     }
 
-    private fun resolveRootfsFile(
+    /**
+     * Writes UTF-8 text to a Rootfs absolute path starting from the trusted uncontrolled volume
+     * root (`baseDir`, `sdcardDir`, or bind mount's trusted volume root) via FD-relative
+     * `O_NOFOLLOW` traversal, and returns metadata captured directly from the open channel and
+     * pinned directory handle (never re-opening or re-statting by path).
+     */
+    fun writeRootfsTextNoFollow(
         root: String,
         path: String,
+        text: String,
+        overwrite: Boolean = true,
         sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
-    ): File {
-        val location = resolveRootfsPath(root, path, sdcardMode)
-        return fileSystem.resolve(location.rootDir, location.relativePath)
-    }
-
-    private fun File.requireReadableFile(path: String) {
-        require(exists()) { "File does not exist: $path" }
-        require(isFile) { "Path is not a file: $path" }
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
+    ): WorkspaceFileEntry {
+        val target = resolvePinnedRootfsTarget(root, path, sdcardMode, extraBindMounts)
+        val bytes = text.toByteArray(StandardCharsets.UTF_8)
+        require(bytes.size <= config.maxWriteBytes) {
+            "Content is too large to write: ${bytes.size} bytes"
+        }
+        val written = WorkspaceSafeFiles.writeBytesNoFollowWithMeta(
+            root = target.trustedRoot,
+            relPath = target.relativePath,
+            bytes = bytes,
+            overwrite = overwrite,
+            displayPath = path,
+        )
+        val normalizedPath = path.replace('\\', '/').trim()
+        val leafName = normalizedPath.trimEnd('/').substringAfterLast('/').ifBlank { "/" }
+        return WorkspaceFileEntry(
+            path = normalizedPath,
+            name = leafName,
+            isDirectory = false,
+            sizeBytes = written.sizeBytes,
+            updatedAt = written.lastModifiedMs,
+        )
     }
 
     fun deleteFile(
@@ -225,11 +489,31 @@ class WorkspaceManager(
         path: String,
         recursive: Boolean = false,
         area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
-    ): Boolean =
-        fileSystem.delete(areaDir(root, area), path, recursive)
+    ): Boolean {
+        require(path.isNotBlank()) { "Refusing to delete workspace root" }
+        return WorkspaceSafeFiles.deleteChildInRootNoFollow(
+            root = baseDir,
+            relPath = baseRelativePath(root, area, path),
+            recursive = recursive,
+        )
+    }
 
-    fun moveFile(root: String, source: String, target: String, overwrite: Boolean = false): WorkspaceFileEntry =
-        fileSystem.move(filesDir(root), source, target, overwrite)
+    fun moveFile(root: String, source: String, target: String, overwrite: Boolean = false): WorkspaceFileEntry {
+        require(source.isNotBlank()) { "Refusing to move workspace root" }
+        val dstSegs = WorkspaceSafeFiles.parseRelativeSegments(target)
+        require(dstSegs.isNotEmpty()) { "Refusing to overwrite workspace root" }
+        val srcBaseRel = baseRelativePath(root, WorkspaceStorageArea.FILES, source)
+        val dstBaseRel = baseRelativePath(root, WorkspaceStorageArea.FILES, target)
+        WorkspaceSafeFiles.moveNoFollow(baseDir, srcBaseRel, dstBaseRel, overwrite)
+        val attrs = WorkspaceSafeFiles.statEntryNoFollow(baseDir, dstBaseRel, displayPath = target)
+        return WorkspaceFileEntry(
+            path = dstSegs.joinToString("/"),
+            name = dstSegs.last(),
+            isDirectory = attrs.isDirectory,
+            sizeBytes = if (attrs.isRegularFile) attrs.size() else 0L,
+            updatedAt = attrs.lastModifiedTime().toMillis(),
+        )
+    }
 
     fun glob(root: String, pattern: String, path: String = ""): List<WorkspaceFileEntry> =
         fileSystem.glob(filesDir(root), pattern, path)
@@ -251,6 +535,7 @@ class WorkspaceManager(
         timeoutMillis: Long = DEFAULT_COMMAND_TIMEOUT_MS,
         stdin: ByteArray? = null,
         sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
     ): WorkspaceCommandResult {
         require(command.isNotBlank()) { "Command is required" }
         val workingDir = resolveCommandWorkingDir(root, cwd)
@@ -266,7 +551,7 @@ class WorkspaceManager(
                 workingDir = workingDir,
                 timeoutMillis = timeoutMillis,
                 stdin = stdin,
-                bindMounts = effectiveBindMounts(sdcardMode),
+                bindMounts = effectiveBindMounts(sdcardMode, extraBindMounts),
             )
         )
     }
@@ -282,6 +567,7 @@ class WorkspaceManager(
         command: String,
         cwd: String = "",
         sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
     ): BackgroundStatus =
         synchronized(backgroundLifecycleLock) {
             require(command.isNotBlank()) { "Command is required" }
@@ -297,11 +583,68 @@ class WorkspaceManager(
                     tempDir = tempDir(root),
                     workingDir = workingDir,
                     timeoutMillis = 0L,
-                    bindMounts = effectiveBindMounts(sdcardMode),
+                    bindMounts = effectiveBindMounts(sdcardMode, extraBindMounts),
                 )
             )
             background.start(root, process, command, cwd)
         }
+
+    data class TrackedForegroundCommand(
+        val root: String,
+        val process: Process,
+    )
+
+    /**
+     * Starts a foreground command process AND registers it under [backgroundLifecycleLock] in one
+     * atomic critical section so concurrent mount revocation, workspace deletion, or rootfs
+     * reinstall ([killAllForeground]) can never miss a newly launched foreground command.
+     */
+    fun startTrackedForegroundCommand(
+        root: String,
+        command: String,
+        cwd: String = "",
+        timeoutMillis: Long = DEFAULT_COMMAND_TIMEOUT_MS,
+        stdin: ByteArray? = null,
+        sdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
+    ): TrackedForegroundCommand = synchronized(backgroundLifecycleLock) {
+        require(command.isNotBlank()) { "Command is required" }
+        val workingDir = resolveCommandWorkingDir(root, cwd)
+        val process = shellRunner.start(
+            WorkspaceShellContext(
+                root = root,
+                command = command,
+                cwd = cwd,
+                filesDir = filesDir(root),
+                linuxDir = linuxDir(root),
+                tempDir = tempDir(root),
+                workingDir = workingDir,
+                timeoutMillis = timeoutMillis,
+                stdin = stdin,
+                bindMounts = effectiveBindMounts(sdcardMode, extraBindMounts),
+            )
+        )
+        foregroundProcesses.computeIfAbsent(root) { ConcurrentHashMap.newKeySet() }.apply {
+            removeIf { !it.isAlive }
+            add(process)
+        }
+        TrackedForegroundCommand(root = root, process = process)
+    }
+
+    fun finishTrackedForegroundCommand(tracked: TrackedForegroundCommand) {
+        synchronized(backgroundLifecycleLock) {
+            foregroundProcesses[tracked.root]?.remove(tracked.process)
+        }
+    }
+
+    fun killAllForeground(root: String) {
+        val snapshot = synchronized(backgroundLifecycleLock) {
+            foregroundProcesses.remove(root)?.toList().orEmpty()
+        }
+        snapshot.forEach { proc ->
+            runCatching { terminateProcessTree(proc) }
+        }
+    }
 
     fun backgroundStatus(root: String, id: String): BackgroundStatus? = background.status(root, id)
 
@@ -399,12 +742,18 @@ class WorkspaceManager(
     }
 
     /**
-     * 静态绑定表 + 按模式的 /sdcard 追加绑定。sdcardDir 缺失 (宿主无共享存储,
-     * 或旧注入路径未传) 时追加绑定退化为不追加, 行为与 NONE 一致。
+     * 静态绑定表 + 按模式的 /sdcard 追加绑定 + 可选额外绑定 (如 `/shared`)。
      */
-    private fun effectiveBindMounts(sdcardMode: WorkspaceSdcardMode): List<WorkspaceBindMount> {
-        val sdcardBind = sdcardDir?.let { WorkspaceSdcard.bindMount(it, sdcardMode) } ?: return bindMounts
-        return bindMounts + sdcardBind
+    fun effectiveBindMounts(
+        sdcardMode: WorkspaceSdcardMode,
+        extraBindMounts: List<WorkspaceBindMount> = emptyList(),
+    ): List<WorkspaceBindMount> {
+        val sdcardBind = sdcardDir?.let { WorkspaceSdcard.bindMount(it, sdcardMode) }
+        return buildList {
+            addAll(bindMounts)
+            if (sdcardBind != null) add(sdcardBind)
+            addAll(extraBindMounts)
+        }
     }
 
     private fun requireValidRoot(root: String) {
@@ -419,15 +768,19 @@ class WorkspaceManager(
     }
 
     fun cleanupAllTempDirs() {
-        val roots = baseDir.listFiles()?.filter { it.isDirectory } ?: return
+        val basePath = baseDir.toPath()
+        if (!Files.exists(basePath, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(basePath)) return
+        val roots = baseDir.listFiles()?.filter {
+            !Files.isSymbolicLink(it.toPath()) && Files.isDirectory(it.toPath(), LinkOption.NOFOLLOW_LINKS)
+        } ?: return
         for (dir in roots) {
             val root = dir.name
             if (!root.matches(ROOT_NAME_REGEX)) continue
-            // PRoot temp files
-            tempDir(root).let { if (it.exists()) it.deleteRecursively() }
-            // Rootfs /tmp and /var/tmp
-            File(linuxDir(root), "tmp").let { if (it.exists()) it.deleteRecursively() }
-            File(linuxDir(root), "var/tmp").let { if (it.exists()) it.deleteRecursively() }
+            // Walk every ancestor segment (root / tmp / linux / var / tmp) pinned by FD with
+            // NOFOLLOW_LINKS so a swapped root, linux, or var symlink can never clear outside baseDir.
+            WorkspaceSafeFiles.clearChildDirContentsNoFollow(baseDir, root, TEMP_DIR)
+            WorkspaceSafeFiles.clearChildDirContentsNoFollow(baseDir, root, LINUX_DIR, "tmp")
+            WorkspaceSafeFiles.clearChildDirContentsNoFollow(baseDir, root, LINUX_DIR, "var", "tmp")
         }
     }
 

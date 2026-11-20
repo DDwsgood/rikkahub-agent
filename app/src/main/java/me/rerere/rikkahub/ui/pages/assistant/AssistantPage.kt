@@ -146,10 +146,9 @@ fun AssistantPage(vm: AssistantVM = koinViewModel()) {
             val isFiltering = selectedTagIds.isNotEmpty() || searchQuery.isNotBlank()
             val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
                 if (!isFiltering) {
-                    val newAssistants = settings.assistants.toMutableList().apply {
-                        add(to.index, removeAt(from.index))
-                    }
-                    vm.updateSettings(settings.copy(assistants = newAssistants))
+                    val fromId = from.key as? Uuid ?: return@rememberReorderableLazyListState
+                    val toId = to.key as? Uuid ?: return@rememberReorderableLazyListState
+                    vm.reorderAssistant(fromId, toId)
                 }
             }
             val haptic = LocalHapticFeedback.current
@@ -267,10 +266,9 @@ private fun AssistantTagsFilterRow(
     if (settings.assistantTags.isNotEmpty()) {
         val tagsListState = rememberLazyListState()
         val tagsReorderableState = rememberReorderableLazyListState(tagsListState) { from, to ->
-            val newTags = settings.assistantTags.toMutableList().apply {
-                add(to.index, removeAt(from.index))
-            }
-            vm.updateSettings(settings.copy(assistantTags = newTags))
+            val fromId = from.key as? Uuid ?: return@rememberReorderableLazyListState
+            val toId = to.key as? Uuid ?: return@rememberReorderableLazyListState
+            vm.reorderAssistantTag(fromId, toId)
         }
 
         LazyRow(

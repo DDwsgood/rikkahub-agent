@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.ui.pages.setting.components
 
+import androidx.annotation.StringRes
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.ui.TagType
 
 /**
@@ -12,7 +14,7 @@ import me.rerere.rikkahub.ui.components.ui.TagType
  * card pulls the list automatically.
  */
 data class ProviderRequirement(
-    val label: String,
+    @StringRes val labelRes: Int,
     val severity: TagType,
 ) {
     companion object {
@@ -24,23 +26,23 @@ data class ProviderRequirement(
         fun from(provider: ProviderSetting): List<ProviderRequirement> = when (provider) {
             is ProviderSetting.AICore -> listOf(
                 ProviderRequirement(
-                    label = "Requires AICore beta",
+                    labelRes = R.string.provider_requirement_aicore_beta,
                     severity = TagType.WARNING,
                 ),
                 ProviderRequirement(
-                    label = "Pixel 8 / 9 / 10",
+                    labelRes = R.string.provider_requirement_pixel_devices,
                     severity = TagType.INFO,
                 ),
             )
             is ProviderSetting.LiteRtLocal -> listOf(
                 ProviderRequirement(
-                    label = "On-device · ~1.5 GB",
+                    labelRes = R.string.provider_requirement_on_device_ram,
                     severity = TagType.INFO,
                 ),
             )
             is ProviderSetting.LlamaCppLocal -> listOf(
                 ProviderRequirement(
-                    label = "On-device · CPU only",
+                    labelRes = R.string.provider_requirement_on_device_cpu,
                     severity = TagType.INFO,
                 ),
             )

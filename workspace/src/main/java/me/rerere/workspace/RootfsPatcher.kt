@@ -12,6 +12,10 @@ class RootfsPatcher {
         val etcDir = File(linuxDir, "etc")
         if (!etcDir.isDirectory) return
 
+        // Always ensure /tmp, /var/tmp, /root exist even when the patch marker matches
+        // (e.g. after startup temp cleanup or interrupted runs).
+        ensureTempDirs(linuxDir)
+
         // 幂等短路: 同一组 options 已 patch 过就跳过整个流程(每次 executeCommand /
         // startBackground / startManagedProcess 都会调 patch, 读 /proc/self/status
         // 加若干文件读写在进程启动热路径上是浪费)。签名写入标记文件, options

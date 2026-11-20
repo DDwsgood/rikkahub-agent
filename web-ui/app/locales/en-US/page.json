@@ -16,7 +16,8 @@
       "tool_with_name": "[Tool] {{name}}"
     },
     "errors": {
-      "load_detail_failed": "Failed to load conversation details"
+      "load_detail_failed": "Failed to load conversation details",
+      "load_list_failed": "Failed to load conversations"
     },
     "empty_state": {
       "select_title": "Select a conversation",
@@ -34,5 +35,13 @@
     "header": {
       "select_conversation": "Select a conversation"
     }
+  },
+  "error_page": {
+    "oops": "Oops!",
+    "unexpected": "An unexpected error occurred.",
+    "not_found_title": "404",
+    "error_title": "Error",
+    "not_found_detail": "The requested page could not be found.",
+    "back_home": "Back to Home"
   }
 }

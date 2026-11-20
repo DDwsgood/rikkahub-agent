@@ -13,6 +13,7 @@ import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.files.WorkspacePublicExport
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.generateUnifiedDiff
 import me.rerere.workspace.BackgroundStatus
@@ -29,6 +30,7 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
     "workspace_write_file" to false,
     "workspace_edit_file" to false,
+    "workspace_export_to_downloads" to false,
     "workspace_shell" to true,
     "workspace_run_background" to true,
     "workspace_background_status" to false,
@@ -53,6 +55,7 @@ suspend fun createWorkspaceTools(
         createReadFileTool(workspaceId, ::needsApproval, workspaceRepository),
         createWriteFileTool(workspaceId, ::needsApproval, workspaceRepository),
         createEditFileTool(workspaceId, ::needsApproval, workspaceRepository),
+        createExportToDownloadsTool(workspaceId, ::needsApproval, workspaceRepository),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
         createRunBackgroundTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
         createBackgroundStatusTool(workspaceId, ::needsApproval, workspaceRepository),
@@ -479,30 +482,14 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
     text: String,
     overwrite: Boolean,
 ): WorkspaceFileEntry {
-    // 文件 API 层的 sdcard RO 门禁: 写入经由 rootfs shell 的 `cat >` 执行, proot
-    // 绑定内核层可写, 所以 READ_ONLY 的强制点必须在实际落盘之前
-    requireRootfsWritable(workspaceId, path)
-    val pathArg = path.shellQuote()
-    val result = runRootfsCommand(
-        workspaceId = workspaceId,
-        action = "Write file",
-        command = """
-            if [ -e $pathArg ] && [ ${(!overwrite).shellFlag()} = 1 ]; then
-              printf '%s\n' ${"File already exists: $path".shellQuote()} >&2
-              exit 1
-            fi
-            if [ -e $pathArg ] && [ ! -f $pathArg ]; then
-              printf '%s\n' ${"Path is not a file: $path".shellQuote()} >&2
-              exit 1
-            fi
-            parent=${'$'}(dirname -- $pathArg) || exit 1
-            mkdir -p -- "${'$'}parent" || exit 1
-            cat > $pathArg || exit 1
-            ${statEntryCommand(path)}
-        """.trimIndent(),
-        stdin = text.toByteArray(Charsets.UTF_8),
+    // Write directly through the pinned host volume root using FD-relative O_NOFOLLOW so
+    // symlinks inside /workspace or /tmp cannot escape approval boundaries or /sdcard RO mode.
+    return writeRootfsText(
+        id = workspaceId,
+        path = path,
+        text = text,
+        overwrite = overwrite,
     )
-    return result.stdout.parseRootfsEntry()
 }
 
 private suspend fun WorkspaceRepository.runRootfsCommand(
@@ -561,15 +548,60 @@ private fun String.parseRootfsEntries(): List<WorkspaceFileEntry> {
     }
 }
 
+private fun createExportToDownloadsTool(
+    workspaceId: String,
+    needsApproval: (String) -> Boolean,
+    workspaceRepository: WorkspaceRepository,
+) = Tool(
+    name = "workspace_export_to_downloads",
+    description = """
+        Export a file from /workspace/ into the phone's public Downloads folder
+        (Download/RikkaHub/<workspace>/) so the user can immediately view, share, or open
+        it in any Android file manager, Gallery, WeChat, or WPS without root or Termux.
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                putPathProperty(required = true)
+                put("filename", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Optional output filename override in Downloads")
+                })
+            },
+            required = listOf("path"),
+        )
+    },
+    needsApproval = { needsApproval("workspace_export_to_downloads") },
+    execute = {
+        val obj = it.jsonObject
+        val path = obj.absolutePath("path")
+        val filename = obj.string("filename")?.takeIf { name -> name.isNotBlank() }
+        val exported = workspaceRepository.exportWorkspacePathToDownloads(
+            id = workspaceId,
+            rootfsPath = path,
+            customFileName = filename,
+        )
+        listOf(
+            UIMessagePart.Text(
+                buildJsonObject {
+                    put("success", true)
+                    put("source_path", path)
+                    put("display_path", exported.displayPath)
+                    exported.contentUri?.let { uri -> put("content_uri", uri) }
+                    put("bytes_written", exported.bytesWritten)
+                }.toString()
+            )
+        )
+    },
+)
+
 private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): String {
-    val path = string(name)?.replace('\\', '/')?.trim() ?: error("$name is required")
-    require(path.isNotBlank()) { "$name is required" }
-    require(path.startsWith("/")) { "$name must be an absolute path inside Rootfs" }
-    require(!path.contains('\u0000')) { "$name contains invalid character" }
-    return path
+    val raw = string(name) ?: error("$name is required")
+    return WorkspacePublicExport.normalizeRootfsPath(raw)
 }
 
 // 免强制审批的可写安全区: 工作区文件目录, 以及临时目录 /tmp
+// 注意: /shared 和 /sdcard 刻意不在此列, 写入共享存储仍受用户审批门禁保护
 private val WRITABLE_ROOT_PREFIXES = listOf("/workspace", "/tmp")
 
 private fun kotlinx.serialization.json.JsonElement.pathOutsideWritableRoots(name: String): Boolean =
@@ -578,7 +610,7 @@ private fun kotlinx.serialization.json.JsonElement.pathOutsideWritableRoots(name
     }.getOrDefault(true)
 
 private fun String.isOutsideWritableRoots(): Boolean {
-    val normalized = trimEnd('/').ifBlank { "/" }
+    val normalized = WorkspacePublicExport.normalizeRootfsPath(this)
     return WRITABLE_ROOT_PREFIXES.none { prefix ->
         normalized == prefix || normalized.startsWith("$prefix/")
     }

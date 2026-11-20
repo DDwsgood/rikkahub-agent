@@ -138,6 +138,8 @@ data class SendMessageResult(
     val errorMessage: String? = null,
 )
 
+internal data class SendMessageTurn(val result: CompletableDeferred<SendMessageResult>, val job: Job?)
+
 /**
  * Production mapping from an internal send/generation exception to a failed
  * [SendMessageResult]. The error message includes the exception type so cron history and
@@ -473,25 +475,34 @@ class ChatService(
         conversationId: Uuid,
         updateGlobalAssistant: Boolean = true,
     ) {
-        getOrCreateSession(conversationId) // 确保 session 存在
-        val conversation = conversationRepo.getConversationById(conversationId)
-        if (conversation != null) {
-            updateConversation(conversationId, conversation)
-            // Headless callers (cron / sub-agent) must not yank the user's globally
-            // selected assistant to whatever assistant a background conversation uses.
-            if (updateGlobalAssistant) {
-                settingsStore.updateAssistant(conversation.assistantId)
+        val session = getOrCreateSession(conversationId) // 确保 session 存在
+        val assistantToSelect: Uuid? = mutexFor(conversationId).withLock {
+            if (session.hydrated) {
+                // Already hydrated by a concurrent send/init under this session mutex — never
+                // overwrite live in-memory state with an older DB read.
+                return@withLock if (updateGlobalAssistant) session.state.value.assistantId else null
             }
-        } else {
-            // 新建对话, 并添加预设消息
-            val currentSettings = settingsStore.settingsFlowRaw.first()
-            val assistant = currentSettings.getCurrentAssistant()
-            val newConversation = Conversation.ofId(
-                id = conversationId,
-                assistantId = assistant.id,
-                newConversation = true
-            ).updateCurrentMessages(assistant.presetMessages)
-            updateConversation(conversationId, newConversation)
+            val conversation = conversationRepo.getConversationById(conversationId)
+            if (conversation != null) {
+                session.state.value = conversation
+                session.hydrated = true
+                if (updateGlobalAssistant) conversation.assistantId else null
+            } else {
+                // 新建对话, 并添加预设消息
+                val currentSettings = settingsStore.awaitLoadedSettings()
+                val assistant = currentSettings.getCurrentAssistant()
+                val newConversation = Conversation.ofId(
+                    id = conversationId,
+                    assistantId = assistant.id,
+                    newConversation = true
+                ).updateCurrentMessages(assistant.presetMessages)
+                session.state.value = newConversation
+                session.hydrated = true
+                null
+            }
+        }
+        if (assistantToSelect != null) {
+            settingsStore.updateAssistant(assistantToSelect)
         }
     }
 
@@ -512,58 +523,87 @@ class ChatService(
         conversationId: Uuid,
         content: List<UIMessagePart>,
         answer: Boolean = true,
-    ): CompletableDeferred<SendMessageResult> {
+    ): CompletableDeferred<SendMessageResult> = startMessageTurn(conversationId, content, answer).result
+
+    /** Lets a scheduled worker stop and join only the generation it started. */
+    internal fun startMessageTurn(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+        answer: Boolean = true,
+    ): SendMessageTurn {
         val result = CompletableDeferred<SendMessageResult>()
         if (content.isEmptyInputMessage()) {
             // Nothing was launched — surface the empty input as a failure so awaiters
             // (cron) don't treat a no-op as a silent success.
             result.complete(SendMessageResult(success = false, errorMessage = "empty input message"))
-            return result
+            return SendMessageTurn(result, job = null)
         }
 
         val session = getOrCreateSession(conversationId)
-        val previousJob = session.getJob()
-        previousJob?.cancel()
+        var previousJob: Job? = null
 
-        val job = appScope.launch {
+        val job = appScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
+                // Join the displaced predecessor AND acquire the per-session sendExecutionMutex
+                // so even 3+ rapid sends (where an unstarted middle job cancels instantly) can
+                // never overlap with an earlier turn still unwinding its cancellation.
                 runCatching { previousJob?.join() }
-                finishInterruptedPendingTools(conversationId)
+                session.sendExecutionMutex.withLock {
+                    finishInterruptedPendingTools(conversationId)
 
-                val currentConversation = session.state.value
-                // Resolve the assistant from the conversation's own assistantId, not the
-                // global current-assistant pointer — otherwise switching assistants mid-
-                // generation makes one conversation preprocess input with another's config.
-                val settings = settingsStore.awaitLoadedSettings()
-                val assistant = settings.getAssistantById(currentConversation.assistantId)
-                    ?: settings.getCurrentAssistant()
-                val processedContent = preprocessUserInputParts(content, assistant)
+                    val currentConversation = mutexFor(conversationId).withLock {
+                        if (!session.hydrated) {
+                            val stored = conversationRepo.getConversationById(conversationId)
+                            if (stored != null) {
+                                // Hydrate even an empty persisted row so assistantId/title/metadata match DB.
+                                session.state.value = stored
+                            }
+                            session.hydrated = true
+                        }
+                        session.state.value
+                    }
+                    // Resolve the assistant from the conversation's own assistantId, not the
+                    // global current-assistant pointer — otherwise switching assistants mid-
+                    // generation makes one conversation preprocess input with another's config.
+                    val settings = settingsStore.awaitLoadedSettings()
+                    val assistant = settings.getAssistantById(currentConversation.assistantId)
+                        ?: settings.getCurrentAssistant()
+                    val processedContent = preprocessUserInputParts(content, assistant)
 
-                // 添加消息到列表
-                val withUser = currentConversation.copy(
-                    messageNodes = currentConversation.messageNodes + UIMessage(
-                        role = MessageRole.USER,
-                        parts = processedContent,
-                    ).toMessageNode(),
-                )
-                saveConversation(conversationId, withUser)
+                    // 添加消息到列表
+                    val withUser = mutexFor(conversationId).withLock {
+                        val base = session.state.value
+                        val updated = base.copy(
+                            messageNodes = base.messageNodes + UIMessage(
+                                role = MessageRole.USER,
+                                parts = processedContent,
+                            ).toMessageNode(),
+                        )
+                        saveConversation(conversationId, updated)
+                        updated
+                    }
 
-                // Phase 16 — fast-path router. If the assistant has it enabled and the user's
-                // message matches a deterministic intent, run the matching tool and inject the
-                // result as a synthetic assistant message — skipping the LLM entirely.
-                // Conservative: any match failure (tool throws, no result) falls back to the
-                // normal LLM path. Headless conversations and non-text messages are skipped.
-                val routedHandled = if (answer)
-                    tryFastPathRoute(conversationId, processedContent, withUser, assistant)
-                else false
+                    // Phase 16 — fast-path router. If the assistant has it enabled and the user's
+                    // message matches a deterministic intent, run the matching tool and inject the
+                    // result as a synthetic assistant message — skipping the LLM entirely.
+                    // Conservative: any match failure (tool throws, no result) falls back to the
+                    // normal LLM path. Headless conversations and non-text messages are skipped.
+                    val routedHandled = if (answer)
+                        tryFastPathRoute(conversationId, processedContent, withUser, assistant)
+                    else false
 
-                // 开始补全 — only if router didn't handle the turn
-                if (answer && !routedHandled) {
-                    handleMessageComplete(conversationId)
+                    // 开始补全 — only if router didn't handle the turn
+                    val generationError = if (answer && !routedHandled) {
+                        handleMessageComplete(conversationId)
+                    } else null
+
+                    _generationDoneFlow.emit(conversationId)
+                    if (generationError != null) {
+                        result.complete(sendFailureResult(generationError))
+                    } else {
+                        result.complete(SendMessageResult(success = true))
+                    }
                 }
-
-                _generationDoneFlow.emit(conversationId)
-                result.complete(SendMessageResult(success = true))
             } catch (e: Exception) {
                 e.printStackTrace()
                 if (e is CancellationException) {
@@ -583,8 +623,11 @@ class ChatService(
         // executes and the handle would never complete. This guard completes it exactly
         // once, with the failure cause (or an Error that escaped the `catch (e: Exception)`).
         job.invokeOnCompletion { cause -> ensureSendMessageResultCompleted(result, cause) }
-        session.setJob(job)
-        return result
+        // Atomic swap: each concurrent sendMessage gets its exact predecessor Job and cancels it
+        // BEFORE starting, eliminating duplicate parallel launches.
+        previousJob = session.replaceJob(job)
+        job.start()
+        return SendMessageTurn(result, job)
     }
 
     // ---- Steer（生成中注入用户消息） ----
@@ -1019,7 +1062,7 @@ class ChatService(
     private suspend fun handleMessageComplete(
         conversationId: Uuid,
         messageRange: ClosedRange<Int>? = null
-    ) {
+    ): Throwable? {
         val settings = settingsStore.awaitLoadedSettings()
         // Resolve the assistant from this conversation's own assistantId — the global
         // current-assistant pointer can have moved if the user switched assistants while
@@ -1136,16 +1179,17 @@ class ChatService(
                     }
                 }
             if (invalidMcpNames.isNotEmpty()) {
+                val err = IllegalStateException(
+                    context.getString(
+                        R.string.error_mcp_invalid_server_name,
+                        invalidMcpNames.joinToString(", ")
+                    )
+                )
                 addError(
-                    error = IllegalStateException(
-                        context.getString(
-                            R.string.error_mcp_invalid_server_name,
-                            invalidMcpNames.joinToString(", ")
-                        )
-                    ),
+                    error = err,
                     conversationId = conversationId,
                 )
-                return
+                return err
             }
 
             val mcpToolDefinitions = availableMcpTools.map { (serverId, serverName, tool) ->
@@ -1406,7 +1450,11 @@ class ChatService(
             launchWithConversationReference(conversationId) {
                 generateSuggestion(conversationId, finalConversation)
             }
+        }.exceptionOrNull()?.let { failure ->
+            if (failure is CancellationException) throw failure
+            return failure
         }
+        return null
     }
 
     private suspend fun createWorkspaceToolsIfReady(workspaceId: String?, cwd: String? = null): List<Tool> {
@@ -1537,13 +1585,12 @@ class ChatService(
                 params = backgroundTextGenerationParams(model),
             )
 
-            // 生成完，conversation可能不是最新了，因此需要重新获取
-            conversationRepo.getConversationById(conversation.id)?.let {
-                saveConversation(
-                    conversationId,
-                    it.copy(title = result.choices[0].message?.toText()?.trim() ?: "")
-                )
-            }
+            // Single-column conditional SQL UPDATE: never resurrects a deleted conversation,
+            // never overwrites concurrent message nodes or attachments, and when force == false
+            // only fills a still-blank title. Memory state merges ONLY the title field.
+            val newTitle = result.choices.firstOrNull()?.message?.toText()?.trim() ?: ""
+            if (newTitle.isBlank()) return
+            updateConversationTitle(conversation.id, newTitle, onlyIfBlank = !force)
         }.onFailure {
             // Title generation is auxiliary — a failure here doesn't block the chat
             // and surfaces visibly as a blank conversation title in the list. Don't
@@ -1553,6 +1600,16 @@ class ChatService(
             // the generateSuggestion pattern (log only) to keep the surface quiet.
             Log.w(TAG, "generateTitle failed", it)
         }
+    }
+
+    suspend fun updateConversationTitle(
+        conversationId: Uuid,
+        title: String,
+        onlyIfBlank: Boolean = false,
+    ): Boolean = mutexFor(conversationId).withLock {
+        if (!conversationRepo.updateConversationTitle(conversationId, title, onlyIfBlank)) return@withLock false
+        sessions[conversationId]?.state?.update { it.copy(title = title) }
+        true
     }
 
     // ---- 生成建议 ----
@@ -1926,6 +1983,7 @@ class ChatService(
 
         val updatedConversation = conversation.copy()
         updateConversation(conversationId, updatedConversation)
+        sessions[conversationId]?.hydrated = true
 
         if (!exists) {
             conversationRepo.insertConversation(updatedConversation)

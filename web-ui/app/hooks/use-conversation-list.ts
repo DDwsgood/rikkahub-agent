@@ -2,6 +2,7 @@ import * as React from "react";
 
 import api from "~/services/api";
 import { EVENT_CONVERSATION_LIST_INVALIDATE, subscribeToEvent } from "~/services/events";
+import i18n from "~/i18n";
 import type {
   ConversationDto,
   ConversationListDto,
@@ -215,7 +216,7 @@ export function useConversationList({
       })
       .catch((err: Error) => {
         if (!active || requestEpoch !== listRequestEpochRef.current) return;
-        setError(err.message || "加载会话失败");
+        setError(err.message || i18n.t("page:conversations.errors.load_list_failed"));
       })
       .finally(() => {
         if (!active || requestEpoch !== listRequestEpochRef.current) return;

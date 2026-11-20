@@ -32,18 +32,21 @@ const SEARCH_TOOL_NAME = "search";
 const SEARCH_SERVICE_LABELS: Record<string, string> = {
   bing_local: "Bing",
   rikkahub: "RikkaHub",
-  zhipu: "智谱",
   tavily: "Tavily",
   exa: "Exa",
   searxng: "SearXNG",
   linkup: "LinkUp",
   brave: "Brave",
-  metaso: "秘塔",
   ollama: "Ollama",
   perplexity: "Perplexity",
   firecrawl: "Firecrawl",
   jina: "Jina",
-  bocha: "博查",
+};
+
+const SEARCH_SERVICE_LABEL_KEYS: Record<string, string> = {
+  zhipu: "zhipu",
+  metaso: "metaso",
+  bocha: "bocha",
 };
 
 export interface SearchPickerButtonProps {
@@ -97,6 +100,11 @@ function getServiceLabel(service: SearchServiceOption, t: TFunction): string {
   const type = getServiceType(service);
   if (!type) {
     return t("search.default_service_label");
+  }
+
+  const labelKey = SEARCH_SERVICE_LABEL_KEYS[type];
+  if (labelKey) {
+    return t(`search.service_labels.${labelKey}`);
   }
 
   return SEARCH_SERVICE_LABELS[type] ?? type;

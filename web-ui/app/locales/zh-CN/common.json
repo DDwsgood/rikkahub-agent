@@ -47,6 +47,8 @@
     "language_label": "语言：{{label}}",
     "language_zh_cn": "简体中文",
     "language_en_us": "English",
+    "clear_web_session": "清除网页会话",
+    "web_session_cleared": "网页会话已清除",
     "theme_mode": "颜色模式",
     "theme_mode_label": "颜色模式：{{label}}",
     "theme_color": "主题色",
@@ -119,5 +121,32 @@
     "unlock": "解锁",
     "unlocking": "正在解锁...",
     "unlock_failed": "Web API 解锁失败。"
+  },
+  "a11y": {
+    "close": "关闭",
+    "loading": "加载中",
+    "typing": "正在输入",
+    "toggle_sidebar": "切换侧边栏",
+    "sidebar": "侧边栏",
+    "sidebar_description": "显示导航侧边栏。",
+    "scroll_to_bottom": "滚动到底部",
+    "download_conversation": "下载会话"
+  },
+  "conversation_empty": {
+    "default_title": "暂无消息",
+    "default_description": "开始对话后，消息会显示在这里"
+  },
+  "display": {
+    "default_assistant": "默认助手",
+    "unnamed_model": "未命名模型"
+  },
+  "export": {
+    "role_user": "用户",
+    "role_assistant": "助手",
+    "role_system": "系统",
+    "role_data": "数据",
+    "role_tool": "工具",
+    "thinking": "思考",
+    "image_alt": "图片"
   }
 }

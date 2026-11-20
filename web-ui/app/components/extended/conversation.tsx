@@ -6,7 +6,10 @@ import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { ArrowDownIcon, DownloadIcon } from "lucide-react";
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
+
+import i18n from "~/i18n";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
@@ -34,30 +37,38 @@ export type ConversationEmptyStateProps = ComponentProps<"div"> & {
 
 export const ConversationEmptyState = ({
   className,
-  title = "No messages yet",
-  description = "Start a conversation to see messages here",
+  title,
+  description,
   icon,
   children,
   ...props
-}: ConversationEmptyStateProps) => (
-  <div
-    className={cn(
-      "flex size-full flex-col items-center justify-center gap-3 p-8 text-center",
-      className,
-    )}
-    {...props}
-  >
-    {children ?? (
-      <>
-        {icon && <div className="text-muted-foreground">{icon}</div>}
-        <div className="space-y-1">
-          <h3 className="font-medium text-sm">{title}</h3>
-          {description && <p className="text-muted-foreground text-sm">{description}</p>}
-        </div>
-      </>
-    )}
-  </div>
-);
+}: ConversationEmptyStateProps) => {
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t("conversation_empty.default_title");
+  const resolvedDescription = description ?? t("conversation_empty.default_description");
+
+  return (
+    <div
+      className={cn(
+        "flex size-full flex-col items-center justify-center gap-3 p-8 text-center",
+        className,
+      )}
+      {...props}
+    >
+      {children ?? (
+        <>
+          {icon && <div className="text-muted-foreground">{icon}</div>}
+          <div className="space-y-1">
+            <h3 className="font-medium text-sm">{resolvedTitle}</h3>
+            {resolvedDescription && (
+              <p className="text-muted-foreground text-sm">{resolvedDescription}</p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
 
 export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 
@@ -65,6 +76,7 @@ export const ConversationScrollButton = ({
   className,
   ...props
 }: ConversationScrollButtonProps) => {
+  const { t } = useTranslation();
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
 
   const handleScrollToBottom = useCallback(() => {
@@ -74,6 +86,8 @@ export const ConversationScrollButton = ({
   return (
     !isAtBottom && (
       <Button
+        aria-label={t("a11y.scroll_to_bottom")}
+        title={t("a11y.scroll_to_bottom")}
         className={cn(
           "absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted",
           className,
@@ -102,7 +116,9 @@ export type ConversationDownloadProps = Omit<ComponentProps<typeof Button>, "onC
 };
 
 const defaultFormatMessage = (message: ConversationMessage): string => {
-  const roleLabel = message.role.charAt(0).toUpperCase() + message.role.slice(1);
+  const roleLabel = i18n.t(`export.role_${message.role.toLowerCase()}`, {
+    defaultValue: message.role.charAt(0).toUpperCase() + message.role.slice(1),
+  });
   return `**${roleLabel}:** ${message.content}`;
 };
 
@@ -119,6 +135,7 @@ export const ConversationDownload = ({
   children,
   ...props
 }: ConversationDownloadProps) => {
+  const { t } = useTranslation();
   const handleDownload = useCallback(() => {
     const markdown = messagesToMarkdown(messages, formatMessage);
     const blob = new Blob([markdown], { type: "text/markdown" });
@@ -134,6 +151,8 @@ export const ConversationDownload = ({
 
   return (
     <Button
+      aria-label={t("a11y.download_conversation")}
+      title={t("a11y.download_conversation")}
       className={cn(
         "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
         className,

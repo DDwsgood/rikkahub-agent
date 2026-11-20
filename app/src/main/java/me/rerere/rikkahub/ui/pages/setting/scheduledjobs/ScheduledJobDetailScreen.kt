@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +35,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -45,6 +51,8 @@ import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
 import me.rerere.rikkahub.data.db.entity.ScheduledJobRunEntity
 import me.rerere.rikkahub.service.CronJobScheduler
+import me.rerere.rikkahub.service.ScheduleRunDiagnosticsStore
+import me.rerere.rikkahub.service.ScheduleRunTrace
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -52,6 +60,7 @@ import me.rerere.rikkahub.utils.base64Encode
 import me.rerere.rikkahub.utils.formatRelativeAgo
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
+import org.koin.compose.koinInject
 
 @Composable
 fun ScheduledJobDetailScreen(
@@ -60,20 +69,46 @@ fun ScheduledJobDetailScreen(
 ) {
     val nav = LocalNavController.current
     val ctx = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+    val diagnosticsStore: ScheduleRunDiagnosticsStore = koinInject()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var job by remember { mutableStateOf<ScheduledJobEntity?>(null) }
-    var history by remember { mutableStateOf<List<ScheduledJobRunEntity>>(emptyList()) }
+    // Live Room-backed subscriptions so active runs, retries, and stats update immediately
+    // without requiring the user to leave and re-enter the detail screen.
+    val observedJob by remember(jobId) { vm.observeJob(jobId) }
+        .collectAsStateWithLifecycle(initialValue = null)
+    var fallbackJob by remember(jobId) { mutableStateOf<ScheduledJobEntity?>(null) }
+    val history by remember(jobId) { vm.observeHistory(jobId, limit = 20) }
+        .collectAsStateWithLifecycle(initialValue = emptyList())
     var showDeleteConfirm by remember { mutableStateOf(false) }
-
-    LaunchedEffect(jobId) {
-        job = vm.get(jobId)
-        history = vm.history(jobId)
+    var exactAlarmGranted by remember {
+        mutableStateOf(PermissionHelper.canScheduleExactAlarms(ctx))
     }
 
-    val current = job
+    LaunchedEffect(jobId) {
+        fallbackJob = vm.get(jobId)
+    }
+
+    DisposableEffect(lifecycleOwner, jobId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val nowGranted = PermissionHelper.canScheduleExactAlarms(ctx)
+                if (nowGranted && !exactAlarmGranted) {
+                    vm.reconcileSchedules()
+                }
+                exactAlarmGranted = nowGranted
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val traces by diagnosticsStore.tracesForJobFlow(jobId, limit = 12)
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+
+    val current = observedJob ?: fallbackJob
     if (current == null) {
         Scaffold(
             topBar = {
@@ -139,13 +174,12 @@ fun ScheduledJobDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .navigationBarsPadding()
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 ) {
                     androidx.compose.material3.Button(onClick = {
                         scope.launch {
                             val outcome = vm.runNow(current.id)
-                            history = vm.history(current.id)
-                            job = vm.get(current.id)
                             val msgRes = when (outcome) {
                                 ScheduledJobsViewModel.RunNowOutcome.Fired ->
                                     R.string.setting_page_scheduled_jobs_run_now_fired
@@ -198,8 +232,7 @@ fun ScheduledJobDetailScreen(
             }
             item {
                 SectionHeader(stringResource(R.string.setting_page_scheduled_jobs_section_schedule))
-                Text(summariseSchedule(current))
-                val exactAlarmGranted = remember { PermissionHelper.canScheduleExactAlarms(ctx) }
+                Text(summariseSchedule(ctx, current))
                 Text(
                     backendStrategyText(current.mode, exactAlarmGranted),
                     style = MaterialTheme.typography.bodySmall,
@@ -242,7 +275,7 @@ fun ScheduledJobDetailScreen(
             }
             item {
                 SectionHeader(stringResource(R.string.setting_page_scheduled_jobs_section_what_runs))
-                Text(modeLabel(current))
+                Text(modeLabel(ctx, current))
                 if (current.mode == "llm") {
                     current.prompt?.takeIf { it.isNotBlank() }?.let {
                         Text(
@@ -279,6 +312,22 @@ fun ScheduledJobDetailScreen(
             item {
                 SectionHeader(stringResource(R.string.setting_page_scheduled_jobs_section_stats))
                 StatsBlock(current)
+            }
+            item {
+                SectionHeader(stringResource(R.string.setting_page_scheduled_jobs_section_diagnostics))
+                if (traces.isEmpty()) {
+                    Text(
+                        stringResource(R.string.setting_page_scheduled_jobs_diag_empty),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (trace in traces) {
+                            DiagnosticTraceCard(trace)
+                        }
+                    }
+                }
             }
             item {
                 SectionHeader(stringResource(R.string.setting_page_scheduled_jobs_section_history))
@@ -424,4 +473,99 @@ private fun StatsBlock(job: ScheduledJobEntity) {
             )
         }
     }
+}
+
+@Composable
+private fun DiagnosticTraceCard(trace: ScheduleRunTrace) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = stringResource(
+                R.string.setting_page_scheduled_jobs_diag_source_line,
+                trace.triggerSource,
+                trace.outcome,
+            ),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            text = stringResource(
+                R.string.setting_page_scheduled_jobs_diag_stage_planned,
+                formatAbsoluteForDetail(trace.scheduledAtMs),
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        val alarmMs = trace.alarmReceivedAtMs
+        if (alarmMs != null) {
+            Text(
+                text = stringResource(
+                    R.string.setting_page_scheduled_jobs_diag_stage_alarm,
+                    formatAbsoluteForDetail(alarmMs),
+                    formatLatencyMs(trace.alarmDeliveryDelayMs ?: 0L),
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else {
+            Text(
+                text = stringResource(R.string.setting_page_scheduled_jobs_diag_stage_alarm_none),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = stringResource(
+                R.string.setting_page_scheduled_jobs_diag_stage_worker,
+                formatAbsoluteForDetail(trace.workerStartedAtMs),
+                formatLatencyMs(trace.workerStartDelayMs),
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        val fgsLabel = trace.foregroundAtMs?.let { ts ->
+            "${trace.foregroundResult} (${formatAbsoluteForDetail(ts)})"
+        } ?: trace.foregroundResult
+        Text(
+            text = stringResource(
+                R.string.setting_page_scheduled_jobs_diag_stage_fgs,
+                fgsLabel,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        val durationLabel = trace.effectiveExecutionDurationMs?.let { formatDurationMs(it) } ?: "—"
+        val deliveryLabel = buildString {
+            append(trace.deliveryResult ?: "local")
+            trace.deliveryDurationMs?.let { d -> append(" (${formatDurationMs(d)})") }
+        }
+        Text(
+            text = stringResource(
+                R.string.setting_page_scheduled_jobs_diag_stage_finish,
+                durationLabel,
+                deliveryLabel,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+private fun formatLatencyMs(deltaMs: Long): String {
+    val sign = if (deltaMs >= 0L) "+" else "-"
+    val abs = kotlin.math.abs(deltaMs)
+    return when {
+        abs < 1_000L -> "$sign${abs}ms"
+        abs < 60_000L -> "$sign${"%.1f".format(abs / 1000.0)}s"
+        else -> "$sign${abs / 60_000L}m ${(abs % 60_000L) / 1000L}s"
+    }
+}
+
+private fun formatDurationMs(ms: Long): String = when {
+    ms < 1_000L -> "${ms}ms"
+    ms < 60_000L -> "${"%.1f".format(ms / 1000.0)}s"
+    else -> "${ms / 60_000L}m ${(ms % 60_000L) / 1000L}s"
 }

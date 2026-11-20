@@ -8,6 +8,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -128,7 +132,7 @@ private fun OpenAIRealtimeASRConfiguration(
             onValueChange = { onValueChange(setting.copy(prompt = it)) },
             modifier = Modifier.fillMaxWidth(),
             minLines = 2,
-            placeholder = { Text("Optional") }
+            placeholder = { Text(stringResource(R.string.setting_asr_configure_prompt_placeholder)) }
         )
     }
 
@@ -144,7 +148,7 @@ private fun OpenAIRealtimeASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "VAD Threshold"
+            label = stringResource(R.string.setting_asr_configure_vad_threshold)
         )
     }
 
@@ -160,7 +164,7 @@ private fun OpenAIRealtimeASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Prefix Padding"
+            label = stringResource(R.string.setting_asr_configure_prefix_padding)
         )
     }
 
@@ -176,7 +180,7 @@ private fun OpenAIRealtimeASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Silence Duration"
+            label = stringResource(R.string.setting_asr_configure_silence_duration)
         )
     }
 }
@@ -246,7 +250,7 @@ private fun DashScopeASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "VAD Threshold"
+            label = stringResource(R.string.setting_asr_configure_vad_threshold)
         )
     }
 
@@ -262,7 +266,7 @@ private fun DashScopeASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Silence Duration"
+            label = stringResource(R.string.setting_asr_configure_silence_duration)
         )
     }
 }
@@ -386,7 +390,7 @@ private fun MiMoASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Sample Rate"
+            label = stringResource(R.string.setting_asr_configure_sample_rate)
         )
     }
 
@@ -402,7 +406,7 @@ private fun MiMoASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Segment Duration (s)"
+            label = stringResource(R.string.setting_asr_configure_segment_duration_seconds)
         )
     }
 }
@@ -472,7 +476,7 @@ private fun StepASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Sample Rate"
+            label = stringResource(R.string.setting_asr_configure_sample_rate)
         )
     }
 
@@ -488,7 +492,7 @@ private fun StepASRConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Segment Duration (s)"
+            label = stringResource(R.string.setting_asr_configure_segment_duration_seconds)
         )
     }
 
@@ -516,17 +520,19 @@ private fun StepASRConfiguration(
         label = { Text(stringResource(R.string.setting_asr_configure_step_hotwords)) },
         description = { Text(stringResource(R.string.setting_asr_configure_step_hotwords_desc)) }
     ) {
+        var hotwordsText by remember(setting.id) { mutableStateOf(setting.hotwords.joinToString(", ")) }
         OutlinedTextField(
-            // 用逗号分隔展示, 输入时按逗号 split 回 List
-            value = setting.hotwords.joinToString(","),
+            // 用逗号分隔展示, 编辑期保留原始输入避免吞掉末尾逗号
+            value = hotwordsText,
             onValueChange = { text ->
+                hotwordsText = text
                 val list = text.split(",")
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
                 onValueChange(setting.copy(hotwords = list))
             },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("热词1, 热词2, 热词3") }
+            placeholder = { Text(stringResource(R.string.setting_asr_configure_hotwords_placeholder)) }
         )
     }
 }

@@ -3,6 +3,7 @@ package me.rerere.rikkahub.ui.pages.setting
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.widget.Toast
+import androidx.annotation.StringRes
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -104,14 +105,14 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
     if (settings.launchCount > 100 && (settings.launchCount - settings.sponsorAlertDismissedAt) >= 50) {
         AlertDialog(
             onDismissRequest = {
-                vm.updateSettings(settings.copy(sponsorAlertDismissedAt = settings.launchCount))
+                vm.updateSettings { it.copy(sponsorAlertDismissedAt = it.launchCount) }
             },
             icon = { Icon(HugeIcons.WavingHand01, null) },
             title = { Text(stringResource(R.string.setting_page_sponsor_alert_title)) },
             text = { Text(stringResource(R.string.setting_page_sponsor_alert_desc)) },
             confirmButton = {
                 Button(onClick = {
-                    vm.updateSettings(settings.copy(sponsorAlertDismissedAt = settings.launchCount))
+                    vm.updateSettings { it.copy(sponsorAlertDismissedAt = it.launchCount) }
                     navController.navigate(Screen.SettingDonate)
                 }) {
                     Text(stringResource(R.string.setting_page_sponsor_alert_confirm))
@@ -119,7 +120,7 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
             },
             dismissButton = {
                 TextButton(onClick = {
-                    vm.updateSettings(settings.copy(sponsorAlertDismissedAt = settings.launchCount))
+                    vm.updateSettings { it.copy(sponsorAlertDismissedAt = it.launchCount) }
                 }) {
                     Text(stringResource(R.string.setting_page_sponsor_alert_dismiss))
                 }
@@ -504,14 +505,14 @@ private fun ProviderConfigWarningCard(navController: Navigator) {
 }
 
 private data class QQGroup(
-    val name: String,
+    @StringRes val nameRes: Int,
     val key: String,
 )
 
 private val QQ_GROUPS = listOf(
-    QQGroup("RikkaHub 一群", "4POE46u9e_zoy1TkNfWdCvueR9CKFJdk"),
-    QQGroup("RikkaHub 二群", "Qsm0whzbPsm1UyNpR683ulLyMZ2Pqrw0"),
-    QQGroup("RikkaHub 三群", "Qc9oP-9tXioZeQEvEvI2_owWtBAIx3lS"),
+    QQGroup(R.string.setting_page_qq_group_1, "4POE46u9e_zoy1TkNfWdCvueR9CKFJdk"),
+    QQGroup(R.string.setting_page_qq_group_2, "Qsm0whzbPsm1UyNpR683ulLyMZ2Pqrw0"),
+    QQGroup(R.string.setting_page_qq_group_3, "Qc9oP-9tXioZeQEvEvI2_owWtBAIx3lS"),
 )
 
 @Composable
@@ -526,7 +527,7 @@ private fun QQGroupBottomSheet(onDismiss: () -> Unit) {
         ) {
             QQ_GROUPS.forEach { group ->
                 ListItem(
-                    headlineContent = { Text(group.name) },
+                    headlineContent = { Text(stringResource(group.nameRes)) },
                     leadingContent = {
                         Icon(
                             imageVector = TencentQQIcon,

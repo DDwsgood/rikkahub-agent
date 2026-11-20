@@ -3,15 +3,21 @@ package me.rerere.rikkahub.ui.pages.extensions.workspace
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.files.WorkspacePublicExport
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
@@ -35,6 +41,10 @@ class WorkspaceDetailVM(
 
     private val _installError = MutableStateFlow<String?>(null)
     val installError = _installError.asStateFlow()
+
+    val sharedDirEnabled: Flow<Boolean> = repository.sharedDirEnabledFlow(id)
+
+    private var refreshJob: Job? = null
 
     init {
         loadWorkspace()
@@ -73,17 +83,21 @@ class WorkspaceDetailVM(
     }
 
     fun refresh() {
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        val areaSnapshot = state.value.area
+        val pathSnapshot = state.value.path
+        refreshJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             runCatching {
                 repository.listFiles(
                     id = id,
-                    area = state.value.area,
-                    path = state.value.path,
+                    area = areaSnapshot,
+                    path = pathSnapshot,
                 )
             }.onSuccess { entries ->
                 _state.update { it.copy(entries = entries, loading = false) }
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 _state.update {
                     it.copy(
                         entries = emptyList(),
@@ -146,26 +160,67 @@ class WorkspaceDetailVM(
     }
 
     /**
-     * 把当前区域下的文件导出到 cacheDir 的临时文件, 完成后回调 [onReady].
-     * 供分享 / 图片预览 / 交给系统应用打开等复用 (它们都需要一个 FileProvider 可访问的真实 File).
+     * 把当前区域下的文件导出到 cacheDir 下隔离的临时目录, 完成后回调 [onReady].
+     * 使用随机子目录避免同名覆盖和 Coil 旧图缓存, 并自动清理过期缓存。
      */
-    fun exportToCacheFile(entry: WorkspaceFileEntry, cacheDir: File, onReady: (File) -> Unit) {
+    fun exportToCacheFile(entry: WorkspaceFileEntry, context: android.content.Context, onReady: (File) -> Unit) {
+        val areaSnapshot = state.value.area
         viewModelScope.launch {
             runCatching {
-                val dir = File(cacheDir, "workspace_share").apply { mkdirs() }
-                val file = File(dir, entry.name)
-                file.outputStream().use { output ->
+                WorkspacePublicExport.stageToRestrictedShareCacheSuspend(
+                    context = context,
+                    fileName = entry.name,
+                ) { output ->
                     repository.exportFile(
                         id = id,
-                        area = state.value.area,
+                        area = areaSnapshot,
                         path = entry.path,
                         outputStream = output,
                     )
                 }
-                file
             }.onSuccess(onReady).onFailure { error ->
-                _state.update { it.copy(error = error.message ?: "导出文件失败") }
+                _state.update { it.copy(error = error.message) }
             }
+        }
+    }
+
+    fun saveToDownloads(
+        entry: WorkspaceFileEntry,
+        onSuccess: (String) -> Unit,
+        onPermissionRequired: () -> Unit,
+        onFailure: (String?) -> Unit,
+    ) {
+        val areaSnapshot = state.value.area
+        viewModelScope.launch {
+            runCatching {
+                repository.exportFileToDownloads(
+                    id = id,
+                    area = areaSnapshot,
+                    path = entry.path,
+                )
+            }.onSuccess { result ->
+                onSuccess(result.displayPath)
+            }.onFailure { error ->
+                if (error is me.rerere.rikkahub.data.files.DownloadExportException &&
+                    error.code == me.rerere.rikkahub.data.files.ExportErrorCode.PERMISSION_REQUIRED
+                ) {
+                    onPermissionRequired()
+                } else {
+                    onFailure(error.message)
+                }
+            }
+        }
+    }
+
+    fun onResumeCheckSharedAccess() {
+        viewModelScope.launch {
+            repository.teardownProcessesIfSharedAccessRevoked(id)
+        }
+    }
+
+    fun setSharedDirEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.setSharedDirEnabled(id, enabled)
         }
     }
 

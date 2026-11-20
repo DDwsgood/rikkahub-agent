@@ -67,10 +67,10 @@ class CronBootReceiver : BroadcastReceiver() {
     }
 
     private fun enqueueReconcile(context: Context, kind: String, attempt: Int) {
-        // Boot is also a good moment to (re)assert the pipeline warmers. arm() directly —
-        // a reboot wiped the alarm even when the PendingIntent registration still resolves.
-        CronDailyKeepAliveReceiver.arm(context)
-        CronReconcileWorker.schedulePeriodic(context)
+        // Direct-boot safe: only re-arm the daily keep-alive alarm if it was already armed before
+        // reboot. The expedited CronReconcileWorker enqueued right below coordinates both daily
+        // keep-alive and periodic reconcile under CronJobScheduler.syncGlobalBackgroundInfrastructure().
+        CronDailyKeepAliveReceiver.rearmIfEnabled(context)
 
         val workName = when (kind) {
             CronReconcileWorker.KIND_TIME -> RECONCILE_TIME_WORK_NAME

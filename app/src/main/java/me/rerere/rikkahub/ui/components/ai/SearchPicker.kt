@@ -328,19 +328,26 @@ private fun BuiltInSearchSetting(model: Model) {
             Switch(
                 checked = model.tools.contains(BuiltInTools.Search),
                 onCheckedChange = { checked ->
-                    val settings = settingsStore.settingsFlow.value
+                    val targetModelId = model.id
                     scope.launch {
-                        settingsStore.update(
-                            settings.copy(
-                                providers = settings.providers.map { providerSetting ->
-                                    providerSetting.editModel(
-                                        model.copy(
-                                            tools = if (checked) model.tools + BuiltInTools.Search else model.tools - BuiltInTools.Search
-                                        )
-                                    )
+                        settingsStore.update { latest ->
+                            latest.copy(
+                                providers = latest.providers.map { providerSetting ->
+                                    val liveModel = providerSetting.models.firstOrNull { it.id == targetModelId }
+                                    if (liveModel == null) {
+                                        providerSetting
+                                    } else {
+                                        val nextTools = if (checked) {
+                                            if (BuiltInTools.Search in liveModel.tools) liveModel.tools
+                                            else liveModel.tools + BuiltInTools.Search
+                                        } else {
+                                            liveModel.tools - BuiltInTools.Search
+                                        }
+                                        providerSetting.editModel(liveModel.copy(tools = nextTools))
+                                    }
                                 }
                             )
-                        )
+                        }
                     }
                 }
             )

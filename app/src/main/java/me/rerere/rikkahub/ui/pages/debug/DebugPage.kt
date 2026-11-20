@@ -193,11 +193,11 @@ private fun MainPage(vm: DebugVM) {
         }
         Button(
             onClick = {
-                vm.updateSettings(
-                    settings.copy(
+                vm.updateSettings { latest ->
+                    latest.copy(
                         chatModelId = Uuid.random()
                     )
-                )
+                }
             }
         ) {
             Text("重置Chat模型")
@@ -261,8 +261,8 @@ private fun MainPage(vm: DebugVM) {
                 singleLine = true,
             )
             Button(onClick = {
-                launchCountInput.toIntOrNull()?.let {
-                    vm.updateSettings(settings.copy(launchCount = it))
+                launchCountInput.toIntOrNull()?.let { count ->
+                    vm.updateSettings { latest -> latest.copy(launchCount = count) }
                 }
             }) {
                 Text("Set")
@@ -284,8 +284,8 @@ private fun MainPage(vm: DebugVM) {
                 singleLine = true,
             )
             Button(onClick = {
-                dismissedAtInput.toIntOrNull()?.let {
-                    vm.updateSettings(settings.copy(sponsorAlertDismissedAt = it))
+                dismissedAtInput.toIntOrNull()?.let { dismissedAt ->
+                    vm.updateSettings { latest -> latest.copy(sponsorAlertDismissedAt = dismissedAt) }
                 }
             }) {
                 Text("Set")

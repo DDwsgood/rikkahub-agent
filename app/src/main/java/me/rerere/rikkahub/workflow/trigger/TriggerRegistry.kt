@@ -133,8 +133,8 @@ class TriggerRegistry(
     }
 
     /** Called by [WorkflowTimeCronWorker] when its scheduled time arrives. */
-    suspend fun fireFromTimeCronWorker(workflowId: String) {
-        timeCron.onWorkerFired(workflowId)
+    suspend fun fireFromTimeCronWorker(workflowId: String, workerExecutionId: String, requestIsPeriodic: Boolean) {
+        timeCron.onWorkerFired(workflowId, workerExecutionId, requestIsPeriodic)
     }
 
     suspend fun shutdown() {

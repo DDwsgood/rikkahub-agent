@@ -73,7 +73,9 @@ fun WorkspaceTerminalPage(id: String) {
             },
         ) { innerPadding ->
             WorkspaceTerminalContent(
+                workspaceId = id,
                 root = state.workspace?.root,
+                sdcardMode = state.workspace?.sdcardMode,
                 contentPadding = innerPadding,
             )
         }
@@ -82,10 +84,13 @@ fun WorkspaceTerminalPage(id: String) {
 
 @Composable
 private fun WorkspaceTerminalContent(
+    workspaceId: String,
     root: String?,
+    sdcardMode: String?,
     contentPadding: PaddingValues,
 ) {
     val context = LocalContext.current
+    val repository = org.koin.compose.koinInject<me.rerere.rikkahub.data.repository.WorkspaceRepository>()
     val terminalTextSizePx = with(LocalDensity.current) { 12.sp.roundToPx() }
     val terminalTypeface = remember(context) {
         ResourcesCompat.getFont(context, R.font.jetbrains_mono) ?: Typeface.MONOSPACE
@@ -104,37 +109,51 @@ private fun WorkspaceTerminalContent(
     viewClient.controlDown = controlDown
     viewClient.altDown = altDown
 
+    val sharedDirEnabled by repository.sharedDirEnabledFlow(workspaceId)
+        .collectAsStateWithLifecycle(initialValue = false)
+    val mountGeneration by WorkspaceTerminalRegistry.generationFlow(workspaceId)
+        .collectAsStateWithLifecycle()
+    val mountPolicyKey = "$root|$sharedDirEnabled|${sdcardMode.orEmpty()}|$mountGeneration"
+
     val sessionState by produceState<TerminalSessionUiState>(
         initialValue = TerminalSessionUiState.Loading,
-        root,
+        mountPolicyKey,
         sessionClient,
     ) {
         val current = root
-        value = if (current == null) {
-            TerminalSessionUiState.Loading
-        } else {
-            // rootfs stat 与 RootfsPatcher().patch()/DNS 查询都是阻塞 I/O, 放到 IO 线程执行;
-            // TerminalSession 构造内部会创建 Handler, 必须回到主线程执行
-            val prepared = withContext(Dispatchers.IO) {
-                if (!workspaceRootfsReady(context, current)) {
-                    false
-                } else {
-                    prepareWorkspaceTerminalSession(context, current)
-                    true
-                }
-            }
-            if (!prepared) {
-                TerminalSessionUiState.NotInstalled
+        if (current == null) {
+            value = TerminalSessionUiState.Loading
+            return@produceState
+        }
+        // rootfs stat 与 RootfsPatcher().patch()/DNS 查询都是阻塞 I/O, 放到 IO 线程执行;
+        // TerminalSession 构造内部会创建 Handler, 必须回到主线程执行
+        val preparedSnapshot = withContext(Dispatchers.IO) {
+            if (!workspaceRootfsReady(context, current)) {
+                null
             } else {
-                if (!isActive) return@produceState
-                val created = createWorkspaceTerminalSession(context, current, sessionClient)
-                // 创建后若组合已离开, 主动回收以免泄漏 proot 进程, 且不再把已 finish 的 session 暴露为 Ready
-                if (!isActive) {
-                    created.finishIfRunning()
-                    return@produceState
-                }
-                TerminalSessionUiState.Ready(created)
+                prepareWorkspaceTerminalSession(context, current)
+                repository.terminalBindMountsSnapshot(workspaceId)
             }
+        }
+        if (preparedSnapshot == null) {
+            value = TerminalSessionUiState.NotInstalled
+            return@produceState
+        }
+        if (!isActive) return@produceState
+        val created = createWorkspaceTerminalSession(context, current, sessionClient, preparedSnapshot.bindMounts)
+        try {
+            val started = repository.startTerminalWithMountPolicy(workspaceId) {
+                WorkspaceTerminalRegistry.registerAndStart(workspaceId, created, preparedSnapshot.generation) {
+                    // The first updateSize launches Termux's child; later View calls only resize it.
+                    created.updateSize(80, 24)
+                }
+            }
+            if (!started || !isActive) return@produceState
+            value = TerminalSessionUiState.Ready(created)
+            awaitDispose {}
+        } finally {
+            WorkspaceTerminalRegistry.unregister(workspaceId, created)
+            created.finishIfRunning()
         }
     }
 

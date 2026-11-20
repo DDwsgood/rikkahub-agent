@@ -3,16 +3,19 @@ package me.rerere.rikkahub.ui.pages.backup
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import me.rerere.rikkahub.data.datastore.BackupReminderConfig
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.WebDavConfig
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.sync.importer.ChatboxImporter
 import me.rerere.rikkahub.data.sync.importer.CherryStudioProviderImporter
+import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.rikkahub.data.sync.S3BackupItem
@@ -42,11 +45,19 @@ class BackupVM(
         loadS3BackupFileItems()
     }
 
-    fun updateSettings(settings: Settings) {
+    fun updateSettings(transform: (Settings) -> Settings): Job =
         viewModelScope.launch {
-            settingsStore.update(settings)
+            settingsStore.update(transform)
         }
-    }
+
+    fun updateWebDavConfig(newConfig: WebDavConfig): Job =
+        viewModelScope.launch { applyWebDavConfig(settingsStore, newConfig) }
+
+    fun updateS3Config(newConfig: S3Config): Job =
+        viewModelScope.launch { applyS3Config(settingsStore, newConfig) }
+
+    fun updateBackupReminderConfig(newConfig: BackupReminderConfig): Job =
+        viewModelScope.launch { applyBackupReminderConfig(settingsStore, newConfig) }
 
     fun loadBackupFileItems() {
         viewModelScope.launch {
@@ -115,10 +126,12 @@ class BackupVM(
         )
 
         val targetAssistantId = settings.value.assistantId
-        settingsStore.update(
-            settings.value.copy(
-                providers = result.providers + settings.value.providers,
-                assistants = settings.value.assistants.map { assistant ->
+        settingsStore.update { latest ->
+            val existingIds = latest.providers.mapTo(HashSet()) { it.id }
+            val newProviders = result.providers.filterNot { it.id in existingIds }
+            latest.copy(
+                providers = newProviders + latest.providers,
+                assistants = latest.assistants.map { assistant ->
                     if (result.hasConversationSystemPrompt && assistant.id == targetAssistantId) {
                         assistant.copy(allowConversationSystemPrompt = true)
                     } else {
@@ -126,7 +139,7 @@ class BackupVM(
                     }
                 }
             )
-        )
+        }
 
         Log.i(
             TAG,
@@ -152,11 +165,13 @@ class BackupVM(
 
         Log.i(TAG, "restoreFromCherryStudio: import ${importProviders.size} providers: $importProviders")
 
-        updateSettings(
-            settings.value.copy(
-                providers = importProviders + settings.value.providers,
+        updateSettings { latest ->
+            val existingIds = latest.providers.mapTo(HashSet()) { it.id }
+            val newProviders = importProviders.filterNot { it.id in existingIds }
+            latest.copy(
+                providers = newProviders + latest.providers,
             )
-        )
+        }
     }
 
     // S3 Backup methods
@@ -201,6 +216,29 @@ class BackupVM(
                     lastBackupTime = System.currentTimeMillis()
                 )
             )
+        }
+    }
+
+    companion object {
+        internal suspend fun applyWebDavConfig(
+            settingsStore: SettingsStore,
+            newConfig: WebDavConfig,
+        ) {
+            settingsStore.update { latest -> latest.copy(webDavConfig = newConfig) }
+        }
+
+        internal suspend fun applyS3Config(
+            settingsStore: SettingsStore,
+            newConfig: S3Config,
+        ) {
+            settingsStore.update { latest -> latest.copy(s3Config = newConfig) }
+        }
+
+        internal suspend fun applyBackupReminderConfig(
+            settingsStore: SettingsStore,
+            newConfig: BackupReminderConfig,
+        ) {
+            settingsStore.update { latest -> latest.copy(backupReminderConfig = newConfig) }
         }
     }
 }

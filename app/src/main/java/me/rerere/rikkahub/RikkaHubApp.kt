@@ -145,11 +145,47 @@ class RikkaHubApp : Application() {
         // every change. With zero enabled workflows, no receivers are registered.
         startWorkflowRegistry()
 
-        // Hourly self-healing cron reconcile: boot/time/permission broadcasts register it
-        // too, but a fresh install that never reboots has no chain until the first
-        // schedule() call — registering at app start closes that gap. Idempotent
-        // (enqueueUniquePeriodicWork + UPDATE), so this is safe to run on every launch.
-        me.rerere.rikkahub.service.CronReconcileWorker.schedulePeriodic(this)
+        // Reconcile write-ahead Webhook outbox FIRST (clearing dead-owner STAGED records and
+        // re-enqueuing committed ones), then coordinate global periodic infrastructure so an
+        // idle device with zero enabled jobs and zero active outbox records tears down promptly.
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                me.rerere.rikkahub.service.ScheduleWebhookWorker.reconcilePendingOutbox(
+                    context = this@RikkaHubApp,
+                    deliveryPrefs = get(),
+                    runRepo = get(),
+                    diagnosticsStore = get(),
+                )
+            }
+            runCatching {
+                get<me.rerere.rikkahub.service.CronJobScheduler>().syncGlobalBackgroundInfrastructure()
+            }
+        }
+
+        // Global shared-storage revocation monitor: whenever any activity resumes after the user
+        // returns from OS Settings, immediately tear down PRoot sessions if storage access was revoked.
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            @Volatile private var lastKnownAllFilesAccess: Boolean =
+                me.rerere.rikkahub.data.ai.tools.local.PermissionHelper.hasAllFilesAccess(this@RikkaHubApp)
+
+            override fun onActivityResumed(activity: android.app.Activity) {
+                val hasNow = me.rerere.rikkahub.data.ai.tools.local.PermissionHelper.hasAllFilesAccess(this@RikkaHubApp)
+                val wasGranted = lastKnownAllFilesAccess
+                lastKnownAllFilesAccess = hasNow
+                if (wasGranted && !hasNow) {
+                    get<AppScope>().launch(Dispatchers.IO) {
+                        runCatching { get<WorkspaceRepository>().reconcileAllSharedAccessRevocations() }
+                    }
+                }
+            }
+
+            override fun onActivityCreated(a: android.app.Activity, b: android.os.Bundle?) {}
+            override fun onActivityStarted(a: android.app.Activity) {}
+            override fun onActivityPaused(a: android.app.Activity) {}
+            override fun onActivityStopped(a: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(a: android.app.Activity, out: android.os.Bundle) {}
+            override fun onActivityDestroyed(a: android.app.Activity) {}
+        })
 
         // Phase-17 stability — register a network-change monitor that evicts OkHttp's
         // connection pool on every default-network transition. Fixes the post-Termux-
@@ -351,8 +387,7 @@ class RikkaHubApp : Application() {
         get<AppScope>().launch {
             runCatching {
                 val store = get<SettingsStore>()
-                val current = store.settingsFlowRaw.first()
-                store.update(current.copy(launchCount = current.launchCount + 1))
+                store.update { latest -> latest.copy(launchCount = latest.launchCount + 1) }
                 Log.i(TAG, "incrementLaunchCount: ${store.settingsFlowRaw.first().launchCount}")
             }.onFailure {
                 Log.e(TAG, "incrementLaunchCount failed", it)

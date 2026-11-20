@@ -8,6 +8,8 @@ import {
 } from "react-router";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type { Route } from "./+types/root";
 import { useSettingsSubscription } from "~/stores";
 import "./app.css";
@@ -23,6 +25,12 @@ export const links: Route.LinksFunction = () => [
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const { i18n } = useTranslation();
+
+  useEffect(() => {
+    document.documentElement.lang = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  }, [i18n.language, i18n.resolvedLanguage]);
+
   return (
     <html lang="en">
       <head>
@@ -76,14 +84,17 @@ export function HydrateFallback() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = "Oops!";
-  let details = "An unexpected error occurred.";
+  const { t } = useTranslation("page");
+  let message = t("error_page.oops");
+  let details = t("error_page.unexpected");
   let stack: string | undefined;
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? "404" : "Error";
+    message = error.status === 404 ? t("error_page.not_found_title") : t("error_page.error_title");
     details =
-      error.status === 404 ? "The requested page could not be found." : error.statusText || details;
+      error.status === 404
+        ? t("error_page.not_found_detail")
+        : error.statusText || details;
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;
@@ -105,7 +116,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
           onClick={() => (window.location.href = "/")}
           className="inline-flex items-center justify-center px-6 py-2.5 text-sm font-medium text-primary-foreground bg-primary rounded-md hover:bg-primary/90 transition-colors"
         >
-          Back to Home
+          {t("error_page.back_home")}
         </button>
       </div>
     </main>

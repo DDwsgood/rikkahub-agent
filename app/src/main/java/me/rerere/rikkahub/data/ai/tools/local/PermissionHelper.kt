@@ -79,24 +79,39 @@ object PermissionHelper {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     /**
-     * "All files access" — gates File.listFiles() on shared storage paths like
-     * /storage/emulated/0/Download. Without it, scoped storage hides every
-     * pre-existing file (only subdirs and the calling app's own creations show
-     * up). Granted via the system "Allow access to manage all files" toggle.
-     * On API < 30 there's no scoped-storage gate to begin with, so we treat it
-     * as always-granted there.
+     * Direct shared-storage File access capability (gates `/sdcard` and `/shared` bind mounts):
+     * - Android 11+ (API 30+): requires `MANAGE_EXTERNAL_STORAGE` (`Environment.isExternalStorageManager()`).
+     * - Android 10 (API 29): scoped storage blocks raw File writes to `/sdcard/Documents/...` unless
+     *   `Environment.isExternalStorageLegacy()` is true AND `WRITE_EXTERNAL_STORAGE` is granted.
+     * - Android 8–9 (API 26–28): requires runtime `WRITE_EXTERNAL_STORAGE` grant.
      */
-    fun hasAllFilesAccess(@Suppress("UNUSED_PARAMETER") ctx: Context): Boolean =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            true
+    fun hasAllFilesAccess(ctx: Context): Boolean = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> Environment.isExternalStorageManager()
+        Build.VERSION.SDK_INT == Build.VERSION_CODES.Q -> {
+            Environment.isExternalStorageLegacy() &&
+                ContextCompat.checkSelfPermission(
+                    ctx,
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         }
+        else -> {
+            ContextCompat.checkSelfPermission(
+                ctx,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
 
     fun allFilesAccessIntent(ctx: Context): Intent =
-        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-            .setData("package:${ctx.packageName}".toUri())
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                .setData("package:${ctx.packageName}".toUri())
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData("package:${ctx.packageName}".toUri())
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
 
     /**
      * True iff the app may post full-screen intents. USE_FULL_SCREEN_INTENT is granted at

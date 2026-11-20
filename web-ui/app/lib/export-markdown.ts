@@ -1,4 +1,10 @@
+import i18n from "~/i18n";
 import type { ConversationDto, MessageDto } from "~/types";
+
+function getRoleLabel(role: string): string {
+  const key = `export.role_${role.toLowerCase()}`;
+  return i18n.t(key, { defaultValue: role });
+}
 
 export function convertMessageToMarkdown(
   message: MessageDto,
@@ -11,13 +17,13 @@ export function convertMessageToMarkdown(
       lines.push(part.text.trim());
       lines.push("");
     } else if (part.type === "reasoning" && includeReasoning && part.reasoning.trim()) {
-      lines.push("> **Thinking:**");
+      lines.push(`> **${i18n.t("export.thinking")}:**`);
       for (const line of part.reasoning.trim().split("\n")) {
         lines.push(`> ${line}`);
       }
       lines.push("");
     } else if (part.type === "image" && part.url) {
-      lines.push(`![image](${part.url})`);
+      lines.push(`![${i18n.t("export.image_alt")}](${part.url})`);
       lines.push("");
     } else if (part.type === "document" && part.fileName) {
       lines.push(`[${part.fileName}](${part.url})`);
@@ -43,14 +49,7 @@ export function convertConversationToMarkdown(
     const message = node.messages[node.selectIndex] ?? node.messages[0];
     if (!message) continue;
 
-    const roleLabel =
-      message.role === "USER"
-        ? "## User"
-        : message.role === "ASSISTANT"
-          ? "## Assistant"
-          : `## ${message.role}`;
-
-    lines.push(roleLabel);
+    lines.push(`## ${getRoleLabel(message.role)}`);
     lines.push("");
 
     for (const part of message.parts) {
@@ -58,13 +57,13 @@ export function convertConversationToMarkdown(
         lines.push(part.text.trim());
         lines.push("");
       } else if (part.type === "reasoning" && includeReasoning && part.reasoning.trim()) {
-        lines.push("> **Thinking:**");
+        lines.push(`> **${i18n.t("export.thinking")}:**`);
         for (const line of part.reasoning.trim().split("\n")) {
           lines.push(`> ${line}`);
         }
         lines.push("");
       } else if (part.type === "image" && part.url) {
-        lines.push(`![image](${part.url})`);
+        lines.push(`![${i18n.t("export.image_alt")}](${part.url})`);
         lines.push("");
       } else if (part.type === "document" && part.fileName) {
         lines.push(`[${part.fileName}](${part.url})`);

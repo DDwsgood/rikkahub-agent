@@ -54,17 +54,26 @@ data class UIMessage(
                     }
 
                     is UIMessagePart.Image -> {
+                        val deltaHasUriPrefix = deltaPart.url.startsWith("data:") ||
+                            deltaPart.url.startsWith("http://") ||
+                            deltaPart.url.startsWith("https://") ||
+                            deltaPart.url.startsWith("file://")
                         val lastPart = acc.lastOrNull()
-                        if (lastPart is UIMessagePart.Image) {
-                            // Append to the last Image part (for streaming base64)
+                        if (lastPart is UIMessagePart.Image && !deltaHasUriPrefix) {
+                            // Append to the last Image part (for raw streaming base64 fragments)
                             acc.dropLast(1) + lastPart.copy(
                                 url = lastPart.url + deltaPart.url,
                                 metadata = deltaPart.metadata ?: lastPart.metadata
                             )
                         } else {
-                            // Create new Image part
+                            // Create new Image part; preserve existing data:/http:/file: URIs
+                            val resolvedUrl = if (deltaHasUriPrefix) {
+                                deltaPart.url
+                            } else {
+                                "data:image/png;base64,${deltaPart.url}"
+                            }
                             acc + UIMessagePart.Image(
-                                url = "data:image/png;base64,${deltaPart.url}",
+                                url = resolvedUrl,
                                 metadata = deltaPart.metadata,
                             )
                         }

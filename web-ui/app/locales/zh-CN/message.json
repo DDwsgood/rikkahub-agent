@@ -4,7 +4,11 @@
     "collapse_thinking": "收起思考过程",
     "expand_thinking_steps": "展开 {{count}} 条思考步骤",
     "deep_thinking": "深度思考",
-    "thinking_seconds": "思考了 {{seconds}} 秒"
+    "thinking_seconds": "思考了 {{seconds}} 秒",
+    "collapse": "收起",
+    "show_more_steps": "再显示 {{count}} 条步骤",
+    "thinking": "思考过程",
+    "thinking_in_progress": "思考中..."
   },
   "chat_message": {
     "copy_image": "图片",
@@ -56,9 +60,16 @@
     "ask_user_title": "询问用户",
     "ask_user_questions_count": "询问 {{count}} 个问题",
     "ask_user_submit": "提交",
-    "ask_user_answered": "已回答"
+    "ask_user_answered": "已回答",
+    "media_video": "视频",
+    "media_audio": "音频",
+    "approve_tool": "批准工具调用",
+    "deny_tool": "拒绝工具调用"
   },
   "media_part": {
+    "image_load_failed": "加载图片失败：{{url}}",
+    "image_loading": "正在加载图片...",
+    "image_alt": "消息附件",
     "video_load_failed": "加载视频失败：{{url}}",
     "open_video_in_new_window": "在新窗口打开视频",
     "audio_load_failed": "加载音频失败：{{url}}",

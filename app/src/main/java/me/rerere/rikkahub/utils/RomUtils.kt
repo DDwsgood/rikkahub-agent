@@ -128,9 +128,14 @@ object RomUtils {
             }
         }
         runCatching {
-            val value = Runtime.getRuntime().exec(arrayOf("getprop", key))
-                .inputStream.bufferedReader().readText().trim()
-            if (value.isNotEmpty()) return value
+            val process = Runtime.getRuntime().exec(arrayOf("getprop", key))
+            try {
+                val value = process.inputStream.bufferedReader().use { it.readText() }.trim()
+                process.waitFor()
+                if (value.isNotEmpty()) return value
+            } finally {
+                process.destroy()
+            }
         }
         return ""
     }
@@ -140,8 +145,8 @@ object RomUtils {
 
     /**
      * Candidate intents for the vendor's autostart / app-launch management page, ordered
-     * from most specific to most general (AutoStarter + XXPermissions lists). Presence is
-     * NOT guaranteed — callers must resolve-check each one before launching.
+     * from most specific to most general. Every candidate is resolve-checked before launch,
+     * with fallback to Android App Details and System Settings.
      */
     fun autostartIntents(ctx: Context): List<Intent> = when (detect().rom) {
         Rom.HYPEROS, Rom.MIUI -> listOf(
@@ -149,11 +154,37 @@ object RomUtils {
                 "com.miui.securitycenter",
                 "com.miui.permcenter.autostart.AutoStartManagementActivity",
             ),
+            component(
+                "com.miui.powerkeeper",
+                "com.miui.powerkeeper.ui.HiddenAppsConfigActivity",
+            ).putExtra("package_name", ctx.packageName),
             // Direct jump to the per-app MIUI permission page (background popup etc.).
             Intent("miui.intent.action.APP_PERMEDITOR").putExtra("extra_pkgname", ctx.packageName),
             Intent("miui.intent.action.OP_AUTO_START").addCategory(Intent.CATEGORY_DEFAULT),
         )
-        Rom.EMUI, Rom.MAGICOS, Rom.HARMONYOS -> listOf(
+        Rom.MAGICOS -> listOf(
+            component(
+                "com.hihonor.systemmanager",
+                "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            ),
+            component(
+                "com.hihonor.systemmanager",
+                "com.hihonor.systemmanager.appcontrol.activity.StartupAppControlActivity",
+            ),
+            component(
+                "com.hihonor.systemmanager",
+                "com.hihonor.systemmanager.optimize.process.ProtectActivity",
+            ),
+            component(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            ),
+            component(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity",
+            ),
+        )
+        Rom.EMUI, Rom.HARMONYOS -> listOf(
             component(
                 "com.huawei.systemmanager",
                 "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
@@ -169,6 +200,14 @@ object RomUtils {
         )
         Rom.REALME_UI, Rom.COLOROS -> listOf(
             component(
+                "com.oplus.safecenter",
+                "com.oplus.safecenter.startupapp.StartupAppListActivity",
+            ),
+            component(
+                "com.oplus.battery",
+                "com.oplus.powermanager.fuelgaue.PowerUsageModelActivity",
+            ),
+            component(
                 "com.coloros.safecenter",
                 "com.coloros.safecenter.permission.startup.StartupAppListActivity",
             ),
@@ -182,6 +221,10 @@ object RomUtils {
             ),
         )
         Rom.ORIGINOS, Rom.FUNTOUCH -> listOf(
+            component(
+                "com.iqoo.powersaving",
+                "com.iqoo.powersaving.PowerSavingManagerActivity",
+            ),
             component(
                 "com.iqoo.secure",
                 "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",

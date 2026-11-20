@@ -60,6 +60,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.appTempFolder
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
+import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.LeftToRightListBullet
 import me.rerere.hugeicons.stroke.Menu03
 import me.rerere.hugeicons.stroke.MessageAdd01
@@ -300,6 +301,9 @@ private fun ChatPageContent(
 
     TTSAutoPlay(vm = vm, setting = setting, conversation = conversation)
 
+    var showWorkspaceFilesSheet by remember { mutableStateOf(false) }
+    val boundWorkspaceId = assistant.workspaceId?.toString()
+
     Surface(
         color = MaterialTheme.colorScheme.background,
         modifier = Modifier.fillMaxSize()
@@ -313,6 +317,10 @@ private fun ChatPageContent(
                     bigScreen = bigScreen,
                     drawerState = drawerState,
                     previewMode = previewMode,
+                    hasWorkspace = boundWorkspaceId != null,
+                    onClickWorkspaceFiles = {
+                        showWorkspaceFilesSheet = true
+                    },
                     onNewChat = {
                         navigateToChatPage(navController)
                     },
@@ -336,18 +344,19 @@ private fun ChatPageContent(
                     },
                     enableSearch = enableWebSearch,
                     onToggleSearch = {
-                        val current = setting.getCurrentAssistant()
-                        vm.updateSettings(
-                            setting.copy(
-                                assistants = setting.assistants.map { assistant ->
-                                    if (assistant.id == current.id) {
-                                        assistant.copy(enableWebSearch = !enableWebSearch)
+                        val targetId = setting.getCurrentAssistant().id
+                        val nextEnable = !enableWebSearch
+                        vm.updateSettings { latest ->
+                            latest.copy(
+                                assistants = latest.assistants.map { assistant ->
+                                    if (assistant.id == targetId) {
+                                        assistant.copy(enableWebSearch = nextEnable)
                                     } else {
                                         assistant
                                     }
                                 }
                             )
-                        )
+                        }
                     },
                     onSendClick = {
                         if (currentChatModel == null) {
@@ -401,25 +410,25 @@ private fun ChatPageContent(
                     onUpdateChatModel = {
                         vm.setChatModel(assistant = setting.getCurrentAssistant(), model = it)
                     },
-                    onUpdateAssistant = {
-                        vm.updateSettings(
-                            setting.copy(
-                                assistants = setting.assistants.map { assistant ->
-                                    if (assistant.id == it.id) {
-                                        it
+                    onUpdateAssistant = { updatedAssistant ->
+                        vm.updateSettings { latest ->
+                            latest.copy(
+                                assistants = latest.assistants.map { assistant ->
+                                    if (assistant.id == updatedAssistant.id) {
+                                        updatedAssistant
                                     } else {
                                         assistant
                                     }
                                 }
                             )
-                        )
+                        }
                     },
                     onUpdateSearchService = { index ->
-                        vm.updateSettings(
-                            setting.copy(
+                        vm.updateSettings { latest ->
+                            latest.copy(
                                 searchServiceSelected = index
                             )
-                        )
+                        }
                     },
                     onMoreClick = {
                         showFilesSheet = true
@@ -505,7 +514,14 @@ private fun ChatPageContent(
             )
         }
 
-        if (showFilesSheet) {
+        if (showWorkspaceFilesSheet && boundWorkspaceId != null) {
+        ChatWorkspaceFilesSheet(
+            workspaceId = boundWorkspaceId,
+            onDismissRequest = { showWorkspaceFilesSheet = false },
+        )
+    }
+
+    if (showFilesSheet) {
             ChatFilesPickerSheet(
                 inputState = inputState,
                 setting = setting,
@@ -692,18 +708,18 @@ private fun ChatFilesPickerSheet(
             onCompressContext = { additionalPrompt, targetTokens, keepRecentMessages ->
                 vm.handleCompressContext(additionalPrompt, targetTokens, keepRecentMessages)
             },
-            onUpdateAssistant = {
-                vm.updateSettings(
-                    setting.copy(
-                        assistants = setting.assistants.map { assistant ->
-                            if (assistant.id == it.id) {
-                                it
+            onUpdateAssistant = { updatedAssistant ->
+                vm.updateSettings { latest ->
+                    latest.copy(
+                        assistants = latest.assistants.map { assistant ->
+                            if (assistant.id == updatedAssistant.id) {
+                                updatedAssistant
                             } else {
                                 assistant
                             }
                         }
                     )
-                )
+                }
             },
             onUpdateConversation = {
                 vm.updateConversation(it)
@@ -730,6 +746,8 @@ private fun TopBar(
     drawerState: DrawerState,
     bigScreen: Boolean,
     previewMode: Boolean,
+    hasWorkspace: Boolean = false,
+    onClickWorkspaceFiles: () -> Unit = {},
     onClickMenu: () -> Unit,
     onNewChat: () -> Unit,
     onUpdateTitle: (String) -> Unit
@@ -790,6 +808,14 @@ private fun TopBar(
             }
         },
         actions = {
+            if (hasWorkspace) {
+                IconButton(onClick = onClickWorkspaceFiles) {
+                    Icon(
+                        imageVector = HugeIcons.Folder01,
+                        contentDescription = stringResource(R.string.chat_workspace_files_title),
+                    )
+                }
+            }
             IconButton(
                 onClick = {
                     onClickMenu()

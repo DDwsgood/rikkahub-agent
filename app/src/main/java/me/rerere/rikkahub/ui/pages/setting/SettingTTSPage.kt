@@ -88,12 +88,10 @@ fun SettingTTSPage(vm: SettingVM = koinViewModel()) {
                     BackButton()
                 },
                 actions = {
-                    AddTTSProviderButton {
-                        vm.updateSettings(
-                            settings.copy(
-                                ttsProviders = listOf(it) + settings.ttsProviders
-                            )
-                        )
+                    AddTTSProviderButton { created ->
+                        vm.updateSettings { latest ->
+                            latest.copy(ttsProviders = listOf(created) + latest.ttsProviders)
+                        }
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -105,10 +103,17 @@ fun SettingTTSPage(vm: SettingVM = koinViewModel()) {
     ) { innerPadding ->
         val lazyListState = rememberLazyListState()
         val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
-            val newProviders = settings.ttsProviders.toMutableList().apply {
-                add(to.index, removeAt(from.index))
+            val list = settings.ttsProviders
+            if (from.index !in list.indices || to.index !in list.indices) return@rememberReorderableLazyListState
+            val movedId = list[from.index].id
+            val targetId = list[to.index].id
+            vm.updateSettings { latest ->
+                val f = latest.ttsProviders.indexOfFirst { it.id == movedId }
+                val t = latest.ttsProviders.indexOfFirst { it.id == targetId }
+                if (f < 0 || t < 0 || f == t) latest else latest.copy(
+                    ttsProviders = latest.ttsProviders.toMutableList().apply { add(t, removeAt(f)) }
+                )
             }
-            vm.updateSettings(settings.copy(ttsProviders = newProviders))
         }
 
         LazyColumn(
@@ -151,21 +156,22 @@ fun SettingTTSPage(vm: SettingVM = koinViewModel()) {
                         },
                         isSelected = settings.selectedTTSProviderId == provider.id,
                         onSelect = {
-                            vm.updateSettings(settings.copy(selectedTTSProviderId = provider.id))
+                            vm.updateSettings { it.copy(selectedTTSProviderId = provider.id) }
                         },
                         onEdit = {
                             editingProvider = provider
                         },
                         onDelete = {
-                            val newProviders = settings.ttsProviders - provider
-                            val newSelectedId =
-                                if (settings.selectedTTSProviderId == provider.id) DEFAULT_SYSTEM_TTS_ID else settings.selectedTTSProviderId
-                            vm.updateSettings(
-                                settings.copy(
+                            val targetId = provider.id
+                            vm.updateSettings { latest ->
+                                val newProviders = latest.ttsProviders.filter { it.id != targetId }
+                                val newSelectedId =
+                                    if (latest.selectedTTSProviderId == targetId) DEFAULT_SYSTEM_TTS_ID else latest.selectedTTSProviderId
+                                latest.copy(
                                     ttsProviders = newProviders,
                                     selectedTTSProviderId = newSelectedId
                                 )
-                            )
+                            }
                         }
                     )
                 }
@@ -222,10 +228,15 @@ fun SettingTTSPage(vm: SettingVM = koinViewModel()) {
 
                     TextButton(
                         onClick = {
-                            val newProviders = settings.ttsProviders.map {
-                                if (it.id == provider.id) currentProvider else it
+                            val edited = currentProvider
+                            val targetId = provider.id
+                            vm.updateSettings { latest ->
+                                latest.copy(
+                                    ttsProviders = latest.ttsProviders.map {
+                                        if (it.id == targetId) edited else it
+                                    }
+                                )
                             }
-                            vm.updateSettings(settings.copy(ttsProviders = newProviders))
                             editingProvider = null
                         },
                         modifier = Modifier.weight(1f)

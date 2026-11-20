@@ -35,10 +35,11 @@ class RootfsInstaller(
         // 后台与托管进程(它们持有即将被替换的旧 rootfs fd), 再解压替换; 否则安装中途
         // 目录可能被并发删除, 或残留进程仍指向已移除的 rootfs。
         manager.withProcessLifecycleLock {
+            manager.killAllForeground(root)
             manager.killAllBackground(root)
             manager.closeAllManagedProcesses(root)
             try {
-                stagingDir.deleteRecursively()
+                WorkspaceSafeFiles.deleteRecursivelyNoFollow(stagingDir)
                 stagingDir.mkdirs()
                 download(url, archive, onProgress)
                 extractTar(archive, stagingDir, format, onProgress)
@@ -47,7 +48,7 @@ class RootfsInstaller(
                 require(hasUsableRootfsDir(stagingDir)) {
                     "Rootfs archive does not contain a usable bin/sh"
                 }
-                backupDir.deleteRecursively()
+                WorkspaceSafeFiles.deleteRecursivelyNoFollow(backupDir)
                 if (linuxDir.exists() && !linuxDir.renameTo(backupDir)) {
                     throw IOException("Failed to preserve existing rootfs before replacement")
                 }
@@ -60,13 +61,13 @@ class RootfsInstaller(
                             else " (previous rootfs could not be restored)"
                     )
                 }
-                backupDir.deleteRecursively()
+                WorkspaceSafeFiles.deleteRecursivelyNoFollow(backupDir)
                 patcher.patch(linuxDir)
                 onProgress(RootfsInstallProgress(stage = RootfsInstallStage.INSTALLED))
             } finally {
                 archive.delete()
-                stagingDir.deleteRecursively()
-                backupDir.deleteRecursively()
+                WorkspaceSafeFiles.deleteRecursivelyNoFollow(stagingDir)
+                WorkspaceSafeFiles.deleteRecursivelyNoFollow(backupDir)
             }
         }
     }

@@ -1,21 +1,34 @@
 package me.rerere.rikkahub.data.repository
 
+import android.content.Context
+import android.os.Environment
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.files.ExportedDownloadResult
+import me.rerere.rikkahub.data.files.WorkspacePublicExport
+import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
+import me.rerere.rikkahub.data.preferences.WorkspaceSharedDirPreferences
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.BackgroundStatus
 import me.rerere.workspace.ManagedWorkspaceProcess
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
+import me.rerere.workspace.WorkspaceBindMount
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
@@ -23,6 +36,8 @@ import me.rerere.workspace.WorkspaceSdcard
 import me.rerere.workspace.WorkspaceSdcardMode
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
+import me.rerere.workspace.readResult
+import me.rerere.workspace.terminateProcessTree
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -33,6 +48,8 @@ class WorkspaceRepository(
     private val manager: WorkspaceManager,
     private val rootfsInstaller: RootfsInstaller,
     private val settingsStore: SettingsStore,
+    private val context: Context? = null,
+    private val sharedDirPreferences: WorkspaceSharedDirPreferences? = null,
 ) {
     fun listFlow(): Flow<List<WorkspaceEntity>> = dao.listFlow()
 
@@ -89,13 +106,7 @@ class WorkspaceRepository(
         require(!isNameTaken(finalName, excludeId = id)) {
             "Workspace name already exists: $finalName"
         }
-        dao.upsert(
-            workspace.copy(
-                name = finalName,
-                updatedAt = System.currentTimeMillis(),
-            )
-        )
-        return true
+        return dao.updateName(id, finalName, System.currentTimeMillis()) > 0
     }
 
     /** 名字是否已被其他 workspace 占用（trim 后精确匹配，排除 [excludeId] 自身） */
@@ -104,50 +115,233 @@ class WorkspaceRepository(
         return dao.getAll().any { it.id != excludeId && it.name.trim() == target }
     }
 
-    suspend fun setToolApproval(id: String, toolName: String, needsApproval: Boolean): Boolean {
-        val workspace = dao.getById(id) ?: return false
-        val overrides = workspace.toolApprovalOverrides() + (toolName to needsApproval)
-        dao.upsert(
-            workspace.copy(
-                toolApprovals = JsonInstant.encodeToString(overrides),
-                updatedAt = System.currentTimeMillis(),
-            )
-        )
-        return true
-    }
+    suspend fun setToolApproval(id: String, toolName: String, needsApproval: Boolean): Boolean =
+        mountLockFor(id).withLock {
+            val workspace = dao.getById(id) ?: return@withLock false
+            val overrides = workspace.toolApprovalOverrides() + (toolName to needsApproval)
+            dao.updateToolApprovals(id, JsonInstant.encodeToString(overrides), System.currentTimeMillis()) > 0
+        }
+
+    data class TerminalMountSnapshot(
+        val generation: Long,
+        val bindMounts: List<WorkspaceBindMount>,
+    )
+
+    private val mountLifecycleLocks = ConcurrentHashMap<String, Mutex>()
+    private fun mountLockFor(id: String): Mutex = mountLifecycleLocks.computeIfAbsent(id) { Mutex() }
 
     /** 设置工作区的共享存储挂载模式 (NONE / READ_ONLY / READ_WRITE)。 */
-    suspend fun setSdcardMode(id: String, mode: WorkspaceSdcardMode): Boolean {
-        val workspace = dao.getById(id) ?: return false
-        if (workspace.sdcardModeEnum() == mode) return true
-        dao.upsert(
-            workspace.copy(
-                sdcardMode = mode.name,
-                updatedAt = System.currentTimeMillis(),
-            )
-        )
-        return true
+    suspend fun setSdcardMode(id: String, mode: WorkspaceSdcardMode): Boolean = mountLockFor(id).withLock {
+        val workspace = dao.getById(id) ?: return@withLock false
+        val changed = workspace.sdcardModeEnum() != mode
+        withContext(NonCancellable) {
+            if (changed) {
+                dao.updateSdcardMode(id, mode.name, System.currentTimeMillis())
+            }
+            // A committed restriction and teardown form one operation under the mount lock.
+            // Reapplying a restricted mode also reclaims processes left by an earlier failed attempt.
+            if (changed || mode != WorkspaceSdcardMode.READ_WRITE) {
+                teardownProcessesForWorkspaceLocked(id, workspace.root)
+            }
+        }
+        true
     }
+
+    /** Start a prepared PTY under the same lock that commits mount policy changes. */
+    internal suspend fun startTerminalWithMountPolicy(id: String, start: () -> Boolean): Boolean =
+        mountLockFor(id).withLock { start() }
 
     /** 当前工作区的共享存储挂载模式 (workspace 不存在时按 NONE 处理)。 */
     suspend fun sdcardMode(id: String): WorkspaceSdcardMode =
         dao.getById(id)?.sdcardModeEnum() ?: WorkspaceSdcardMode.NONE
 
+    fun sharedDirEnabledFlow(id: String): Flow<Boolean> =
+        sharedDirPreferences?.isEnabledFlow(id) ?: flowOf(false)
+
+    suspend fun isSharedDirEnabled(id: String): Boolean =
+        sharedDirPreferences?.isEnabled(id) ?: false
+
+    suspend fun setSharedDirEnabled(id: String, enabled: Boolean) = mountLockFor(id).withLock {
+        val workspace = dao.getById(id) ?: return@withLock
+        withContext(NonCancellable) {
+            sharedDirPreferences?.setEnabled(id, enabled)
+            teardownProcessesForWorkspaceLocked(id, workspace.root)
+        }
+    }
+
+    /**
+     * Reclaims active PRoot processes if shared storage permission was revoked externally while
+     * `/shared` or `/sdcard` was enabled, preventing old sessions from holding stale mounts.
+     */
+    suspend fun teardownProcessesIfSharedAccessRevoked(id: String) = mountLockFor(id).withLock {
+        val ctx = context ?: return@withLock
+        if (PermissionHelper.hasAllFilesAccess(ctx)) return@withLock
+        val workspace = dao.getById(id) ?: return@withLock
+        if (isSharedDirEnabled(id) || workspace.sdcardModeEnum() != WorkspaceSdcardMode.NONE) {
+            teardownProcessesForWorkspaceLocked(id, workspace.root)
+        }
+    }
+
+    /**
+     * Global permission-revocation sweep invoked from Application lifecycle resume so revoking
+     * shared-storage permission from OS Settings tears down stale PRoot sessions even when the
+     * user never re-opens WorkspaceDetailPage.
+     */
+    suspend fun reconcileAllSharedAccessRevocations() {
+        val ctx = context ?: return
+        if (PermissionHelper.hasAllFilesAccess(ctx)) return
+        val workspaces = runCatching { dao.getAll() }.getOrDefault(emptyList())
+        for (workspace in workspaces) {
+            mountLockFor(workspace.id).withLock {
+                if (isSharedDirEnabled(workspace.id) || workspace.sdcardModeEnum() != WorkspaceSdcardMode.NONE) {
+                    teardownProcessesForWorkspaceLocked(workspace.id, workspace.root)
+                }
+            }
+        }
+    }
+
+    private suspend fun teardownProcessesForWorkspaceLocked(id: String, root: String) = withContext(NonCancellable) {
+        me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceTerminalRegistry.bumpGenerationAndFinishAll(id)
+        withContext(Dispatchers.IO) {
+            runCatching { manager.killAllForeground(root) }
+            runCatching { manager.killAllBackground(root) }
+            runCatching { manager.closeAllManagedProcesses(root) }
+        }
+    }
+
+    /**
+     * Returns `true` when the workspace has `/shared` enabled AND the device has shared-storage
+     * write access granted so the host directory under `Documents/RikkaHub/ws-<id>/` is usable.
+     */
+    suspend fun isSharedDirMounted(id: String): Boolean {
+        val ctx = context ?: return false
+        if (!isSharedDirEnabled(id)) return false
+        return PermissionHelper.hasAllFilesAccess(ctx)
+    }
+
+    private suspend fun extraBindMountsFor(workspace: WorkspaceEntity): List<WorkspaceBindMount> {
+        val ctx = context ?: return emptyList()
+        if (!isSharedDirEnabled(workspace.id)) return emptyList()
+        if (!PermissionHelper.hasAllFilesAccess(ctx)) return emptyList()
+        val hostDir = WorkspaceSharedDirPreferences.hostDir(workspace.name, workspace.id)
+        runCatching { hostDir.mkdirs() }
+        if (!hostDir.isDirectory) return emptyList()
+        @Suppress("DEPRECATION")
+        val externalRoot = Environment.getExternalStorageDirectory()
+        val extPath = externalRoot.toPath().toAbsolutePath().normalize()
+        val hostPath = hostDir.toPath().toAbsolutePath().normalize()
+        val (anchorRoot, anchorRel) = if (hostPath.startsWith(extPath)) {
+            externalRoot to extPath.relativize(hostPath).toString().replace(java.io.File.separatorChar, '/').trim('/')
+        } else {
+            null to ""
+        }
+        return listOf(
+            WorkspaceBindMount(
+                source = hostDir,
+                target = WorkspaceSharedDirPreferences.MOUNT_TARGET,
+                trustedAnchorRoot = anchorRoot,
+                anchorRelativePath = anchorRel,
+            )
+        )
+    }
+
+    /**
+     * Effective bind mounts for interactive terminal sessions.
+     *
+     * Because PRoot bind mounts are kernel-writable and an interactive bash session bypasses the
+     * AI tool-layer read-only guard, `/sdcard` is ONLY mounted into the interactive terminal when
+     * `sdcardMode == READ_WRITE` (never mounted in `READ_ONLY` mode).
+     */
+    suspend fun terminalBindMountsSnapshot(id: String): TerminalMountSnapshot = mountLockFor(id).withLock {
+        val generation = me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceTerminalRegistry.currentGeneration(id)
+        val workspace = dao.getById(id) ?: return@withLock TerminalMountSnapshot(generation, emptyList())
+        val extra = extraBindMountsFor(workspace)
+        val terminalSdcardMode = effectiveProotSdcardMode(workspace.sdcardModeEnum())
+        TerminalMountSnapshot(
+            generation = generation,
+            bindMounts = manager.effectiveBindMounts(terminalSdcardMode, extra),
+        )
+    }
+
+    suspend fun terminalBindMounts(id: String): List<WorkspaceBindMount> =
+        terminalBindMountsSnapshot(id).bindMounts
+
+    private fun requireRootfsWritableForPolicy(
+        mode: WorkspaceSdcardMode,
+        extraBindMounts: List<WorkspaceBindMount>,
+        normalizedPath: String,
+        displayPath: String,
+    ) {
+        if (WorkspaceSdcard.isWithin(normalizedPath)) {
+            when (mode) {
+                WorkspaceSdcardMode.READ_ONLY -> error(
+                    "Cannot write to $displayPath: the workspace's shared-storage (/sdcard) mount is " +
+                        "read-only. Ask the user to switch the workspace sdcard mode to " +
+                        "read-write in workspace settings if this write is intended."
+                )
+                WorkspaceSdcardMode.NONE -> error(
+                    "Cannot write to $displayPath: shared-storage (/sdcard) is not mounted for this workspace."
+                )
+                WorkspaceSdcardMode.READ_WRITE -> Unit
+            }
+        }
+        val sharedTarget = WorkspaceSharedDirPreferences.MOUNT_TARGET
+        if (normalizedPath == sharedTarget || normalizedPath.startsWith("$sharedTarget/")) {
+            if (extraBindMounts.none { it.target == sharedTarget }) {
+                error("Cannot write to $displayPath: /shared is not mounted for this workspace.")
+            }
+        }
+    }
+
     /**
      * 文件 API 层的 sdcard 写入门禁: READ_ONLY 模式下, 指向 /sdcard 挂载区的写入
-     * (write/edit 经由 rootfs shell 的 cat >) 一律拒绝 — proot 绑定在内核层是可写的,
-     * 这里是文件 API 的唯一强制点。
+     * 一律拒绝。先做词法规范化折叠 `..` 和 `//`，防止路径穿越绕过。
      */
     suspend fun requireRootfsWritable(id: String, path: String) {
         val workspace = dao.getById(id) ?: return
         val mode = workspace.sdcardModeEnum()
         if (mode != WorkspaceSdcardMode.READ_ONLY) return
-        val trimmed = path.trim().trimEnd('/').ifBlank { "/" }
-        if (WorkspaceSdcard.isWithin(trimmed)) {
+        val normalized = runCatching { WorkspacePublicExport.normalizeRootfsPath(path) }
+            .getOrElse { path.trim().trimEnd('/').ifBlank { "/" } }
+        if (WorkspaceSdcard.isWithin(normalized)) {
             error(
                 "Cannot write to $path: the workspace's shared-storage (/sdcard) mount is " +
                     "read-only. Ask the user to switch the workspace sdcard mode to " +
                     "read-write in workspace settings if this write is intended."
+            )
+        }
+    }
+
+    /**
+     * Writes UTF-8 text to a Rootfs absolute path directly under the resolved host volume using
+     * FD-relative `O_NOFOLLOW` traversal, serialized under [mountLockFor] against policy changes
+     * (`setSdcardMode`, `setSharedDirEnabled`, permission revocation, and `delete`) using ONE
+     * authoritative workspace snapshot for policy check, bind-mount resolution, and open/write.
+     */
+    suspend fun writeRootfsText(
+        id: String,
+        path: String,
+        text: String,
+        overwrite: Boolean = true,
+    ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
+        val normalized = WorkspacePublicExport.normalizeRootfsPath(path)
+        mountLockFor(id).withLock {
+            val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+            val mode = workspace.sdcardModeEnum()
+            val extra = extraBindMountsFor(workspace)
+            requireRootfsWritableForPolicy(
+                mode = mode,
+                extraBindMounts = extra,
+                normalizedPath = normalized,
+                displayPath = path,
+            )
+            manager.writeRootfsTextNoFollow(
+                root = workspace.root,
+                path = normalized,
+                text = text,
+                overwrite = overwrite,
+                sdcardMode = mode,
+                extraBindMounts = extra,
             )
         }
     }
@@ -280,9 +474,13 @@ class WorkspaceRepository(
         id: String,
         path: String,
     ): Long = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        manager.ensureWorkspace(workspace.root)
-        manager.rootfsFileSize(workspace.root, path, workspace.sdcardModeEnum())
+        val normalized = WorkspacePublicExport.normalizeRootfsPath(path)
+        mountLockFor(id).withLock {
+            val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+            val extra = extraBindMountsFor(workspace)
+            manager.ensureWorkspace(workspace.root)
+            manager.rootfsFileSize(workspace.root, normalized, workspace.sdcardModeEnum(), extra)
+        }
     }
 
     /** 按 Rootfs 内绝对路径导出文件内容, 支持 /workspace、bind mount 与 Rootfs 内部路径 */
@@ -291,9 +489,57 @@ class WorkspaceRepository(
         path: String,
         outputStream: OutputStream,
     ) = withContext(Dispatchers.IO) {
+        val normalized = WorkspacePublicExport.normalizeRootfsPath(path)
+        mountLockFor(id).withLock {
+            val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+            val extra = extraBindMountsFor(workspace)
+            manager.ensureWorkspace(workspace.root)
+            manager.exportRootfsFile(workspace.root, normalized, outputStream, workspace.sdcardModeEnum(), extra)
+        }
+    }
+
+    /**
+     * Exports a file from the workspace's [area] into Android's public Downloads folder
+     * (`Download/RikkaHub/<workspace>/`). Uses MediaStore.Downloads on Android 10+ (zero
+     * storage permissions required).
+     */
+    suspend fun exportFileToDownloads(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+        customFileName: String? = null,
+    ): ExportedDownloadResult = withContext(Dispatchers.IO) {
+        val ctx = requireNotNull(context) { "Android context is required for Downloads export" }
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         manager.ensureWorkspace(workspace.root)
-        manager.exportRootfsFile(workspace.root, path, outputStream, workspace.sdcardModeEnum())
+        val fileName = customFileName?.takeIf { it.isNotBlank() }
+            ?: path.substringAfterLast('/').ifBlank { "export.bin" }
+        WorkspacePublicExport.exportToDownloads(
+            context = ctx,
+            workspaceName = workspace.name,
+            fileName = fileName,
+        ) { out ->
+            manager.exportFile(workspace.root, path, area, out)
+        }
+    }
+
+    /**
+     * Exports a `/workspace/...` file to Android's public Downloads folder. Enforces lexical
+     * normalization and containment inside `/workspace/` so rootfs or other bind mounts cannot
+     * be exported via this path.
+     */
+    suspend fun exportWorkspacePathToDownloads(
+        id: String,
+        rootfsPath: String,
+        customFileName: String? = null,
+    ): ExportedDownloadResult = withContext(Dispatchers.IO) {
+        val normalized = WorkspacePublicExport.normalizeRootfsPath(rootfsPath)
+        require(normalized.startsWith("${WorkspaceManager.ROOTFS_WORKSPACE_DIR}/")) {
+            "Path must be a file inside /workspace/: $rootfsPath"
+        }
+        val relPath = normalized.removePrefix("${WorkspaceManager.ROOTFS_WORKSPACE_DIR}/")
+        require(relPath.isNotBlank()) { "Cannot export the /workspace directory itself" }
+        exportFileToDownloads(id, WorkspaceStorageArea.FILES, relPath, customFileName)
     }
 
     suspend fun deleteFile(
@@ -327,15 +573,60 @@ class WorkspaceRepository(
         timeoutMillis: Long = WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS,
         stdin: ByteArray? = null,
     ): WorkspaceCommandResult {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        // 挂载模式随命令生效: READ_ONLY/READ_WRITE 时在绑定表上追加 /sdcard; 这里是
-        // 人类终端与 shell 工具的共用入口, 守卫拦截发生在工具层 (WorkspaceSdcardGuard),
-        // 人类终端刻意不走守卫 (HardlineCommandGuard 同一原则: 用户自己执行的命令不拦)
-        val sdcardMode = workspace.sdcardModeEnum()
-        // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor 并杀掉进程
-        return runInterruptible(Dispatchers.IO) {
-            manager.ensureWorkspace(workspace.root)
-            manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin, sdcardMode)
+        // Bail out before entering NonCancellable if caller is already cancelled.
+        currentCoroutineContext().ensureActive()
+
+        // Hold mountLockFor(id) across policy read AND process launch+registration, assigning
+        // `tracked` inside an outer `try/finally` BEFORE exiting `withContext(NonCancellable + IO)`.
+        // If the caller is cancelled while launch is in progress, resumption throws
+        // CancellationException into `finally`, which ALWAYS sees `tracked`, unregisters it,
+        // and terminates the entire process tree (zero leaked foreground processes).
+        var tracked: WorkspaceManager.TrackedForegroundCommand? = null
+        return try {
+            try {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    mountLockFor(id).withLock {
+                        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+                        val effectiveSdcardMode = effectiveProotSdcardMode(workspace.sdcardModeEnum())
+                        val extra = extraBindMountsFor(workspace)
+                        manager.ensureWorkspace(workspace.root)
+                        tracked = manager.startTrackedForegroundCommand(
+                            root = workspace.root,
+                            command = command,
+                            cwd = cwd,
+                            timeoutMillis = timeoutMillis,
+                            stdin = stdin,
+                            sdcardMode = effectiveSdcardMode,
+                            extraBindMounts = extra,
+                        )
+                    }
+                }
+            } catch (e: IllegalStateException) {
+                val msg = e.message.orEmpty()
+                if (
+                    msg.startsWith("Rootfs is not installed") ||
+                    msg.startsWith("proot executable not found") ||
+                    msg.startsWith("proot loader not found")
+                ) {
+                    return WorkspaceCommandResult(exitCode = 127, stdout = "", stderr = msg)
+                }
+                throw e
+            }
+            val launched = checkNotNull(tracked) { "Foreground command failed to initialize" }
+            // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor 并杀掉进程
+            runInterruptible(Dispatchers.IO) {
+                launched.process.readResult(timeoutMillis, stdin)
+            }
+        } finally {
+            val launched = tracked
+            if (launched != null) {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    manager.finishTrackedForegroundCommand(launched)
+                    if (launched.process.isAlive) {
+                        runCatching { terminateProcessTree(launched.process) }
+                    }
+                }
+            }
         }
     }
 
@@ -344,16 +635,18 @@ class WorkspaceRepository(
         command: String,
         cwd: String = "",
     ): BackgroundStatus {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        // 与 executeCommand 用 runInterruptible 相反: 那里取消即意味着杀掉前台进程, 这里
-        // 进程是要在工具调用结束后继续跑的后台任务, 取消(例如外层 withTimeoutOrNull 的共享
-        // turn 预算到期)绝不能打断启动或丢弃刚拿到的 id, 否则进程已经起来(端口已绑定/名额
-        // 已占用), 但调用方永远拿不到 id 去查询或杀掉它。NonCancellable 让启动+注册这一步
-        // 不可被取消、结果不会被丢弃；Dispatchers.IO 仍然只是把阻塞的进程启动挪到后台线程。
-        val sdcardMode = workspace.sdcardModeEnum()
+        // Hold the workspace mount lifecycle lock across snapshot + process launch/registration
+        // so a concurrent /shared disable or /sdcard downgrade can never miss a newly launched
+        // background daemon, and never mount writable /sdcard into long-lived background daemons
+        // when sdcardMode is READ_ONLY (matches interactive terminal isolation).
         return withContext(NonCancellable + Dispatchers.IO) {
-            manager.ensureWorkspace(workspace.root)
-            manager.startBackground(workspace.root, command, cwd, sdcardMode)
+            mountLockFor(id).withLock {
+                val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+                val effectiveSdcardMode = effectiveProotSdcardMode(workspace.sdcardModeEnum())
+                val extra = extraBindMountsFor(workspace)
+                manager.ensureWorkspace(workspace.root)
+                manager.startBackground(workspace.root, command, cwd, effectiveSdcardMode, extra)
+            }
         }
     }
 
@@ -414,8 +707,10 @@ class WorkspaceRepository(
         }
     }
 
-    suspend fun delete(id: String): Boolean {
-        val workspace = dao.getById(id) ?: return false
+    suspend fun delete(id: String): Boolean = mountLockFor(id).withLock {
+        val workspace = dao.getById(id) ?: return@withLock false
+        // Bump mount generation + terminate any active interactive terminal sessions BEFORE removing files.
+        me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceTerminalRegistry.bumpGenerationAndFinishAll(id)
         // 先杀进程 + 删目录, 成功后再删 DB 行: 顺序反过来时文件删除失败会留下
         // 无法从 UI 重试删除的孤儿目录
         val deleted = withContext(Dispatchers.IO) {
@@ -423,15 +718,16 @@ class WorkspaceRepository(
         }
         if (!deleted && manager.workspaceDir(workspace.root).exists()) {
             Log.w(TAG, "Workspace directory not fully deleted, keeping DB row for retry: id=$id")
-            return false
+            return@withLock false
         }
         dao.deleteById(id)
+        sharedDirPreferences?.removeWorkspace(id)
         cleanupAssistantReferences(id)
         // workspace 已删除: 引用它的 stdio MCP 配置从此不可能连接, 禁用它们, 避免永久
         // 悬空配置 (会话停在 WaitingForWorkspace) 和残留的旧工具表。禁用会触发 McpManager
         // 的 settings reconcile 关闭对应会话。
         disableStdioMcpServersForWorkspace(id)
-        return true
+        true
     }
 
     private suspend fun cleanupAssistantReferences(workspaceId: String) {
@@ -488,5 +784,16 @@ class WorkspaceRepository(
     companion object {
         private const val TAG = "WorkspaceRepository"
         private const val MAX_PREVIEW_BYTES = 512L * 1024
+
+        /**
+         * PRoot bind mounts are always kernel-writable at the app UID, so ALL PRoot processes
+         * (foreground shell, background daemons, interactive terminal) ONLY mount `/sdcard` when
+         * the workspace is explicitly configured as [WorkspaceSdcardMode.READ_WRITE].
+         * In [WorkspaceSdcardMode.READ_ONLY], `/sdcard` is read directly on host via
+         * `workspace_read_file` (`O_NOFOLLOW`) and never mounted into PRoot.
+         */
+        internal fun effectiveProotSdcardMode(mode: WorkspaceSdcardMode): WorkspaceSdcardMode =
+            if (mode == WorkspaceSdcardMode.READ_WRITE) WorkspaceSdcardMode.READ_WRITE
+            else WorkspaceSdcardMode.NONE
     }
 }

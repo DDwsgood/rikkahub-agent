@@ -33,6 +33,12 @@ class LocalRuntimePreferences(private val context: Context) {
     private fun installedModelsKey(runtime: LocalRuntime) =
         stringPreferencesKey("installed_${runtime.displayName}")
 
+    /** Per-runtime set of installed model filenames explicitly hidden from the provider's
+     *  model list while keeping their on-disk files intact. Prevents `refreshFromDisk()`
+     *  from resurrecting a model the user intentionally removed from the list. */
+    private fun hiddenModelsKey(runtime: LocalRuntime) =
+        stringPreferencesKey("hidden_models_${runtime.displayName}")
+
     /** Per-runtime force-CPU override. The default is device-dependent (see
      *  [defaultForceCpu]): CPU for the Google Tensor crash class, GPU everywhere else.
      *  Users can flip it either way via the "Try GPU acceleration" toggle. */
@@ -271,6 +277,54 @@ class LocalRuntimePreferences(private val context: Context) {
                 MapSerializer(String.serializer(), String.serializer()),
                 current,
             )
+            // Re-installing or re-importing a model explicitly un-hides it.
+            val hidden = decodeStringSet(prefs[hiddenModelsKey(runtime)]).toMutableSet()
+            if (hidden.remove(fileName)) {
+                if (hidden.isEmpty()) {
+                    prefs.remove(hiddenModelsKey(runtime))
+                } else {
+                    prefs[hiddenModelsKey(runtime)] = json.encodeToString(
+                        SetSerializer(String.serializer()),
+                        hidden,
+                    )
+                }
+            }
+        }
+    }
+
+    fun hiddenModelsFlow(runtime: LocalRuntime): Flow<Set<String>> =
+        context.localRuntimeDataStore.data.map { prefs ->
+            decodeStringSet(prefs[hiddenModelsKey(runtime)])
+        }
+
+    suspend fun hiddenModels(runtime: LocalRuntime): Set<String> =
+        hiddenModelsFlow(runtime).first()
+
+    suspend fun hideModel(runtime: LocalRuntime, fileName: String) {
+        context.localRuntimeDataStore.edit { prefs ->
+            val current = decodeStringSet(prefs[hiddenModelsKey(runtime)]).toMutableSet()
+            if (current.add(fileName)) {
+                prefs[hiddenModelsKey(runtime)] = json.encodeToString(
+                    SetSerializer(String.serializer()),
+                    current,
+                )
+            }
+        }
+    }
+
+    suspend fun unhideModel(runtime: LocalRuntime, fileName: String) {
+        context.localRuntimeDataStore.edit { prefs ->
+            val current = decodeStringSet(prefs[hiddenModelsKey(runtime)]).toMutableSet()
+            if (current.remove(fileName)) {
+                if (current.isEmpty()) {
+                    prefs.remove(hiddenModelsKey(runtime))
+                } else {
+                    prefs[hiddenModelsKey(runtime)] = json.encodeToString(
+                        SetSerializer(String.serializer()),
+                        current,
+                    )
+                }
+            }
         }
     }
 
@@ -367,6 +421,17 @@ class LocalRuntimePreferences(private val context: Context) {
                     prefs[visionUnavailableKey(runtime)] = json.encodeToString(
                         SetSerializer(String.serializer()),
                         visionSet,
+                    )
+                }
+            }
+            val hiddenSet = decodeStringSet(prefs[hiddenModelsKey(runtime)]).toMutableSet()
+            if (hiddenSet.remove(fileName)) {
+                if (hiddenSet.isEmpty()) {
+                    prefs.remove(hiddenModelsKey(runtime))
+                } else {
+                    prefs[hiddenModelsKey(runtime)] = json.encodeToString(
+                        SetSerializer(String.serializer()),
+                        hiddenSet,
                     )
                 }
             }

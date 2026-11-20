@@ -18,19 +18,111 @@ import com.termux.view.TerminalViewClient
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.workspace.RootfsPatchOptions
 import me.rerere.workspace.RootfsPatcher
+import me.rerere.workspace.WorkspaceBindMount
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.nio.file.Files
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Tracks active interactive PRoot terminal sessions AND a monotonic mount-policy generation
+ * per workspace ID.
+ *
+ * Whenever a mount policy changes (disabling `/shared`, downgrading `/sdcard`, revoking OS
+ * storage permissions, or deleting the workspace), [bumpGenerationAndFinishAll] atomically
+ * increments the generation and finishes all live PTYs. Any in-flight session built from a
+ * stale mount snapshot fails the generation check inside [registerAndStart] and is terminated
+ * immediately instead of escaping teardown.
+ */
+object WorkspaceTerminalRegistry {
+    private class WorkspaceTermState {
+        var generation: Long = 0L
+        val generationFlow = MutableStateFlow(0L)
+        val sessions = LinkedHashSet<TerminalSession>()
+    }
+
+    private val states = ConcurrentHashMap<String, WorkspaceTermState>()
+
+    private fun stateFor(workspaceId: String): WorkspaceTermState =
+        states.computeIfAbsent(workspaceId) { WorkspaceTermState() }
+
+    fun currentGeneration(workspaceId: String): Long {
+        val state = stateFor(workspaceId)
+        return synchronized(state) { state.generation }
+    }
+
+    fun generationFlow(workspaceId: String): StateFlow<Long> =
+        stateFor(workspaceId).generationFlow.asStateFlow()
+
+    /**
+     * Registers and starts the PTY only if the mount generation still matches. An
+     * uninitialized Termux session cannot be attached to a View before this check.
+     */
+    internal fun registerAndStart(
+        workspaceId: String,
+        session: TerminalSession,
+        expectedGeneration: Long,
+        start: () -> Unit,
+    ): Boolean {
+        val state = stateFor(workspaceId)
+        return synchronized(state) {
+            if (state.generation != expectedGeneration) return@synchronized false
+            state.sessions.add(session)
+            start()
+            true
+        }
+    }
+
+    fun unregister(workspaceId: String, session: TerminalSession) {
+        val state = states[workspaceId] ?: return
+        synchronized(state) {
+            state.sessions.remove(session)
+        }
+    }
+
+    /**
+     * Atomically advances the mount generation for [workspaceId] and terminates all live
+     * sessions registered under previous generations.
+     */
+    fun bumpGenerationAndFinishAll(workspaceId: String): Long {
+        val state = stateFor(workspaceId)
+        val toFinish: List<TerminalSession>
+        val newGen: Long
+        synchronized(state) {
+            state.generation += 1L
+            newGen = state.generation
+            toFinish = state.sessions.toList()
+            state.sessions.clear()
+        }
+        state.generationFlow.value = newGen
+        for (session in toFinish) {
+            runCatching { session.finishIfRunning() }
+        }
+        return newGen
+    }
+
+    fun finishAll(workspaceId: String) {
+        bumpGenerationAndFinishAll(workspaceId)
+    }
+
+    internal fun resetForTest(workspaceId: String) {
+        states.remove(workspaceId)
+    }
+}
 
 internal fun createWorkspaceTerminalSession(
     context: Context,
     root: String,
     client: TerminalSessionClient,
+    bindMounts: List<WorkspaceBindMount> = emptyList(),
 ): TerminalSession {
     val appContext = context.applicationContext
     val workspaceDir = File(File(appContext.filesDir, "workspaces"), root)
     val filesDir = File(workspaceDir, "files")
     val linuxDir = File(workspaceDir, "linux")
     val tempDir = File(workspaceDir, "tmp")
-    val skillsDir = File(appContext.filesDir, FileFolders.SKILLS).apply { mkdirs() }
     val nativeLibraryDir = File(appContext.applicationInfo.nativeLibraryDir)
     val proot = File(nativeLibraryDir, "libproot_exec.so")
     val loader = File(nativeLibraryDir, "libproot_loader.so")
@@ -45,9 +137,19 @@ internal fun createWorkspaceTerminalSession(
         WORKSPACE_DIR,
         "-b",
         "${filesDir.absolutePath}:$WORKSPACE_DIR",
-        "-b",
-        "${skillsDir.absolutePath}:$SKILLS_DIR",
     )
+    if (bindMounts.isNotEmpty()) {
+        bindMounts.forEach { mount ->
+            if (mount.source.exists()) {
+                args += "-b"
+                args += "${mount.source.absolutePath}:${mount.target}"
+            }
+        }
+    } else {
+        val skillsDir = File(appContext.filesDir, FileFolders.SKILLS).apply { mkdirs() }
+        args += "-b"
+        args += "${skillsDir.absolutePath}:$SKILLS_DIR"
+    }
     listOf("/dev", "/proc", "/sys").forEach { path ->
         if (File(path).exists()) {
             args += "-b"
@@ -100,7 +202,8 @@ internal fun prepareWorkspaceTerminalSession(context: Context, root: String) {
 
 internal fun workspaceRootfsReady(context: Context, root: String): Boolean {
     val linuxDir = File(File(File(context.applicationContext.filesDir, "workspaces"), root), "linux")
-    return linuxDir.isDirectory && File(linuxDir, "bin/sh").isFile
+    val sh = File(linuxDir, "bin/sh").toPath()
+    return linuxDir.isDirectory && (Files.isRegularFile(sh) || Files.isSymbolicLink(sh))
 }
 
 internal class WorkspaceTerminalSessionClient(

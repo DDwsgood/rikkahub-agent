@@ -60,14 +60,20 @@ val repositoryModule = module {
                 WorkspaceBindMount(
                     source = File(context.filesDir, FileFolders.SKILLS).apply { mkdirs() },
                     target = "/skills",
+                    trustedAnchorRoot = context.filesDir,
+                    anchorRelativePath = FileFolders.SKILLS,
                 ),
                 WorkspaceBindMount(
                     source = File(context.filesDir, FileFolders.TOOL_OUTPUTS).apply { mkdirs() },
                     target = "/tool_outputs",
+                    trustedAnchorRoot = context.filesDir,
+                    anchorRelativePath = FileFolders.TOOL_OUTPUTS,
                 ),
                 WorkspaceBindMount(
                     source = File(context.filesDir, FileFolders.UPLOAD).apply { mkdirs() },
                     target = "/upload",
+                    trustedAnchorRoot = context.filesDir,
+                    anchorRelativePath = FileFolders.UPLOAD,
                 ),
             ),
             // per-workspace 的 /sdcard 绑定源; 未挂载模式的 workspace 不追加绑定
@@ -80,7 +86,11 @@ val repositoryModule = module {
     }
 
     single {
-        WorkspaceRepository(get(), get(), get(), get())
+        me.rerere.rikkahub.data.preferences.WorkspaceSharedDirPreferences(get())
+    }
+
+    single {
+        WorkspaceRepository(get(), get(), get(), get(), get(), get())
     }
 
     single {

@@ -1,5 +1,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight, Brain } from "lucide-react";
+import { useTranslation } from "react-i18next";
+
 import Markdown from "~/components/markdown/markdown";
 import Think from "~/assets/think.svg?react";
 
@@ -9,6 +11,7 @@ interface ReasoningPartProps {
 }
 
 export function ReasoningPart({ reasoning, isFinished = true }: ReasoningPartProps) {
+  const { t } = useTranslation("message");
   const [expanded, setExpanded] = React.useState(false);
 
   if (!reasoning) return null;
@@ -18,10 +21,16 @@ export function ReasoningPart({ reasoning, isFinished = true }: ReasoningPartPro
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-muted-foreground hover:bg-muted/50"
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
       >
         {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        <Think className="h-4 w-4" />?<span>{isFinished ? "Thinking" : "Thinking..."}</span>
+        <Think className="h-4 w-4" />
+        <span>
+          {isFinished
+            ? t("message_parts.thinking")
+            : t("message_parts.thinking_in_progress")}
+        </span>
       </button>
       {expanded && (
         <div className="border-t border-muted px-3 py-2 text-sm text-muted-foreground">

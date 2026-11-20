@@ -214,15 +214,8 @@ class SettingsStore internal constructor(
         val SPONSOR_ALERT_DISMISSED_AT = intPreferencesKey("sponsor_alert_dismissed_at")
     }
 
-    val settingsFlowRaw = settingsFlowRawOverride ?: dataStore!!.data
-        .catch { exception ->
-            if (exception is IOException) {
-                emit(emptyPreferences())
-            } else {
-                throw exception
-            }
-        }.map { preferences ->
-            Settings(
+    private fun decodeNormalizedSettings(preferences: androidx.datastore.preferences.core.Preferences): Settings {
+        val raw = Settings(
                 favoriteModels = preferences[FAVORITE_MODELS]?.let { raw ->
                     runCatching { JsonInstant.decodeFromString<List<Uuid>>(raw) }.getOrElse {
                         Log.w(TAG, "Failed to decode favoriteModels, using default", it)
@@ -368,190 +361,140 @@ class SettingsStore internal constructor(
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
             )
+
+        val deletedDefaultIds = raw.deletedBuiltInProviderIds
+        var providers = raw.providers.ifEmpty {
+            DEFAULT_PROVIDERS.filter { p -> p.id !in deletedDefaultIds }
+        }.toMutableList()
+        val aicoreIndex = providers.indexOfFirst { it is ProviderSetting.AICore }
+        if (aicoreIndex > 0) {
+            val aicoreRow = providers.removeAt(aicoreIndex)
+            providers.add(0, aicoreRow)
         }
-        .map {
-            val deletedDefaultIds = it.deletedBuiltInProviderIds
-            var providers = it.providers.ifEmpty {
-                DEFAULT_PROVIDERS.filter { p -> p.id !in deletedDefaultIds }
-            }.toMutableList()
-            // For existing installs that pre-date the on-device AICore provider being
-            // promoted to first-place, hoist it to the top so the user does not have to
-            // scroll past every legacy aggregator to find it.
-            val aicoreIndex = providers.indexOfFirst { it is ProviderSetting.AICore }
-            if (aicoreIndex > 0) {
-                val aicoreRow = providers.removeAt(aicoreIndex)
-                providers.add(0, aicoreRow)
-            }
-            DEFAULT_PROVIDERS.forEach { defaultProvider ->
-                if (defaultProvider.id in deletedDefaultIds) return@forEach
-                if (providers.none { it.id == defaultProvider.id }) {
-                    // On-device built-in providers (AICore, LiteRT) are pinned to the top of
-                    // the list in the order they appear in DEFAULT_PROVIDERS. Remote provider
-                    // defaults continue to append at the end so existing users see no
-                    // reordering of their configured remote providers.
-                    when (defaultProvider) {
-                        is ProviderSetting.AICore -> providers.add(0, defaultProvider.copyProvider())
-                        is ProviderSetting.LiteRtLocal -> {
-                            // Insert right after AICore, or at 0 if AICore is absent.
-                            // indexOfFirst returns -1 when absent; -1 + 1 = 0, so insert at 0.
-                            val insertAt = providers.indexOfFirst { it is ProviderSetting.AICore } + 1
-                            providers.add(insertAt, defaultProvider.copyProvider())
-                        }
-                        is ProviderSetting.LlamaCppLocal -> {
-                            // Insert right after LiteRtLocal, so it groups with the other
-                            // on-device provider instead of appending after every remote
-                            // provider below. Falls back to right after AICore, or 0, if
-                            // LiteRtLocal is absent - same absent-index fallback as above.
-                            val insertAt = providers.indexOfFirst { it is ProviderSetting.LiteRtLocal }
-                                .let { if (it >= 0) it + 1 else providers.indexOfFirst { p -> p is ProviderSetting.AICore } + 1 }
-                            providers.add(insertAt, defaultProvider.copyProvider())
-                        }
-                        else -> providers.add(defaultProvider.copyProvider())
+        DEFAULT_PROVIDERS.forEach { defaultProvider ->
+            if (defaultProvider.id in deletedDefaultIds) return@forEach
+            if (providers.none { it.id == defaultProvider.id }) {
+                when (defaultProvider) {
+                    is ProviderSetting.AICore -> providers.add(0, defaultProvider.copyProvider())
+                    is ProviderSetting.LiteRtLocal -> {
+                        val insertAt = providers.indexOfFirst { it is ProviderSetting.AICore } + 1
+                        providers.add(insertAt, defaultProvider.copyProvider())
                     }
+                    is ProviderSetting.LlamaCppLocal -> {
+                        val insertAt = providers.indexOfFirst { it is ProviderSetting.LiteRtLocal }
+                            .let { if (it >= 0) it + 1 else providers.indexOfFirst { p -> p is ProviderSetting.AICore } + 1 }
+                        providers.add(insertAt, defaultProvider.copyProvider())
+                    }
+                    else -> providers.add(defaultProvider.copyProvider())
                 }
             }
-            providers = providers.map { provider ->
-                val defaultProvider = DEFAULT_PROVIDERS.find { it.id == provider.id }
-                if (defaultProvider != null) {
-                    provider.copyProvider(
-                        builtIn = defaultProvider.builtIn,
-                        description = defaultProvider.description,
-                        shortDescription = defaultProvider.shortDescription,
-                    )
-                } else provider
-            }.toMutableList()
-            var assistants = it.assistants.ifEmpty { DEFAULT_ASSISTANTS }.toMutableList()
-            DEFAULT_ASSISTANTS.forEach { defaultAssistant ->
-                if (assistants.none { it.id == defaultAssistant.id }) {
-                    assistants.add(defaultAssistant.copy())
-                }
+        }
+        providers = providers.map { provider ->
+            val defaultProvider = DEFAULT_PROVIDERS.find { it.id == provider.id }
+            if (defaultProvider != null) {
+                provider.copyProvider(
+                    builtIn = defaultProvider.builtIn,
+                    description = defaultProvider.description,
+                    shortDescription = defaultProvider.shortDescription,
+                )
+            } else provider
+        }.toMutableList()
+        var assistants = raw.assistants.ifEmpty { DEFAULT_ASSISTANTS }.toMutableList()
+        DEFAULT_ASSISTANTS.forEach { defaultAssistant ->
+            if (assistants.none { it.id == defaultAssistant.id }) {
+                assistants.add(defaultAssistant.copy())
             }
-            // One-shot upgrade for existing installs that pre-date the agent-core auto-load:
-            // if a default-IDed assistant has an empty enabledSkills, treat it as fresh and
-            // pin agent-core. Users who deliberately added other skills are untouched.
+        }
+        assistants = assistants.map { assistant ->
+            val isDefault = DEFAULT_ASSISTANTS.any { it.id == assistant.id }
+            if (isDefault && assistant.enabledSkills.isEmpty()) {
+                assistant.copy(enabledSkills = setOf("agent-core"))
+            } else assistant
+        }.toMutableList()
+        val skillsToSeed = DEFAULT_AUTO_ENABLED_SKILLS - raw.autoEnabledDefaultSkills
+        if (skillsToSeed.isNotEmpty()) {
             assistants = assistants.map { assistant ->
-                val isDefault = DEFAULT_ASSISTANTS.any { it.id == assistant.id }
-                if (isDefault && assistant.enabledSkills.isEmpty()) {
-                    assistant.copy(enabledSkills = setOf("agent-core"))
+                if (DEFAULT_ASSISTANTS.any { d -> d.id == assistant.id }) {
+                    assistant.copy(enabledSkills = assistant.enabledSkills + skillsToSeed)
                 } else assistant
             }.toMutableList()
-            // One-shot additive enable for newly-bundled default-on skills. Each name is added
-            // to every default assistant exactly once, tracked in autoEnabledDefaultSkills, so a
-            // user who later disables one is not re-opted-in on the next launch. A brand-new
-            // skill cannot have been deliberately disabled before it shipped, so the first add is
-            // always safe.
-            val skillsToSeed = DEFAULT_AUTO_ENABLED_SKILLS - it.autoEnabledDefaultSkills
-            if (skillsToSeed.isNotEmpty()) {
-                assistants = assistants.map { assistant ->
-                    if (DEFAULT_ASSISTANTS.any { d -> d.id == assistant.id }) {
-                        assistant.copy(enabledSkills = assistant.enabledSkills + skillsToSeed)
-                    } else assistant
-                }.toMutableList()
+        }
+        assistants = assistants.map { assistant ->
+            if ("autonomous-agent" in assistant.enabledSkills) {
+                assistant.copy(enabledSkills = assistant.enabledSkills - "autonomous-agent")
+            } else assistant
+        }.toMutableList()
+        val newAutoEnabled = raw.autoEnabledDefaultSkills + DEFAULT_AUTO_ENABLED_SKILLS
+        val ttsProviders = raw.ttsProviders.ifEmpty { DEFAULT_TTS_PROVIDERS }.toMutableList()
+        DEFAULT_TTS_PROVIDERS.forEach { defaultTTSProvider ->
+            if (ttsProviders.none { provider -> provider.id == defaultTTSProvider.id }) {
+                ttsProviders.add(defaultTTSProvider.copyProvider())
             }
-            // Remove deleted skills from enabledSkills. autonomous-agent was removed from the
-            // bundled set; if it's still in any assistant's enabledSkills (e.g., from a backup
-            // restore), remove it. Idempotent — safe every launch.
-            assistants = assistants.map { assistant ->
-                if ("autonomous-agent" in assistant.enabledSkills) {
-                    assistant.copy(enabledSkills = assistant.enabledSkills - "autonomous-agent")
-                } else assistant
-            }.toMutableList()
-            val newAutoEnabled = it.autoEnabledDefaultSkills + DEFAULT_AUTO_ENABLED_SKILLS
-            val ttsProviders = it.ttsProviders.ifEmpty { DEFAULT_TTS_PROVIDERS }.toMutableList()
-            DEFAULT_TTS_PROVIDERS.forEach { defaultTTSProvider ->
-                if (ttsProviders.none { provider -> provider.id == defaultTTSProvider.id }) {
-                    ttsProviders.add(defaultTTSProvider.copyProvider())
+        }
+        val settings = raw.copy(
+            providers = providers,
+            assistants = assistants,
+            autoEnabledDefaultSkills = newAutoEnabled,
+            ttsProviders = ttsProviders,
+        )
+
+        val validMcpServerIds = settings.mcpServers.map { it.id }.toSet()
+        val validModeInjectionIds = settings.modeInjections.map { it.id }.toSet()
+        val validLorebookIds = settings.lorebooks.map { it.id }.toSet()
+        val validQuickMessageIds = settings.quickMessages.map { it.id }.toSet()
+        val asrProviders = settings.asrProviders.distinctBy { it.id }
+        return settings.copy(
+            providers = settings.providers.distinctBy { it.id }.map { provider ->
+                when (provider) {
+                    is ProviderSetting.OpenAI -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.Google -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.Claude -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.AICore -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.LiteRtLocal -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.LlamaCppLocal -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.Codex -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.Grok -> provider.copy(models = provider.models.distinctBy { it.id })
+                    is ProviderSetting.GeminiOAuth -> provider.copy(models = provider.models.distinctBy { it.id })
                 }
+            },
+            assistants = settings.assistants.distinctBy { it.id }.map { assistant ->
+                assistant.copy(
+                    mcpServers = assistant.mcpServers.filter { it in validMcpServerIds }.toSet(),
+                    modeInjectionIds = assistant.modeInjectionIds.filter { it in validModeInjectionIds }.toSet(),
+                    lorebookIds = assistant.lorebookIds.filter { it in validLorebookIds }.toSet(),
+                    quickMessageIds = assistant.quickMessageIds.filter { it in validQuickMessageIds }.toSet(),
+                )
+            },
+            ttsProviders = settings.ttsProviders.distinctBy { it.id },
+            asrProviders = asrProviders,
+            selectedASRProviderId = settings.selectedASRProviderId
+                ?.takeIf { id -> asrProviders.any { provider -> provider.id == id } }
+                ?: asrProviders.firstOrNull()?.id,
+            favoriteModels = settings.favoriteModels.filter { uuid ->
+                settings.providers.flatMap { it.models }.any { it.id == uuid }
+            },
+            modeInjections = settings.modeInjections.distinctBy { it.id },
+            lorebooks = settings.lorebooks.distinctBy { it.id },
+            quickMessages = settings.quickMessages.distinctBy { it.id },
+        )
+    }
+
+    val settingsFlowRaw = settingsFlowRawOverride ?: dataStore!!.data
+        .map { preferences -> decodeNormalizedSettings(preferences) }
+        .catch { exception ->
+            if (exception is IOException) {
+                // Never synthesize a non-dummy default Settings on read failure — otherwise a
+                // subsequent write could overwrite real persisted data on disk with defaults.
+                Log.e(TAG, "Failed to read settings DataStore; keeping dummy sentinel", exception)
+                emit(Settings.dummy())
+            } else {
+                throw exception
             }
-            it.copy(
-                providers = providers,
-                assistants = assistants,
-                autoEnabledDefaultSkills = newAutoEnabled,
-                ttsProviders = ttsProviders,
-            )
         }
-        .map { settings ->
-            // 去重并清理无效引用
-            val validMcpServerIds = settings.mcpServers.map { it.id }.toSet()
-            val validModeInjectionIds = settings.modeInjections.map { it.id }.toSet()
-            val validLorebookIds = settings.lorebooks.map { it.id }.toSet()
-            val validQuickMessageIds = settings.quickMessages.map { it.id }.toSet()
-            val asrProviders = settings.asrProviders.distinctBy { it.id }
-            settings.copy(
-                providers = settings.providers.distinctBy { it.id }.map { provider ->
-                    when (provider) {
-                        is ProviderSetting.OpenAI -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.Google -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.Claude -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.AICore -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.LiteRtLocal -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.LlamaCppLocal -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.Codex -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.Grok -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.GeminiOAuth -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-                    }
-                },
-                assistants = settings.assistants.distinctBy { it.id }.map { assistant ->
-                    assistant.copy(
-                        // 过滤掉不存在的 MCP 服务器 ID
-                        mcpServers = assistant.mcpServers.filter { serverId ->
-                            serverId in validMcpServerIds
-                        }.toSet(),
-                        // 过滤掉不存在的模式注入 ID
-                        modeInjectionIds = assistant.modeInjectionIds.filter { id ->
-                            id in validModeInjectionIds
-                        }.toSet(),
-                        // 过滤掉不存在的 Lorebook ID
-                        lorebookIds = assistant.lorebookIds.filter { id ->
-                            id in validLorebookIds
-                        }.toSet(),
-                        // 过滤掉不存在的快捷消息 ID
-                        quickMessageIds = assistant.quickMessageIds.filter { id ->
-                            id in validQuickMessageIds
-                        }.toSet()
-                    )
-                },
-                ttsProviders = settings.ttsProviders.distinctBy { it.id },
-                asrProviders = asrProviders,
-                selectedASRProviderId = settings.selectedASRProviderId
-                    ?.takeIf { id -> asrProviders.any { provider -> provider.id == id } }
-                    ?: asrProviders.firstOrNull()?.id,
-                favoriteModels = settings.favoriteModels.filter { uuid ->
-                    settings.providers.flatMap { it.models }.any { it.id == uuid }
-                },
-                modeInjections = settings.modeInjections.distinctBy { it.id },
-                lorebooks = settings.lorebooks.distinctBy { it.id },
-                quickMessages = settings.quickMessages.distinctBy { it.id },
-            )
-        }
-        .onEach {
-            get<PebbleEngine>().templateCache.invalidateAll()
+        .onEach { settings ->
+            if (!settings.init) {
+                runCatching { get<PebbleEngine>().templateCache.invalidateAll() }
+            }
         }
 
     val settingsFlow = settingsFlowRaw
@@ -565,9 +508,27 @@ class SettingsStore internal constructor(
         return settingsFlowRaw.first()
     }
 
-    suspend fun update(settings: Settings) {
-        if(settings.init) {
-            Log.w(TAG, "Cannot update dummy settings")
+    internal class WebAccess(val enabled: Boolean, val password: String)
+
+    /** Read the current policy without decoding unrelated settings on each web request/event. */
+    internal suspend fun readWebAccess(): WebAccess {
+        val prefs = dataStore?.data?.first()
+        if (prefs != null) {
+            return WebAccess(prefs[WEB_SERVER_JWT_ENABLED] == true, prefs[WEB_SERVER_ACCESS_PASSWORD].orEmpty())
+        }
+        val settings = settingsFlowRaw.first()
+        check(!settings.init) { "Web server settings are unavailable" }
+        return WebAccess(settings.webServerJwtEnabled, settings.webServerAccessPassword)
+    }
+
+    /**
+     * Full-settings replacement explicitly reserved for whole-backup restore (WebDAV / S3).
+     * Ordinary UI and service code MUST use transactional `update { latest -> ... }` instead so
+     * concurrent background mutations (OAuth refresh, provider/MCP edits, etc.) are never clobbered.
+     */
+    suspend fun replaceAllForRestore(settings: Settings) {
+        if (settings.init) {
+            Log.w(TAG, "Cannot restore dummy settings")
             return
         }
         transformLock.withLock {
@@ -575,111 +536,118 @@ class SettingsStore internal constructor(
         }
     }
 
-    /**
-     * Unlocked write path: every caller must already hold [transformLock]. Writes disk
-     * before memory: if `dataStore.edit` throws (IOException, disk full, a serialization
-     * bug), `settingsFlow` must still match what's actually on disk rather than a value
-     * that was never persisted, or observers would react to a change that silently rolls
-     * back on the next app launch.
-     */
-    private suspend fun updateInternal(settings: Settings) {
-        dataStore!!.edit { preferences ->
-            preferences[DYNAMIC_COLOR] = settings.dynamicColor
-            preferences[THEME_ID] = settings.themeId
-            preferences[CUSTOM_THEMES] = JsonInstant.encodeToString(settings.customThemes)
-            preferences[DEVELOPER_MODE] = settings.developerMode
-            preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
+    private fun writeAllSettings(
+        preferences: androidx.datastore.preferences.core.MutablePreferences,
+        settings: Settings,
+    ) {
+        preferences[DYNAMIC_COLOR] = settings.dynamicColor
+        preferences[THEME_ID] = settings.themeId
+        preferences[CUSTOM_THEMES] = JsonInstant.encodeToString(settings.customThemes)
+        preferences[DEVELOPER_MODE] = settings.developerMode
+        preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
 
-            preferences[FAVORITE_MODELS] = JsonInstant.encodeToString(settings.favoriteModels)
-            preferences[SELECT_MODEL] = settings.chatModelId.toString()
-            preferences[FAST_MODEL] = settings.fastModelId.toString()
-            settings.titleModelId?.let {
-                preferences[TITLE_MODEL] = it.toString()
-            } ?: preferences.remove(TITLE_MODEL)
-            preferences[TRANSLATE_MODEL] = settings.translateModeId.toString()
-            preferences[ENABLE_SUGGESTION] = settings.enableSuggestion
-            settings.suggestionModelId?.let {
-                preferences[SUGGESTION_MODEL] = it.toString()
-            } ?: preferences.remove(SUGGESTION_MODEL)
-            preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
-            preferences[TITLE_PROMPT] = settings.titlePrompt
-            preferences[TRANSLATION_PROMPT] = settings.translatePrompt
-            preferences[TRANSLATE_THINKING_BUDGET] = settings.translateThinkingBudget
-            preferences[SUGGESTION_PROMPT] = settings.suggestionPrompt
-            preferences[OCR_MODEL] = settings.ocrModelId.toString()
-            preferences[OCR_PROMPT] = settings.ocrPrompt
-            preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
-            preferences[COMPRESS_PROMPT] = settings.compressPrompt
+        preferences[FAVORITE_MODELS] = JsonInstant.encodeToString(settings.favoriteModels)
+        preferences[SELECT_MODEL] = settings.chatModelId.toString()
+        preferences[FAST_MODEL] = settings.fastModelId.toString()
+        settings.titleModelId?.let {
+            preferences[TITLE_MODEL] = it.toString()
+        } ?: preferences.remove(TITLE_MODEL)
+        preferences[TRANSLATE_MODEL] = settings.translateModeId.toString()
+        preferences[ENABLE_SUGGESTION] = settings.enableSuggestion
+        settings.suggestionModelId?.let {
+            preferences[SUGGESTION_MODEL] = it.toString()
+        } ?: preferences.remove(SUGGESTION_MODEL)
+        preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
+        preferences[TITLE_PROMPT] = settings.titlePrompt
+        preferences[TRANSLATION_PROMPT] = settings.translatePrompt
+        preferences[TRANSLATE_THINKING_BUDGET] = settings.translateThinkingBudget
+        preferences[SUGGESTION_PROMPT] = settings.suggestionPrompt
+        preferences[OCR_MODEL] = settings.ocrModelId.toString()
+        preferences[OCR_PROMPT] = settings.ocrPrompt
+        preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
+        preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
-            preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
-            preferences[DELETED_BUILTIN_PROVIDER_IDS] = JsonInstant.encodeToString(
-                settings.deletedBuiltInProviderIds.map { it.toString() }.toSet()
-            )
+        preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
+        preferences[DELETED_BUILTIN_PROVIDER_IDS] = JsonInstant.encodeToString(
+            settings.deletedBuiltInProviderIds.map { it.toString() }.toSet()
+        )
 
-            preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
-            preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
-            preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
+        preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
+        preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
+        preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
 
-            preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
-            preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
-            // maxOf(0, size - 1) guards the empty-list case: a persisted "[]" for
-            // search_services leaves searchServices empty (the ?: default only fires on a
-            // missing key, not on an empty array), and coerceIn(0, -1) throws
-            // IllegalArgumentException because min > max, crashing every settings write.
-            preferences[SEARCH_SELECTED] =
-                settings.searchServiceSelected.coerceIn(0, maxOf(0, settings.searchServices.size - 1))
-            preferences[ENABLE_WEB_FETCH_TOOLS] = settings.enableWebFetchTools
+        preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
+        preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
+        preferences[SEARCH_SELECTED] =
+            settings.searchServiceSelected.coerceIn(0, maxOf(0, settings.searchServices.size - 1))
+        preferences[ENABLE_WEB_FETCH_TOOLS] = settings.enableWebFetchTools
 
-            preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
-            preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
-            preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
-            preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
-            settings.selectedTTSProviderId?.let {
-                preferences[SELECTED_TTS_PROVIDER] = it.toString()
-            } ?: preferences.remove(SELECTED_TTS_PROVIDER)
-            preferences[DEFAULT_TTS_PLAYBACK_SPEED] = settings.defaultTTSPlaybackSpeed.coerceIn(0.5f, 2.0f)
-            preferences[ASR_PROVIDERS] = JsonInstant.encodeToString(settings.asrProviders)
-            settings.selectedASRProviderId?.let {
-                preferences[SELECTED_ASR_PROVIDER] = it.toString()
-            } ?: preferences.remove(SELECTED_ASR_PROVIDER)
-            preferences[MODE_INJECTIONS] = JsonInstant.encodeToString(settings.modeInjections)
-            preferences[LOREBOOKS] = JsonInstant.encodeToString(settings.lorebooks)
-            preferences[QUICK_MESSAGES] = JsonInstant.encodeToString(settings.quickMessages)
-            preferences[WEB_SERVER_ENABLED] = settings.webServerEnabled
-            preferences[WEB_SERVER_PORT] = settings.webServerPort
-            preferences[WEB_SERVER_JWT_ENABLED] = settings.webServerJwtEnabled
-            preferences[WEB_SERVER_ACCESS_PASSWORD] = settings.webServerAccessPassword
-            preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
-            preferences[AI_LOG_LEVEL] = settings.aiLogLevel.preferenceName
-            preferences[KEEPALIVE_ENABLED] = settings.keepaliveEnabled
-            preferences[SCHEDULED_JOB_WAKE_ON_LOCK_SCREEN] = settings.scheduledJobWakeOnLockScreen
-            preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
-            preferences[LAUNCH_COUNT] = settings.launchCount
-            preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
-        }
-        settingsFlow.value = settings
+        preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
+        preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
+        preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
+        preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
+        settings.selectedTTSProviderId?.let {
+            preferences[SELECTED_TTS_PROVIDER] = it.toString()
+        } ?: preferences.remove(SELECTED_TTS_PROVIDER)
+        preferences[DEFAULT_TTS_PLAYBACK_SPEED] = settings.defaultTTSPlaybackSpeed.coerceIn(0.5f, 2.0f)
+        preferences[ASR_PROVIDERS] = JsonInstant.encodeToString(settings.asrProviders)
+        settings.selectedASRProviderId?.let {
+            preferences[SELECTED_ASR_PROVIDER] = it.toString()
+        } ?: preferences.remove(SELECTED_ASR_PROVIDER)
+        preferences[MODE_INJECTIONS] = JsonInstant.encodeToString(settings.modeInjections)
+        preferences[LOREBOOKS] = JsonInstant.encodeToString(settings.lorebooks)
+        preferences[QUICK_MESSAGES] = JsonInstant.encodeToString(settings.quickMessages)
+        preferences[WEB_SERVER_ENABLED] = settings.webServerEnabled
+        preferences[WEB_SERVER_PORT] = settings.webServerPort
+        preferences[WEB_SERVER_JWT_ENABLED] = settings.webServerJwtEnabled
+        preferences[WEB_SERVER_ACCESS_PASSWORD] = settings.webServerAccessPassword
+        preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
+        preferences[AI_LOG_LEVEL] = settings.aiLogLevel.preferenceName
+        preferences[KEEPALIVE_ENABLED] = settings.keepaliveEnabled
+        preferences[SCHEDULED_JOB_WAKE_ON_LOCK_SCREEN] = settings.scheduledJobWakeOnLockScreen
+        preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
+        preferences[LAUNCH_COUNT] = settings.launchCount
+        preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
     }
 
-    /** Serialises every settings write: both transform-based `update {fn}` calls and
-     *  direct `update(Settings)` calls (e.g. a WebDAV/S3 restore replacing the whole
-     *  settings object), so concurrent callers don't race each other. Without this lock,
-     *  two writes dispatched in quick succession could both read `settingsFlow.value`
-     *  before either has persisted, then each write its own delta off the same stale
-     *  base: last writer wins, the earlier change is silently dropped. The most-visible
-     *  repro: rapid-fire taps on per-assistant tool toggles where every other tap
-     *  appeared to revert; a restore racing an in-flight transform update is the same
-     *  class of bug with worse stakes. */
+    /**
+     * Unlocked full-write path: every caller must already hold [transformLock].
+     * Publishes ONLY via DataStore (single authoritative publisher into [settingsFlow]).
+     */
+    private suspend fun updateInternal(settings: Settings) {
+        if (settings.init) {
+            Log.w(TAG, "Refusing to persist dummy settings")
+            return
+        }
+        dataStore!!.edit { preferences ->
+            writeAllSettings(preferences, settings)
+        }
+    }
+
+    /** Serialises every settings write. Inside `dataStore.edit`, the transform reads the live
+     *  transactional on-disk preferences directly (and fails if disk read fails) rather than
+     *  relying on an in-memory snapshot that could be stale or fallback-defaulted. */
     private val transformLock = kotlinx.coroutines.sync.Mutex()
 
     suspend fun update(fn: (Settings) -> Settings) {
         transformLock.withLock {
-            updateInternal(fn(settingsFlow.value))
+            dataStore!!.edit { preferences ->
+                val base = decodeNormalizedSettings(preferences)
+                val updated = fn(base)
+                if (updated.init) {
+                    Log.w(TAG, "Cannot update dummy settings via transform")
+                    return@edit
+                }
+                writeAllSettings(preferences, updated)
+            }
         }
     }
 
     suspend fun updateAssistant(assistantId: Uuid) {
-        dataStore!!.edit { preferences ->
-            preferences[SELECT_ASSISTANT] = assistantId.toString()
+        transformLock.withLock {
+            dataStore!!.edit { preferences ->
+                preferences[SELECT_ASSISTANT] = assistantId.toString()
+            }
         }
     }
 

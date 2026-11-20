@@ -178,12 +178,13 @@ fun ErrorCard(
                     )
                 }
             }
+            val unknownError = stringResource(R.string.common_unknown_error)
             IconButton(
                 onClick = {
                     scope.launch {
                         clipboard.setClipEntry(
                             ClipEntry(
-                                clipData = ClipData.newPlainText("Error", error.error.message ?: "Unknown error")
+                                clipData = ClipData.newPlainText("Error", error.error.message ?: unknownError)
                             )
                         )
                     }
@@ -192,7 +193,7 @@ fun ErrorCard(
             ) {
                 Icon(
                     imageVector = HugeIcons.Copy01,
-                    contentDescription = "Copy error message",
+                    contentDescription = stringResource(R.string.error_card_copy_message),
                     tint = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.size(18.dp),
                 )

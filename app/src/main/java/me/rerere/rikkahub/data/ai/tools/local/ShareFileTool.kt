@@ -18,11 +18,14 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
+import me.rerere.rikkahub.data.files.DeliverableSourceGuard
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.termux.TermuxEnvironment
+import me.rerere.workspace.WorkspaceSafeFiles
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
+import java.nio.file.NoSuchFileException
 import java.util.UUID
 
 /**
@@ -649,12 +652,15 @@ internal suspend fun resolveAndCopyToCache(
             PathSafetyGuard.check(termuxPath)?.let { v ->
                 throw IOException(v.detail)
             }
-            val srcFile = File(termuxPath)
-            validateSourceFile(srcFile, source.rawPath)
-            val sanitizedName = sanitizeShareFileName(srcFile.name)
+            val (trustedRoot, relPath) = DeliverableSourceGuard.resolveUnderTrustedRoot(
+                trustedRoot = termuxEnvironment.termuxRoot,
+                rawPath = termuxPath,
+            ) ?: throw IOException("Path escapes Termux root or Termux root is unavailable: ${source.rawPath}")
+            val leafName = relPath.substringAfterLast('/')
+            val sanitizedName = sanitizeShareFileName(leafName)
             val dest = File(invocationDir, sanitizedName)
-            val bytes = streamCopyWithLimit(srcFile, dest, SHARE_FILE_MAX_BYTES)
-            ShareCopyResult(dest, srcFile.extension, "termux", bytes)
+            val bytes = streamCopyFromTrustedRoot(trustedRoot, relPath, source.rawPath, dest, SHARE_FILE_MAX_BYTES)
+            ShareCopyResult(dest, leafName.substringAfterLast('.', missingDelimiterValue = ""), "termux", bytes)
         }
 
         is ShareSource.Workspace -> {
@@ -667,14 +673,26 @@ internal suspend fun resolveAndCopyToCache(
             if (workspace.shellStatus != me.rerere.workspace.WorkspaceShellStatus.READY.name) {
                 throw IOException("Bound workspace is not ready (status: ${workspace.shellStatus}). Wait for it to finish installing.")
             }
-            val rootfsPath = source.rawPath.removePrefix("/workspace")
-            if (rootfsPath.isBlank() || rootfsPath == "/") {
+            val normalized = try {
+                me.rerere.rikkahub.data.files.WorkspacePublicExport.normalizeRootfsPath(source.rawPath)
+            } catch (e: IllegalArgumentException) {
+                throw IOException(e.message ?: "Invalid workspace path: ${source.rawPath}")
+            }
+            if (!normalized.startsWith("/workspace/")) {
+                throw IOException("Path must reference a file inside /workspace/: ${source.rawPath}")
+            }
+            val relPath = normalized.removePrefix("/workspace/")
+            if (relPath.isBlank()) {
                 throw IOException("Cannot share a directory; provide a file path inside /workspace/.")
             }
-            // Pre-check size via stat (fast path); export also enforces the limit mid-stream.
-            // A 0-byte file is valid — only reject negative sizes (which shouldn't occur).
+            // Stat and export strictly within WorkspaceStorageArea.FILES (canonical containment
+            // inside filesDir(root); cannot escape into linux/, /skills, /upload, or /sdcard).
             val fileSize = try {
-                workspaceRepository.rootfsFileSize(workspaceId, rootfsPath)
+                workspaceRepository.fileSize(
+                    workspaceId,
+                    me.rerere.workspace.WorkspaceStorageArea.FILES,
+                    relPath,
+                )
             } catch (e: Exception) {
                 // Never swallow coroutine cancellation
                 if (e is CancellationException) throw e
@@ -688,14 +706,14 @@ internal suspend fun resolveAndCopyToCache(
                     "File is too large to share ($fileSize bytes; limit is $SHARE_FILE_MAX_BYTES bytes).",
                 )
             }
-            val sanitizedName = sanitizeShareFileName(rootfsPath.substringAfterLast('/'))
+            val sanitizedName = sanitizeShareFileName(relPath.substringAfterLast('/'))
             val dest = File(invocationDir, sanitizedName)
             val bytes = streamCopyWorkspaceFile(
-                workspaceRepository, workspaceId, rootfsPath, dest, SHARE_FILE_MAX_BYTES,
+                workspaceRepository, workspaceId, relPath, dest, SHARE_FILE_MAX_BYTES,
             )
             ShareCopyResult(
                 dest,
-                rootfsPath.substringAfterLast('.', missingDelimiterValue = ""),
+                relPath.substringAfterLast('.', missingDelimiterValue = ""),
                 "workspace",
                 bytes,
             )
@@ -703,30 +721,19 @@ internal suspend fun resolveAndCopyToCache(
 
         is ShareSource.AgentWorkspace -> {
             val expanded = AgentWorkspace.expand(source.rawPath)
-            // Canonical containment: expanded path must stay inside AgentWorkspace.rootPath()
-            val wsRootCanonical = try {
-                File(AgentWorkspace.rootPath()).canonicalPath
-            } catch (_: IOException) {
-                throw IOException("AgentWorkspace root could not be resolved.")
-            }
-            val expandedCanonical = try {
-                File(expanded).canonicalPath
-            } catch (_: IOException) {
-                throw IOException("Path could not be resolved: ${source.rawPath}")
-            }
-            val sep = File.separator
-            if (expandedCanonical != wsRootCanonical && !expandedCanonical.startsWith("$wsRootCanonical$sep")) {
-                throw IOException("Path escapes the app workspace directory.")
-            }
             PathSafetyGuard.check(expanded)?.let { v ->
                 throw IOException(v.detail)
             }
-            val srcFile = File(expanded)
-            validateSourceFile(srcFile, source.rawPath)
-            val sanitizedName = sanitizeShareFileName(srcFile.name)
+            val wsRoot = File(AgentWorkspace.rootPath())
+            val (trustedRoot, relPath) = DeliverableSourceGuard.resolveUnderTrustedRoot(
+                trustedRoot = wsRoot,
+                rawPath = expanded,
+            ) ?: throw IOException("Path escapes the app workspace directory.")
+            val leafName = relPath.substringAfterLast('/')
+            val sanitizedName = sanitizeShareFileName(leafName)
             val dest = File(invocationDir, sanitizedName)
-            val bytes = streamCopyWithLimit(srcFile, dest, SHARE_FILE_MAX_BYTES)
-            ShareCopyResult(dest, srcFile.extension, "agent_workspace", bytes)
+            val bytes = streamCopyFromTrustedRoot(trustedRoot, relPath, source.rawPath, dest, SHARE_FILE_MAX_BYTES)
+            ShareCopyResult(dest, leafName.substringAfterLast('.', missingDelimiterValue = ""), "agent_workspace", bytes)
         }
 
         is ShareSource.PublicStorage -> {
@@ -744,22 +751,13 @@ internal suspend fun resolveAndCopyToCache(
                 }.getOrNull() ?: "All files access required for shared storage."
                 throw IOException(detail)
             }
-            val srcFile = File(expanded)
-            // Canonical containment: after resolving symlinks, the path must still be
-            // within public storage — prevents symlink/alias escape to own-app dirs.
-            val srcCanonical = try {
-                srcFile.canonicalPath
-            } catch (_: IOException) {
-                throw IOException("Path could not be resolved: ${source.rawPath}")
-            }
-            if (!isWithinPublicStorage(srcCanonical)) {
-                throw IOException("Path resolves outside public storage and is not allowed.")
-            }
-            validateSourceFile(srcFile, source.rawPath)
-            val sanitizedName = sanitizeShareFileName(srcFile.name)
+            val (trustedRoot, relPath) = DeliverableSourceGuard.resolvePublicStorageSource(expanded)
+                ?: throw IOException("Path resolves outside public storage and is not allowed.")
+            val leafName = relPath.substringAfterLast('/')
+            val sanitizedName = sanitizeShareFileName(leafName)
             val dest = File(invocationDir, sanitizedName)
-            val bytes = streamCopyWithLimit(srcFile, dest, SHARE_FILE_MAX_BYTES)
-            ShareCopyResult(dest, srcFile.extension, "public_storage", bytes)
+            val bytes = streamCopyFromTrustedRoot(trustedRoot, relPath, source.rawPath, dest, SHARE_FILE_MAX_BYTES)
+            ShareCopyResult(dest, leafName.substringAfterLast('.', missingDelimiterValue = ""), "public_storage", bytes)
         }
 
         is ShareSource.Unsupported -> {
@@ -770,41 +768,31 @@ internal suspend fun resolveAndCopyToCache(
     }
 }
 
-private fun validateSourceFile(file: File, rawPath: String) {
-    if (!file.exists()) {
-        throw IOException("File not found: $rawPath")
-    }
-    if (!file.isFile) {
-        throw IOException("Path is a directory, not a file: $rawPath")
-    }
-    if (!file.canRead()) {
-        throw IOException("File exists but cannot be read (permission denied): $rawPath")
-    }
-}
-
 /**
- * Stream-copy [src] → [dest] with a byte-count cap of [maxBytes].
- * Throws [IOException] with a `too_large`-friendly message when the cap is exceeded,
- * and deletes [dest] on any failure. Symlink defence: re-runs [PathSafetyGuard] on the
- * canonical target in case a symlink resolves outside the allowed area.
- *
- * The [maxBytes] parameter defaults to [SHARE_FILE_MAX_BYTES] but can be overridden
- * in tests to verify the limit without allocating a 256 MB file.
+ * Stream-copy a file from [trustedRoot]/[relPath] via FD-relative `O_NOFOLLOW` into [dest]
+ * with a byte-count cap of [maxBytes]. Cleans up [dest] on any failure.
  */
-internal fun streamCopyWithLimit(src: File, dest: File, maxBytes: Long = SHARE_FILE_MAX_BYTES): Long {
-    val srcCanonical = try { src.canonicalFile } catch (_: IOException) { src }
-    if (srcCanonical.absolutePath != src.absolutePath) {
-        PathSafetyGuard.check(srcCanonical.absolutePath)?.let { v ->
-            throw IOException("Symlink target blocked: ${v.detail}")
-        }
+internal fun streamCopyFromTrustedRoot(
+    trustedRoot: File,
+    relPath: String,
+    displayPath: String,
+    dest: File,
+    maxBytes: Long = SHARE_FILE_MAX_BYTES,
+): Long {
+    val input = try {
+        DeliverableSourceGuard.openTrustedFileNoFollow(trustedRoot, relPath, displayPath = displayPath)
+    } catch (e: NoSuchFileException) {
+        throw IOException("File not found: $displayPath", e)
+    } catch (e: IllegalArgumentException) {
+        throw IOException(e.message ?: "Refusing to open path: $displayPath", e)
     }
     return try {
-        src.inputStream().use { input ->
+        input.use { inp ->
             dest.outputStream().use { output ->
                 val counting = CountingOutputStream(output, maxBytes)
                 val buf = ByteArray(COPY_BUFFER)
                 while (true) {
-                    val n = input.read(buf)
+                    val n = inp.read(buf)
                     if (n <= 0) break
                     counting.write(buf, 0, n)
                 }
@@ -815,28 +803,48 @@ internal fun streamCopyWithLimit(src: File, dest: File, maxBytes: Long = SHARE_F
     } catch (e: ShareFileTooLargeException) {
         dest.delete()
         throw e
-    } catch (e: IOException) {
+    } catch (e: Throwable) {
         dest.delete()
-        throw e
+        if (e is IOException) throw e
+        throw IOException(e.message ?: "Failed to copy file: $displayPath", e)
     }
 }
 
 /**
- * Stream-copy a rootfs file via [WorkspaceRepository.exportRootfsFile] into [dest].
- * A [CountingOutputStream] enforces the [maxBytes] limit mid-stream — a lying stat
- * or a file that grows during export is caught and the partial copy is deleted.
+ * Stream-copy [src] → [dest] with a byte-count cap of [maxBytes] via FD-relative `O_NOFOLLOW`.
+ * Throws [ShareFileTooLargeException] when the cap is exceeded and deletes [dest] on any failure.
+ */
+internal fun streamCopyWithLimit(src: File, dest: File, maxBytes: Long = SHARE_FILE_MAX_BYTES): Long {
+    val parent = src.parentFile ?: throw IOException("Source file has no parent directory: ${src.path}")
+    return streamCopyFromTrustedRoot(
+        trustedRoot = parent,
+        relPath = src.name,
+        displayPath = src.path,
+        dest = dest,
+        maxBytes = maxBytes,
+    )
+}
+
+/**
+ * Stream-copy a file from the workspace's FILES area via [WorkspaceRepository.exportFile]
+ * into [dest]. A [CountingOutputStream] enforces [maxBytes] mid-stream.
  */
 private suspend fun streamCopyWorkspaceFile(
     workspaceRepository: WorkspaceRepository,
     workspaceId: String,
-    rootfsPath: String,
+    relPath: String,
     dest: File,
     maxBytes: Long,
 ): Long {
     val fos = java.io.FileOutputStream(dest)
     try {
         val counting = CountingOutputStream(fos, maxBytes)
-        workspaceRepository.exportRootfsFile(workspaceId, rootfsPath, counting)
+        workspaceRepository.exportFile(
+            workspaceId,
+            me.rerere.workspace.WorkspaceStorageArea.FILES,
+            relPath,
+            counting,
+        )
         counting.flush()
         return counting.total
     } catch (e: ShareFileTooLargeException) {

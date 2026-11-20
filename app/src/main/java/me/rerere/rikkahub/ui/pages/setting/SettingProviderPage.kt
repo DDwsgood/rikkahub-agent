@@ -4,18 +4,22 @@ import android.net.Uri
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderRequirement
 import me.rerere.hugeicons.stroke.Camera01
+import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.DragDropHorizontal
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.FileImport
 import me.rerere.hugeicons.stroke.Add01
+import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Sparkles
 import me.rerere.hugeicons.stroke.Cancel01
+import me.rerere.hugeicons.stroke.Tools
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -36,6 +40,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
@@ -101,10 +107,26 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
     val lazyListState = rememberLazyListState()
     var providerToDelete by remember { mutableStateOf<ProviderSetting?>(null) }
     val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
-        val newProviders = settings.providers.toMutableList().apply {
-            add(to.index, removeAt(from.index))
+        if (searchQuery.isNotBlank()) return@rememberReorderableLazyListState
+        val currentProviders = settings.providers
+        if (from.index !in currentProviders.indices || to.index !in currentProviders.indices) {
+            return@rememberReorderableLazyListState
         }
-        vm.updateSettings(settings.copy(providers = newProviders))
+        val movedId = currentProviders[from.index].id
+        val targetId = currentProviders[to.index].id
+        if (movedId == targetId) return@rememberReorderableLazyListState
+        vm.updateSettings { latest ->
+            val fromIdx = latest.providers.indexOfFirst { it.id == movedId }
+            val toIdx = latest.providers.indexOfFirst { it.id == targetId }
+            if (fromIdx < 0 || toIdx < 0 || fromIdx == toIdx) {
+                latest
+            } else {
+                val reordered = latest.providers.toMutableList().apply {
+                    add(toIdx, removeAt(fromIdx))
+                }
+                latest.copy(providers = reordered)
+            }
+        }
     }
 
     val filteredProviders = remember(settings.providers, searchQuery) {
@@ -128,25 +150,21 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                 },
                 actions = {
                     RecommendProviderButton { provider ->
-                        vm.updateSettings(
-                            settings.copy(
-                                providers = listOf(provider.copyProvider(Uuid.random())) + settings.providers
-                            )
-                        )
+                        val added = provider.copyProvider(Uuid.random())
+                        vm.updateSettings { latest ->
+                            latest.copy(providers = listOf(added) + latest.providers)
+                        }
                     }
-                    ImportProviderButton {
-                        vm.updateSettings(
-                            settings.copy(
-                                providers = listOf(it.copyProvider(Uuid.random())) + settings.providers
-                            )
-                        )
+                    ImportProviderButton { imported ->
+                        val added = imported.copyProvider(Uuid.random())
+                        vm.updateSettings { latest ->
+                            latest.copy(providers = listOf(added) + latest.providers)
+                        }
                     }
-                    AddButton {
-                        vm.updateSettings(
-                            settings.copy(
-                                providers = listOf(it) + settings.providers
-                            )
-                        )
+                    AddButton { created ->
+                        vm.updateSettings { latest ->
+                            latest.copy(providers = listOf(created) + latest.providers)
+                        }
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -175,7 +193,7 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
                         IconButton(onClick = { searchQuery = "" }) {
-                            Icon(HugeIcons.Cancel01, contentDescription = "Clear")
+                            Icon(HugeIcons.Cancel01, contentDescription = stringResource(R.string.clear))
                         }
                     }
                 },
@@ -205,23 +223,25 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                                 .fillMaxWidth(),
                             provider = provider,
                             dragHandle = {
-                                val haptic = LocalHapticFeedback.current
-                                IconButton(
-                                    onClick = {},
-                                    modifier = Modifier
-                                        .longPressDraggableHandle(
-                                            onDragStarted = {
-                                                haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
-                                            },
-                                            onDragStopped = {
-                                                haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
-                                            }
+                                if (searchQuery.isBlank()) {
+                                    val haptic = LocalHapticFeedback.current
+                                    IconButton(
+                                        onClick = {},
+                                        modifier = Modifier
+                                            .longPressDraggableHandle(
+                                                onDragStarted = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                                },
+                                                onDragStopped = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                                                }
+                                            )
+                                    ) {
+                                        Icon(
+                                            imageVector = HugeIcons.DragDropHorizontal,
+                                            contentDescription = null
                                         )
-                                ) {
-                                    Icon(
-                                        imageVector = HugeIcons.DragDropHorizontal,
-                                        contentDescription = null
-                                    )
+                                    }
                                 }
                             },
                             onClick = {
@@ -229,7 +249,20 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                             },
                             onLongClick = {
                                 providerToDelete = provider
-                            }
+                            },
+                            onToggleEnabled = {
+                                val targetId = provider.id
+                                vm.updateSettings { latest ->
+                                    latest.copy(
+                                        providers = latest.providers.map {
+                                            if (it.id == targetId) it.copyProvider(enabled = !it.enabled) else it
+                                        }
+                                    )
+                                }
+                            },
+                            onDeleteClick = {
+                                providerToDelete = provider
+                            },
                         )
                     }
                 }
@@ -237,27 +270,37 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
         }
 
         providerToDelete?.let { target ->
+            val isOAuth = target is ProviderSetting.Codex ||
+                target is ProviderSetting.Grok ||
+                target is ProviderSetting.GeminiOAuth
             AlertDialog(
                 onDismissRequest = { providerToDelete = null },
                 title = { Text(stringResource(R.string.setting_provider_delete_title)) },
                 text = {
-                    Text(stringResource(R.string.setting_provider_delete_body, target.name))
+                    Text(
+                        stringResource(
+                            if (isOAuth) R.string.setting_provider_delete_oauth_note
+                            else R.string.setting_provider_delete_body,
+                            target.name
+                        )
+                    )
                 },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            vm.updateSettings(
-                                settings.copy(
-                                    providers = settings.providers.filter { it.id != target.id },
+                            val targetId = target.id
+                            val targetBuiltIn = target.builtIn
+                            vm.updateSettings { latest ->
+                                latest.copy(
+                                    providers = latest.providers.filter { it.id != targetId },
                                     // If the user removed a built-in default, remember the
                                     // intent so the re-seed pass on settings load doesn't
-                                    // resurrect it. Without this gate the row just bobs to
-                                    // the bottom of the list on next reload.
+                                    // resurrect it.
                                     deletedBuiltInProviderIds =
-                                        if (target.builtIn) settings.deletedBuiltInProviderIds + target.id
-                                        else settings.deletedBuiltInProviderIds,
+                                        if (targetBuiltIn) latest.deletedBuiltInProviderIds + targetId
+                                        else latest.deletedBuiltInProviderIds,
                                 )
-                            )
+                            }
                             providerToDelete = null
                         }
                     ) {
@@ -638,7 +681,10 @@ private fun ProviderItem(
     dragHandle: @Composable () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
+    onToggleEnabled: () -> Unit = {},
+    onDeleteClick: () -> Unit = {},
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
     Card(
         modifier = modifier.combinedClickable(
             onClick = onClick,
@@ -696,12 +742,66 @@ private fun ProviderItem(
                     }
                     ProviderRequirement.from(provider).forEach { req ->
                         Tag(type = req.severity) {
-                            Text(req.label)
+                            Text(stringResource(req.labelRes))
                         }
                     }
                 }
             }
             dragHandle()
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(
+                        imageVector = HugeIcons.MoreVertical,
+                        contentDescription = stringResource(R.string.more_options),
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.setting_provider_action_configure)) },
+                        leadingIcon = { Icon(HugeIcons.Tools, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onClick()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                stringResource(
+                                    if (provider.enabled) R.string.setting_provider_action_disable
+                                    else R.string.setting_provider_action_enable
+                                )
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onToggleEnabled()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = stringResource(R.string.delete),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = HugeIcons.Delete01,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onDeleteClick()
+                        },
+                    )
+                }
+            }
         }
     }
 }

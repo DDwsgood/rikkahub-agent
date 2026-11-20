@@ -20,9 +20,9 @@ data class MessageSearchResult(
 )
 
 enum class MessageSearchSort(val orderBy: String) {
-    RELEVANCE("rank, update_at DESC"),
-    NEWEST_FIRST("update_at DESC, rank"),
-    OLDEST_FIRST("update_at ASC, rank"),
+    RELEVANCE("message_fts.rank, message_fts.update_at DESC"),
+    NEWEST_FIRST("message_fts.update_at DESC, message_fts.rank"),
+    OLDEST_FIRST("message_fts.update_at ASC, message_fts.rank"),
 }
 
 private const val TAG = "MessageFtsManager"
@@ -88,6 +88,17 @@ class MessageFtsManager(private val database: AppDatabase) {
         db.execSQL("DELETE FROM message_fts WHERE conversation_id = ?", arrayOf(conversationId))
     }
 
+    /**
+     * Updates the unindexed `title` metadata column in `message_fts` for all indexed messages of
+     * [conversationId] without re-tokenizing text or rewriting `message_node` rows.
+     */
+    suspend fun updateConversationTitle(conversationId: String, title: String) = withContext(Dispatchers.IO) {
+        db.execSQL(
+            "UPDATE message_fts SET title = ? WHERE conversation_id = ?",
+            arrayOf(title, conversationId),
+        )
+    }
+
     suspend fun deleteAll() = withContext(Dispatchers.IO) {
         db.execSQL("DELETE FROM message_fts")
     }
@@ -98,14 +109,7 @@ class MessageFtsManager(private val database: AppDatabase) {
     ): List<MessageSearchResult> = withContext(Dispatchers.IO) {
         val results = mutableListOf<MessageSearchResult>()
         val cursor = db.query(
-            """
-            SELECT node_id, message_id, conversation_id, title, update_at,
-                   simple_snippet(message_fts, 0, '[', ']', '...', 30) AS snippet
-            FROM message_fts
-            WHERE text MATCH jieba_query(?)
-            ORDER BY ${sort.orderBy}
-            LIMIT 50
-            """.trimIndent(),
+            buildSearchQuerySql(sort),
             arrayOf(keyword)
         )
         Log.i(TAG, "search: $keyword")
@@ -124,6 +128,20 @@ class MessageFtsManager(private val database: AppDatabase) {
             }
         }
         results
+    }
+
+    companion object {
+        internal fun buildSearchQuerySql(sort: MessageSearchSort): String = """
+            SELECT message_fts.node_id, message_fts.message_id, message_fts.conversation_id,
+                   COALESCE(c.title, message_fts.title) AS title,
+                   message_fts.update_at,
+                   simple_snippet(message_fts, 0, '[', ']', '...', 30) AS snippet
+            FROM message_fts
+            LEFT JOIN ConversationEntity AS c ON c.id = message_fts.conversation_id
+            WHERE message_fts.text MATCH jieba_query(?)
+            ORDER BY ${sort.orderBy}
+            LIMIT 50
+        """.trimIndent()
     }
 }
 

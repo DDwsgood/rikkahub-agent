@@ -129,6 +129,12 @@ class ScheduledJobsViewModel(
     suspend fun history(id: String, limit: Int = 20): List<ScheduledJobRunEntity> =
         runRepository.getRecent(id, limit)
 
+    fun observeHistory(id: String, limit: Int = 20): kotlinx.coroutines.flow.Flow<List<ScheduledJobRunEntity>> =
+        runRepository.observeRecent(id, limit)
+
+    fun observeJob(id: String): kotlinx.coroutines.flow.Flow<ScheduledJobEntity?> =
+        jobs.map { list -> list.firstOrNull { it.id == id } }
+
     suspend fun get(id: String): ScheduledJobEntity? = repository.getById(id)
 
     fun canScheduleExactAlarms(): Boolean = scheduler.canScheduleExactAlarms()

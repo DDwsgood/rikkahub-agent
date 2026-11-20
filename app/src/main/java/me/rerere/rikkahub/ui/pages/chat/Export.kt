@@ -215,7 +215,10 @@ fun ChatExportSheet(
                                         }.onFailure {
                                             it.printStackTrace()
                                             toaster.show(
-                                                message = "Failed to export image: ${it.message}",
+                                                message = context.getString(
+                                                    R.string.chat_page_export_image_failed,
+                                                    it.message ?: context.getString(R.string.common_unknown_error),
+                                                ),
                                                 type = ToastType.Error
                                             )
                                         }
@@ -390,7 +393,7 @@ private suspend fun exportToImage(
     val activity = context.getActivity()
     if (activity == null) {
         withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Failed to get activity", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, R.string.chat_page_export_image_unavailable, Toast.LENGTH_SHORT).show()
         }
         return
     }
@@ -438,7 +441,11 @@ private suspend fun exportToImage(
     } catch (e: Exception) {
         e.printStackTrace()
         withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Failed to export image: ${e.message}", Toast.LENGTH_SHORT).show()
+            val message = context.getString(
+                R.string.chat_page_export_image_failed,
+                e.message ?: context.getString(R.string.common_unknown_error),
+            )
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     } finally {
         bitmap.recycle()
@@ -492,7 +499,7 @@ private fun ExportedChatImage(
                         val painter = painterResource(id = R.mipmap.ic_launcher_foreground)
                         Image(
                             painter = painter,
-                            contentDescription = "Logo",
+                            contentDescription = null,
                             modifier = Modifier.size(60.dp)
                         )
                     }
@@ -618,7 +625,7 @@ private fun ExportedChatMessage(
                                         .allowHardware(false)
                                         .crossfade(false)
                                         .build(),
-                                    contentDescription = "Image",
+                                    contentDescription = stringResource(R.string.chat_page_export_image_attachment),
                                     modifier = Modifier
                                         .sizeIn(maxHeight = 300.dp)
                                         .clip(RoundedCornerShape(12.dp)),

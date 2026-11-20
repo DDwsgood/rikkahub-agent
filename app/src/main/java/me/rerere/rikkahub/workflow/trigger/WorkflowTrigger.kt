@@ -13,6 +13,16 @@ import me.rerere.rikkahub.workflow.model.WorkflowDefinition
  */
 fun interface TriggerFireCallback {
     suspend fun onFire(workflowId: String, matchSpec: TriggerSpec)
+
+    /** Engine callbacks run [beforeActions] after preflight, just before dispatching actions. */
+    suspend fun onScheduledFire(
+        workflowId: String,
+        matchSpec: TriggerSpec.TimeCron,
+        beforeActions: suspend () -> Unit,
+    ) {
+        beforeActions()
+        onFire(workflowId, matchSpec)
+    }
 }
 
 /**

@@ -46,4 +46,83 @@ internal object TimeCronPolicy {
     fun shouldReEnqueueOneShot(periodMs: Long?): Boolean {
         return periodMs == null || periodMs < MIN_PERIODIC_MS
     }
+
+    /** Minimal representation of an existing WorkManager entry under the legacy `wf_timecron_<id>` name. */
+    data class LegacyWorkEntry(
+        val isActive: Boolean,
+        val isPeriodic: Boolean,
+    )
+
+    enum class LegacyOneShotMigrationAction {
+        /**
+         * A non-terminal (`ENQUEUED` / `RUNNING` / `BLOCKED`) pre-upgrade one-shot work already
+         * occupies the legacy name — or the legacy lookup failed on cold-start sync so we must
+         * fail safe rather than cancel or duplicate an unreadable legacy chain. Leave it untouched
+         * so its already-scheduled slot fires on time and seamlessly hands off to
+         * `workNameOneShot(id)` in `onWorkerFired()`.
+         */
+        KEEP_LEGACY_ONE_SHOT,
+
+        /**
+         * Cancel the legacy `workName(id)` entry (either a legacy periodic work or an explicit user
+         * config change) and enqueue the new `workNameOneShot(id)`.
+         */
+        CANCEL_LEGACY_AND_ENQUEUE_NEW,
+
+        /**
+         * No active legacy entry needs cancellation (or this is a post-fire continuation); simply
+         * enqueue under `workNameOneShot(id)`.
+         */
+        ENQUEUE_NEW_ONLY,
+    }
+
+    /**
+     * Decides how to handle any WorkManager entry under the legacy unique work name (`wf_timecron_<id>`)
+     * when scheduling a one-shot workflow (`wf_timecron_oneshot_<id>`).
+     *
+     * Upgrade safety:
+     * - Prior versions scheduled BOTH periodic and one-shot workflows under `wf_timecron_<id>`.
+     * - On first sync after upgrade (`isNew = true`, `appendAfterCurrent = false`), if ANY non-terminal
+     *   (`!state.isFinished`, covering `ENQUEUED`, `RUNNING`, and `BLOCKED`) non-periodic work exists
+     *   under the legacy name — or if querying WorkManager failed (`legacyLookupFailed = true`) —
+     *   preserve/defer instead of cancelling or creating a duplicate parallel chain.
+     * - If an active legacy *periodic* work exists (e.g. an old broken 24h weekday workflow), cancel
+     *   the legacy name and enqueue under the new one-shot name.
+     * - If `!isNew && !appendAfterCurrent` (explicit user edit), cancel legacy and replace new.
+     */
+    fun decideLegacyOneShotMigration(
+        isNew: Boolean,
+        appendAfterCurrent: Boolean,
+        legacyEntries: List<LegacyWorkEntry>,
+        legacyLookupFailed: Boolean = false,
+    ): LegacyOneShotMigrationAction {
+        if (appendAfterCurrent) return LegacyOneShotMigrationAction.ENQUEUE_NEW_ONLY
+        if (legacyLookupFailed) {
+            return if (isNew) {
+                LegacyOneShotMigrationAction.KEEP_LEGACY_ONE_SHOT
+            } else {
+                LegacyOneShotMigrationAction.CANCEL_LEGACY_AND_ENQUEUE_NEW
+            }
+        }
+        val activeLegacy = legacyEntries.filter { it.isActive }
+        if (!isNew) {
+            // Explicit config edit: clear any leftover legacy work and REPLACE the one-shot chain.
+            return if (activeLegacy.isNotEmpty()) {
+                LegacyOneShotMigrationAction.CANCEL_LEGACY_AND_ENQUEUE_NEW
+            } else {
+                LegacyOneShotMigrationAction.ENQUEUE_NEW_ONLY
+            }
+        }
+        // Cold-start / upgrade sync (isNew == true):
+        val hasActiveLegacyOneShot = activeLegacy.any { !it.isPeriodic }
+        if (hasActiveLegacyOneShot) {
+            return LegacyOneShotMigrationAction.KEEP_LEGACY_ONE_SHOT
+        }
+        val hasActiveLegacyPeriodic = activeLegacy.any { it.isPeriodic }
+        return if (hasActiveLegacyPeriodic) {
+            LegacyOneShotMigrationAction.CANCEL_LEGACY_AND_ENQUEUE_NEW
+        } else {
+            LegacyOneShotMigrationAction.ENQUEUE_NEW_ONLY
+        }
+    }
 }

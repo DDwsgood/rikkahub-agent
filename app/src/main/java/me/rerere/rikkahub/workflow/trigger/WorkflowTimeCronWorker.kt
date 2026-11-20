@@ -3,7 +3,10 @@ package me.rerere.rikkahub.workflow.trigger
 import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.flow.first
+import me.rerere.rikkahub.workflow.execution.WorkflowEngine
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
@@ -38,10 +41,19 @@ class WorkflowTimeCronWorker(
             ?: return Result.failure()
 
         return try {
+            val kindKey = TimeCronTriggerFamily.KEY_PERIODIC_V1
+            val requestIsPeriodic = if (inputData.hasKeyWithValueOfType(kindKey, Boolean::class.javaObjectType)) {
+                inputData.getBoolean(kindKey, false)
+            } else {
+                val legacyWork = WorkManager.getInstance(applicationContext).getWorkInfoByIdFlow(id).first()
+                    ?: return Result.success()
+                legacyWork.periodicityInfo != null
+            }
             // Structured wait: fireFromTimeCronWorker completes only after the engine
-            // fire finishes (or is intentionally short-circuited). The worker stays
-            // alive for the full duration so WorkManager doesn't consider it done early.
-            registry.fireFromTimeCronWorker(workflowId)
+            // fire finishes (or is intentionally short-circuited). Pass this WorkRequest's
+            // stable UUID (`id`) so if post-fire one-shot renewal fails and WorkManager
+            // retries this WorkRequest, the already-executed slot is NOT re-fired.
+            registry.fireFromTimeCronWorker(workflowId, id.toString(), requestIsPeriodic)
             Result.success()
         } catch (ce: kotlinx.coroutines.CancellationException) {
             // Propagate cancellation so WorkManager marks the worker as cancelled,
@@ -62,9 +74,8 @@ class WorkflowTimeCronWorker(
 }
 
 /**
- * Helper that the time/cron family uses to fall back to a direct repository read when its
- * `lastSnapshot` hasn't been populated yet (post-boot race). Lives outside the family
- * itself so the family can stay free of Koin lookups.
+ * Worker-side repository and cold-start engine lookups, outside the family so it can
+ * stay free of Koin lookups.
  *
  * Also provides the engine fire callback fallback for cold-start fires, mirroring
  * [BootTriggerHelper.repositoryLookup].
@@ -77,13 +88,12 @@ internal object TimeCronWorkerHelper {
 
     /**
      * Resolve the engine's trigger callback via Koin, for the cold-start case where
-     * [TriggerRegistry] hasn't wired the callback yet. Unlike [repositoryLookup] which
-     * swallows errors (returning null = "skip this fire"), this throws on Koin failure
-     * so the Worker returns [Result.retry] and re-attempts once DI is ready.
+     * [TriggerRegistry] hasn't wired the callback yet. Lookup errors propagate to the Worker
+     * so it retries once DI is ready.
      */
     fun resolveEngineCallback(): TriggerFireCallback {
         return KoinJavaComponent.getKoin()
-            .get<me.rerere.rikkahub.workflow.execution.WorkflowEngine>()
+            .get<WorkflowEngine>()
             .triggerCallback
     }
 }

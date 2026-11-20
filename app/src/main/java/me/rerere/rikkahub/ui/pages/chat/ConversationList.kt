@@ -272,19 +272,20 @@ private fun ConversationItem(
             AnimatedVisibility(conversation.isPinned) {
                 Icon(
                     imageVector = HugeIcons.Pin,
-                    contentDescription = "Pinned",
+                    contentDescription = stringResource(R.string.history_page_pinned),
                     modifier = Modifier.size(12.dp),
                     tint = MaterialTheme.colorScheme.primary
                 )
             }
             AnimatedVisibility(loading) {
+                val loadingDescription = stringResource(R.string.common_loading)
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
                         .background(MaterialTheme.extendColors.green6)
                         .size(4.dp)
                         .semantics {
-                            contentDescription = "Loading"
+                            contentDescription = loadingDescription
                         }
                 )
             }

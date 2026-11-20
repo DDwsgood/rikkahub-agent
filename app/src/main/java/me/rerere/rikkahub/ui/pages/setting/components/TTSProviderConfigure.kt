@@ -588,8 +588,8 @@ private fun QwenTTSConfiguration(
     val languageTypes = listOf("Auto", "Chinese", "English", "Japanese", "Korean")
 
     FormItem(
-        label = { Text("Language Type") },
-        description = { Text("Language type for TTS synthesis") }
+        label = { Text(stringResource(R.string.setting_tts_configure_language_type)) },
+        description = { Text(stringResource(R.string.setting_tts_configure_language_type_desc)) }
     ) {
         SelectTextField(
             value = setting.languageType,
@@ -740,29 +740,29 @@ private fun XAITTSConfiguration(
 
     // Language
     val languages = listOf(
-        "auto" to "Auto-detect",
-        "en" to "English",
-        "zh" to "Chinese (Simplified)",
-        "ja" to "Japanese",
-        "ko" to "Korean",
-        "fr" to "French",
-        "de" to "German",
-        "es-ES" to "Spanish (Spain)",
-        "es-MX" to "Spanish (Mexico)",
-        "pt-BR" to "Portuguese (Brazil)",
-        "pt-PT" to "Portuguese (Portugal)",
-        "it" to "Italian",
-        "ru" to "Russian",
-        "ar-EG" to "Arabic (Egypt)",
-        "hi" to "Hindi",
-        "tr" to "Turkish",
-        "vi" to "Vietnamese",
-        "id" to "Indonesian",
-        "bn" to "Bengali"
+        "auto" to stringResource(R.string.tts_language_auto),
+        "en" to stringResource(R.string.tts_language_english),
+        "zh" to stringResource(R.string.tts_language_chinese_simplified),
+        "ja" to stringResource(R.string.tts_language_japanese),
+        "ko" to stringResource(R.string.tts_language_korean),
+        "fr" to stringResource(R.string.tts_language_french),
+        "de" to stringResource(R.string.tts_language_german),
+        "es-ES" to stringResource(R.string.tts_language_spanish_spain),
+        "es-MX" to stringResource(R.string.tts_language_spanish_mexico),
+        "pt-BR" to stringResource(R.string.tts_language_portuguese_brazil),
+        "pt-PT" to stringResource(R.string.tts_language_portuguese_portugal),
+        "it" to stringResource(R.string.tts_language_italian),
+        "ru" to stringResource(R.string.tts_language_russian),
+        "ar-EG" to stringResource(R.string.tts_language_arabic_egypt),
+        "hi" to stringResource(R.string.tts_language_hindi),
+        "tr" to stringResource(R.string.tts_language_turkish),
+        "vi" to stringResource(R.string.tts_language_vietnamese),
+        "id" to stringResource(R.string.tts_language_indonesian),
+        "bn" to stringResource(R.string.tts_language_bengali)
     )
 
     FormItem(
-        label = { Text("Language") },
+        label = { Text(stringResource(R.string.setting_tts_configure_language)) },
     ) {
         SelectTextField(
             value = setting.language,
@@ -922,8 +922,8 @@ private fun FishAudioTTSConfiguration(
 
     // Model (下拉选择框 + 文本输入框，完全同 ElevenLabs 格式)
     val models = listOf(
-        "s2.1-pro" to "S2.1-Pro (推荐)",
-        "s2.1-pro-free" to "S2.1-Pro Free (免费)",
+        "s2.1-pro" to stringResource(R.string.tts_fish_model_s21_pro),
+        "s2.1-pro-free" to stringResource(R.string.tts_fish_model_s21_pro_free),
         "s2-pro" to "S2-Pro",
         "s1" to "S1"
     )
@@ -1000,7 +1000,7 @@ private fun StepTTSConfiguration(
     // API Key
     FormItem(
         label = { Text(stringResource(R.string.setting_tts_page_api_key)) },
-        description = { Text("从阶跃星辰官网获取密钥: platform.stepfun.com/interface-key") }
+        description = { Text(stringResource(R.string.setting_tts_configure_step_api_key_desc)) }
     ) {
         OutlinedTextField(
             value = setting.apiKey,
@@ -1008,7 +1008,7 @@ private fun StepTTSConfiguration(
                 onValueChange(setting.copy(apiKey = newApiKey))
             },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("从阶跃星辰官网获取密钥") },
+            placeholder = { Text(stringResource(R.string.setting_tts_configure_step_api_key_placeholder)) },
         )
     }
 
@@ -1029,10 +1029,10 @@ private fun StepTTSConfiguration(
 
     // Model
     val models = listOf(
-        "step-tts-mini" to "step-tts-mini (轻量, 便宜)",
-        "step-tts-vivid" to "step-tts-vivid (情感丰富)",
-        "stepaudio-2.5-tts" to "stepaudio-2.5-tts (语境感知, 支持 instruction)",
-        "step-tts-2" to "step-tts-2 (上一代)",
+        "step-tts-mini" to stringResource(R.string.tts_step_model_mini),
+        "step-tts-vivid" to stringResource(R.string.tts_step_model_vivid),
+        "stepaudio-2.5-tts" to stringResource(R.string.tts_step_model_context_aware),
+        "step-tts-2" to stringResource(R.string.tts_step_model_previous_gen),
     )
 
     FormItem(
@@ -1057,38 +1057,38 @@ private fun StepTTSConfiguration(
     // 部分常用 voice-id, 完整列表见官方开发指南
     // https://platform.stepfun.com/docs/zh/guides/developer/tts
     val voices = listOf(
-        "elegantgentle-female" to "气质温婉 (elegantgentle-female)",
-        "livelybreezy-female" to "活力轻快 (livelybreezy-female)",
-        "energeticconfident-female" to "活力自信 (energeticconfident-female)",
-        "jingdiannvsheng" to "经典女声 (jingdiannvsheng)",
-        "wenroushunv" to "温柔熟女 (wenroushunv)",
-        "tianmeinvsheng" to "甜美女声 (tianmeinvsheng)",
-        "qingchunshaonv" to "清纯少女 (qingchunshaonv)",
-        "wenrounvsheng" to "温柔女声 (wenrounvsheng)",
-        "ruanmengnvsheng" to "软萌女生 (ruanmengnvsheng)",
-        "youyanvsheng" to "优雅女生 (youyanvsheng)",
-        "lengyanyujie" to "冷艳御姐 (lengyanyujie)",
-        "shuangkuaijiejie" to "爽快姐姐 (shuangkuaijiejie)",
-        "wenjingxuejie" to "文静学姐 (wenjingxuejie)",
-        "linjiajiejie" to "邻家姐姐 (linjiajiejie)",
-        "linjiameimei" to "邻家妹妹 (linjiameimei)",
-        "zhixingjiejie" to "知性姐姐 (zhixingjiejie)",
-        "cixingnansheng" to "磁性男声 (cixingnansheng)",
-        "wenrounansheng" to "温柔男声 (wenrounansheng)",
-        "yuanqinansheng" to "元气男声 (yuanqinansheng)",
-        "zhengpaiqingnian" to "正派青年 (zhengpaiqingnian)",
-        "ruyananshi" to "儒雅男士 (ruyananshi)",
-        "boyinnansheng" to "播音男声 (boyinnansheng)",
-        "shenchennanyin" to "深沉男音 (shenchennanyin)",
-        "shuangkuainansheng" to "爽快男声 (shuangkuainansheng)",
-        "ganliannvsheng" to "干练女声 (ganliannvsheng)",
-        "qinhenvsheng" to "亲切女声 (qinhenvsheng)",
-        "huolinvsheng" to "活力女声 (huolinvsheng)",
-        "jilingshaonv" to "机灵少女 (jilingshaonv)",
-        "yuanqishaonv" to "元气少女 (yuanqishaonv)",
-        "wenrougongzi" to "温柔公子 (wenrougongzi)",
-        "qingniandaxuesheng" to "青年大学生 (qingniandaxuesheng)",
-    )
+        "elegantgentle-female" to stringResource(R.string.tts_step_voice_elegant_gentle),
+        "livelybreezy-female" to stringResource(R.string.tts_step_voice_lively_breezy),
+        "energeticconfident-female" to stringResource(R.string.tts_step_voice_energetic_confident),
+        "jingdiannvsheng" to stringResource(R.string.tts_step_voice_classic_female),
+        "wenroushunv" to stringResource(R.string.tts_step_voice_gentle_mature_female),
+        "tianmeinvsheng" to stringResource(R.string.tts_step_voice_sweet_female),
+        "qingchunshaonv" to stringResource(R.string.tts_step_voice_youthful_girl),
+        "wenrounvsheng" to stringResource(R.string.tts_step_voice_gentle_female),
+        "ruanmengnvsheng" to stringResource(R.string.tts_step_voice_soft_cute_girl),
+        "youyanvsheng" to stringResource(R.string.tts_step_voice_elegant_girl),
+        "lengyanyujie" to stringResource(R.string.tts_step_voice_cool_queen),
+        "shuangkuaijiejie" to stringResource(R.string.tts_step_voice_cheerful_sister),
+        "wenjingxuejie" to stringResource(R.string.tts_step_voice_quiet_senior),
+        "linjiajiejie" to stringResource(R.string.tts_step_voice_girl_next_door),
+        "linjiameimei" to stringResource(R.string.tts_step_voice_sister_next_door),
+        "zhixingjiejie" to stringResource(R.string.tts_step_voice_intellectual_sister),
+        "cixingnansheng" to stringResource(R.string.tts_step_voice_magnetic_male),
+        "wenrounansheng" to stringResource(R.string.tts_step_voice_gentle_male),
+        "yuanqinansheng" to stringResource(R.string.tts_step_voice_energetic_male),
+        "zhengpaiqingnian" to stringResource(R.string.tts_step_voice_upright_youth),
+        "ruyananshi" to stringResource(R.string.tts_step_voice_refined_gentleman),
+        "boyinnansheng" to stringResource(R.string.tts_step_voice_broadcast_male),
+        "shenchennanyin" to stringResource(R.string.tts_step_voice_deep_male),
+        "shuangkuainansheng" to stringResource(R.string.tts_step_voice_cheerful_male),
+        "ganliannvsheng" to stringResource(R.string.tts_step_voice_capable_female),
+        "qinhenvsheng" to stringResource(R.string.tts_step_voice_friendly_female),
+        "huolinvsheng" to stringResource(R.string.tts_step_voice_lively_female),
+        "jilingshaonv" to stringResource(R.string.tts_step_voice_clever_girl),
+        "yuanqishaonv" to stringResource(R.string.tts_step_voice_energetic_girl),
+        "wenrougongzi" to stringResource(R.string.tts_step_voice_gentle_young_master),
+        "qingniandaxuesheng" to stringResource(R.string.tts_step_voice_young_student),
+    ).map { (id, name) -> id to "$name ($id)" }
 
     FormItem(
         label = { Text(stringResource(R.string.setting_tts_page_voice)) },
@@ -1112,8 +1112,8 @@ private fun StepTTSConfiguration(
     val formats = listOf("mp3", "wav", "pcm", "opus", "flac")
 
     FormItem(
-        label = { Text("Response Format") },
-        description = { Text("音频编码格式 (注意 StepFun API 字段名为 camelCase)") }
+        label = { Text(stringResource(R.string.setting_tts_configure_response_format)) },
+        description = { Text(stringResource(R.string.setting_tts_configure_response_format_desc)) }
     ) {
         SelectTextField(
             value = setting.responseFormat,
@@ -1131,7 +1131,7 @@ private fun StepTTSConfiguration(
     // Speed
     FormItem(
         label = { Text(stringResource(R.string.setting_tts_page_speed)) },
-        description = { Text("语速 (0.5 - 2.0, 1.0 为正常)") }
+        description = { Text(stringResource(R.string.setting_tts_configure_speed_desc)) }
     ) {
         OutlinedNumberInput(
             value = setting.speed,
@@ -1147,8 +1147,8 @@ private fun StepTTSConfiguration(
 
     // Volume
     FormItem(
-        label = { Text("Volume") },
-        description = { Text("音量 (0.1 - 2.0, 1.0 为正常)") }
+        label = { Text(stringResource(R.string.setting_tts_configure_volume)) },
+        description = { Text(stringResource(R.string.setting_tts_configure_volume_desc)) }
     ) {
         OutlinedNumberInput(
             value = setting.volume,
@@ -1158,7 +1158,7 @@ private fun StepTTSConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            label = "Volume"
+            label = stringResource(R.string.setting_tts_configure_volume)
         )
     }
 
@@ -1166,8 +1166,8 @@ private fun StepTTSConfiguration(
     val sampleRates = listOf(8000, 16000, 22050, 24000)
 
     FormItem(
-        label = { Text("Sample Rate") },
-        description = { Text("采样率 (Hz)") }
+        label = { Text(stringResource(R.string.setting_tts_configure_sample_rate)) },
+        description = { Text(stringResource(R.string.setting_tts_configure_sample_rate_desc)) }
     ) {
         SelectTextField(
             value = setting.sampleRate.toString(),
@@ -1183,8 +1183,8 @@ private fun StepTTSConfiguration(
 
     // Instruction (仅 stepaudio-2.5-tts 生效)
     FormItem(
-        label = { Text("Instruction") },
-        description = { Text("全局语境指令, 仅 stepaudio-2.5-tts 生效 (≤200 字符, 留空不下发)") }
+        label = { Text(stringResource(R.string.setting_tts_configure_instruction)) },
+        description = { Text(stringResource(R.string.setting_tts_configure_instruction_desc)) }
     ) {
         OutlinedTextField(
             value = setting.instruction,
@@ -1195,7 +1195,7 @@ private fun StepTTSConfiguration(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("例如: 语气温柔, 语速偏慢") },
+            placeholder = { Text(stringResource(R.string.setting_tts_configure_instruction_placeholder)) },
             minLines = 2,
             maxLines = 4,
         )

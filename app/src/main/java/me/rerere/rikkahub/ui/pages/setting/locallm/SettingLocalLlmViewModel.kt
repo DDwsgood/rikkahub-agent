@@ -3,16 +3,24 @@ package me.rerere.rikkahub.ui.pages.setting.locallm
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.ModelAbility
@@ -222,13 +230,17 @@ class SettingLocalLlmViewModel(
         )
     }
 
-    private suspend fun refreshFromDisk() {
+    private suspend fun refreshFromDisk() = runtimeMutex(runtime).withLock {
+        refreshFromDiskLocked()
+    }
+
+    private suspend fun refreshFromDiskLocked() {
         val installed = prefs.installedModels(runtime)
 
         // Scan for stale HTML files or files with invalid magic bytes masquerading as model
-        // binaries. HTML files land when a previous download received an HTML error page
-        // (e.g. HF viewer URL). All-zero prefixes land from the old sparse-fill resume bug.
+        // binaries. Never inspect or delete files currently being installed by another coroutine.
         val brokenFiles = installed.entries.filter { (fileName, path) ->
+            if (isFileInstallActive(runtime, fileName)) return@filter false
             runCatching {
                 val f = java.io.File(path)
                 if (!f.exists()) return@runCatching false
@@ -257,21 +269,31 @@ class SettingLocalLlmViewModel(
                     if (modelToRemove != null) p.delModel(modelToRemove) else p
                 }
             }
-            _errorMessage.value =
-                "Removed ${brokenFiles.size} broken model file(s) (HTML response or invalid magic bytes). Re-download to retry."
+            _errorMessage.value = context.getString(
+                R.string.local_llm_error_removed_broken,
+                brokenFiles.size,
+            )
             return
         }
 
-        // brokenFiles was empty here (non-empty branch returned above), so use the already-read map.
         val finalInstalled = installed
+        val hiddenModelIds = prefs.hiddenModels(runtime)
 
-        // Reconcile: any disk-side model that isn't in provider.models gets added.
-        // Backfills downloads that landed before the persistence fix at commit 75ea6443.
-        val targetId = providerIdForRuntime()
-        val currentProvider = settingsStore.settingsFlow.value.providers.firstOrNull { it.id == targetId }
-        if (currentProvider != null) {
-            val knownModelIds = currentProvider.models.map { it.modelId }.toSet()
-            val missing = finalInstalled.keys.filter { it !in knownModelIds }
+        // Reconcile atomically inside SettingsStore.update:
+        // 1) Strip any already-present provider row that was marked hidden (closes the crash
+        //    window between prefs.hideModel() and provider.delModel()).
+        // 2) Add any non-hidden disk-side model missing from provider.models.
+        updateMyProvider { provider ->
+            var updated = provider
+            if (hiddenModelIds.isNotEmpty()) {
+                for (m in provider.models) {
+                    if (m.modelId in hiddenModelIds) {
+                        updated = updated.delModel(m)
+                    }
+                }
+            }
+            val knownModelIds = updated.models.map { it.modelId }.toSet()
+            val missing = finalInstalled.keys.filter { it !in knownModelIds && it !in hiddenModelIds }
             for (fileName in missing) {
                 val caps = deriveLocalModelCapabilities(runtime, fileName)
                 val model = Model(
@@ -280,8 +302,9 @@ class SettingLocalLlmViewModel(
                     inputModalities = caps.inputModalities,
                     abilities = caps.abilities,
                 )
-                updateMyProvider { provider -> provider.addModel(model) }
+                updated = updated.addModel(model)
             }
+            updated
         }
 
         // Restore cached accelerator so the UI can display it without re-probing.
@@ -471,7 +494,11 @@ class SettingLocalLlmViewModel(
         } catch (t: Throwable) {
             android.util.Log.w("LocalLlmVM", "Uncaught download failure", t)
             _downloadProgress.value = null
-            _errorMessage.value = "Download failed: ${t::class.simpleName}: ${t.message ?: ""}"
+            _errorMessage.value = context.getString(
+                R.string.local_llm_error_download_failed,
+                t::class.simpleName ?: "?",
+                t.message ?: "",
+            )
         }
     }
 
@@ -487,46 +514,59 @@ class SettingLocalLlmViewModel(
      * download always has.
      */
     private suspend fun collectInstallProgress(fileName: String, progress: Flow<ModelInstall.Progress>) {
-        progress.collect { p ->
-            when (p) {
-                is ModelInstall.Progress.Started ->
-                    _downloadProgress.value = Progress(0, 0L, p.totalBytes)
-                is ModelInstall.Progress.Tick -> {
-                    val total = p.totalBytes
-                    val pct = if (total != null && total > 0)
-                        ((p.bytesRead * 100) / total).toInt() else 0
-                    _downloadProgress.value = Progress(pct, p.bytesRead, total)
+        // Coordinate per-file BEFORE streaming starts through post-Done registration so concurrent
+        // installs, imports, or deletions targeting the same filename cannot race on target/.partial.
+        // Lock ordering invariant: fileMutex is ALWAYS acquired OUTSIDE runtimeMutex.
+        fileMutex(runtime, fileName).withLock {
+            markFileInstallActive(runtime, fileName, active = true)
+            try {
+                progress.collect { p ->
+                    when (p) {
+                        is ModelInstall.Progress.Started ->
+                            _downloadProgress.value = Progress(0, 0L, p.totalBytes)
+                        is ModelInstall.Progress.Tick -> {
+                            val total = p.totalBytes
+                            val pct = if (total != null && total > 0)
+                                ((p.bytesRead * 100) / total).toInt() else 0
+                            _downloadProgress.value = Progress(pct, p.bytesRead, total)
+                        }
+                        is ModelInstall.Progress.Done -> {
+                            _downloadProgress.value = null
+                            runtimeMutex(runtime).withLock {
+                                // addInstalledModel also clears any prior hidden flag for the same filename.
+                                prefs.addInstalledModel(runtime, fileName, p.file.absolutePath)
+                                val caps = deriveLocalModelCapabilities(runtime, fileName)
+                                val model = Model(
+                                    modelId = fileName,
+                                    displayName = fileName,
+                                    inputModalities = caps.inputModalities,
+                                    abilities = caps.abilities,
+                                )
+                                updateMyProvider { provider -> registerInstalledModel(provider, model) }
+                                // Enable the provider automatically after the first successful install.
+                                updateMyProvider(::enableAfterFirstDownload)
+                                refreshFromDiskLocked()
+                            }
+                        }
+                        is ModelInstall.Progress.Failed -> {
+                            _downloadProgress.value = null
+                            _errorMessage.value = p.cause.message.orEmpty()
+                        }
+                    }
                 }
-                is ModelInstall.Progress.Done -> {
-                    _downloadProgress.value = null
-                    prefs.addInstalledModel(runtime, fileName, p.file.absolutePath)
-                    val caps = deriveLocalModelCapabilities(runtime, fileName)
-                    val model = Model(
-                        modelId = fileName,
-                        displayName = fileName,
-                        inputModalities = caps.inputModalities,
-                        abilities = caps.abilities,
-                    )
-                    updateMyProvider { provider -> registerInstalledModel(provider, model) }
-                    // Enable the provider automatically after the first successful install.
-                    updateMyProvider(::enableAfterFirstDownload)
-                    refreshFromDisk()
-                }
-                is ModelInstall.Progress.Failed -> {
-                    _downloadProgress.value = null
-                    _errorMessage.value = p.cause.message.orEmpty()
-                }
+            } finally {
+                markFileInstallActive(runtime, fileName, active = false)
             }
         }
     }
 
     /**
      * Import a model file the user already has on-device, picked via the SAF file picker on
-     * the settings tile. Copies [inputStream] into [ModelInstall.targetFile] for [fileName],
+     * the settings tile. Copies [uri] into [ModelInstall.targetFile] for [fileName],
      * validating it against [expectedExtensionForRuntime] the same way a downloaded file is
      * validated, then registers it exactly like [collectDownloadProgress] does on success.
      */
-    fun installPickedFile(inputStream: java.io.InputStream, fileName: String) {
+    fun installPickedFile(uri: Uri, fileName: String) {
         _errorMessage.value = null
         viewModelScope.launch {
             // The document provider's DISPLAY_NAME is untrusted input, so it gets reduced
@@ -537,8 +577,10 @@ class SettingLocalLlmViewModel(
             // required.
             val safeFileName = fileName.substringAfterLast('/')
             if (safeFileName.isBlank() || safeFileName == "." || safeFileName == "..") {
-                runCatching { inputStream.close() }
-                _errorMessage.value = "Import failed: invalid file name from picker: $fileName"
+                _errorMessage.value = context.getString(
+                    R.string.local_llm_error_import_invalid_name,
+                    fileName,
+                )
                 return@launch
             }
             val baseDir = ModelInstall.localModelsDir(context)
@@ -546,12 +588,14 @@ class SettingLocalLlmViewModel(
             try {
                 collectInstallProgress(
                     safeFileName,
-                    ModelInstall.copyFromStream(
-                        input = inputStream,
-                        target = target,
-                        totalBytes = null,
-                        expectedExtension = expectedExtensionForRuntime(),
-                    ),
+                    flow {
+                        // Collection begins only after collectInstallProgress holds the file lock.
+                        val input = context.contentResolver.openInputStream(uri)
+                            ?: throw java.io.IOException("Unable to open selected model file")
+                        input.use {
+                            emitAll(ModelInstall.copyFromStream(it, target, null, expectedExtensionForRuntime()))
+                        }
+                    }.flowOn(Dispatchers.IO),
                 )
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 // Cancellation is normal — user navigated away. Don't surface as an error.
@@ -560,7 +604,11 @@ class SettingLocalLlmViewModel(
             } catch (t: Throwable) {
                 android.util.Log.w("LocalLlmVM", "Uncaught import failure", t)
                 _downloadProgress.value = null
-                _errorMessage.value = "Import failed: ${t::class.simpleName}: ${t.message ?: ""}"
+                _errorMessage.value = context.getString(
+                    R.string.local_llm_error_import_failed,
+                    t::class.simpleName ?: "?",
+                    t.message ?: "",
+                )
             }
         }
     }
@@ -577,23 +625,56 @@ class SettingLocalLlmViewModel(
 
     /**
      * Delete an installed model file from disk and remove it from the provider's model list.
-     * Handles the full three-step cleanup: disk file, LocalRuntimePreferences, provider.models.
+     * Serialized per runtime and verifies physical file deletion succeeded BEFORE removing the
+     * prefs/provider entry so storage leaks never get silently orphaned without UI visibility.
      */
     fun deleteModel(fileName: String) {
         viewModelScope.launch {
-            val installed = prefs.installedModels(runtime)
-            val path = installed[fileName]
-            if (path != null) {
-                runCatching { java.io.File(path).delete() }
-                // Also clean up any leftover partial file from a previous interrupted download.
-                runCatching { java.io.File("$path.partial").delete() }
+            fileMutex(runtime, fileName).withLock {
+                runtimeMutex(runtime).withLock {
+                    val installed = prefs.installedModels(runtime)
+                    val path = installed[fileName]
+                    if (path != null) {
+                        val file = java.io.File(path)
+                        val deleted = runCatching { !file.exists() || file.delete() }.getOrDefault(false)
+                        if (!deleted && file.exists()) {
+                            _errorMessage.value = context.getString(
+                                R.string.local_llm_error_delete_file_failed,
+                                fileName,
+                            )
+                            return@withLock
+                        }
+                        // Also clean up any leftover partial file from a previous interrupted download.
+                        runCatching { java.io.File("$path.partial").delete() }
+                    }
+                    prefs.removeInstalledModel(runtime, fileName)
+                    updateMyProvider { p ->
+                        val modelToRemove = p.models.firstOrNull { it.modelId == fileName }
+                        if (modelToRemove != null) p.delModel(modelToRemove) else p
+                    }
+                    _errorMessage.value = null
+                }
             }
-            prefs.removeInstalledModel(runtime, fileName)
-            updateMyProvider { p ->
-                val modelToRemove = p.models.firstOrNull { it.modelId == fileName }
-                if (modelToRemove != null) p.delModel(modelToRemove) else p
+        }
+    }
+
+    /**
+     * Hide an installed local model from the provider's model list while preserving its
+     * on-disk model file. Serialized per file and per runtime so a concurrent [refreshFromDisk]
+     * or same-name install cannot race or re-add the model from a stale snapshot.
+     */
+    fun hideModelFromList(fileName: String) {
+        viewModelScope.launch {
+            fileMutex(runtime, fileName).withLock {
+                runtimeMutex(runtime).withLock {
+                    prefs.hideModel(runtime, fileName)
+                    updateMyProvider { p ->
+                        val modelToRemove = p.models.firstOrNull { it.modelId == fileName }
+                        if (modelToRemove != null) p.delModel(modelToRemove) else p
+                    }
+                    _errorMessage.value = null
+                }
             }
-            _errorMessage.value = null
         }
     }
 
@@ -644,6 +725,26 @@ internal fun enableAfterFirstDownload(provider: ProviderSetting): ProviderSettin
  * that entry in place (keeping its [Model.id] so [ProviderSetting.editModel] finds it) instead
  * of appending a second one.
  */
+private val localLlmRuntimeLocks = ConcurrentHashMap<LocalRuntime, Mutex>()
+private val localLlmFileLocks = ConcurrentHashMap<String, Mutex>()
+private val localLlmActiveInstalls = ConcurrentHashMap.newKeySet<String>()
+
+private fun runtimeMutex(runtime: LocalRuntime): Mutex =
+    localLlmRuntimeLocks.computeIfAbsent(runtime) { Mutex() }
+
+private fun fileLockKey(runtime: LocalRuntime, fileName: String): String = "${runtime.displayName}:$fileName"
+
+private fun fileMutex(runtime: LocalRuntime, fileName: String): Mutex =
+    localLlmFileLocks.computeIfAbsent(fileLockKey(runtime, fileName)) { Mutex() }
+
+private fun markFileInstallActive(runtime: LocalRuntime, fileName: String, active: Boolean) {
+    val key = fileLockKey(runtime, fileName)
+    if (active) localLlmActiveInstalls.add(key) else localLlmActiveInstalls.remove(key)
+}
+
+private fun isFileInstallActive(runtime: LocalRuntime, fileName: String): Boolean =
+    localLlmActiveInstalls.contains(fileLockKey(runtime, fileName))
+
 internal fun registerInstalledModel(provider: ProviderSetting, model: Model): ProviderSetting {
     val existing = provider.models.firstOrNull { it.modelId == model.modelId }
     return if (existing != null) {

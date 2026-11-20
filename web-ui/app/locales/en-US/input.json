@@ -86,7 +86,12 @@
     "status_disabled": "Disabled",
     "unknown": "Unknown",
     "empty": "No search services available",
-    "builtin_notice": "Built-in model search is enabled. App search service settings won't take effect."
+    "builtin_notice": "Built-in model search is enabled. App search service settings won't take effect.",
+    "service_labels": {
+      "zhipu": "Zhipu",
+      "metaso": "Metaso",
+      "bocha": "Bocha"
+    }
   },
   "chat": {
     "attachment_image": "Image",
@@ -109,6 +114,11 @@
     "placeholder_not_ready": "Please select a conversation first",
     "send_hint_enter": "Press Enter to send, Shift + Enter for newline",
     "send_hint_newline": "Press Shift + Enter to send, Enter for newline",
-    "long_text_as_file": "Long text converted to file attachment"
+    "long_text_as_file": "Long text converted to file attachment",
+    "attachment_preview_alt": "Attachment preview",
+    "send": "Send message",
+    "stop": "Stop generating",
+    "add_attachment": "Add attachment",
+    "remove_attachment": "Remove {{name}}"
   }
 }

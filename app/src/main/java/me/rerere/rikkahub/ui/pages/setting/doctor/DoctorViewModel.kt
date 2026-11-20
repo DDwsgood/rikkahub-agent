@@ -27,17 +27,7 @@ class DoctorViewModel(
         viewModelScope.launch {
             _state.value = _state.value.copy(running = true)
             val results = runCatching { checks.runAll() }
-                .getOrElse { t ->
-                    listOf(
-                        DoctorCheck(
-                            id = "doctor.error",
-                            category = DoctorCategory.Diagnostics,
-                            label = "Doctor itself errored",
-                            detail = "${t::class.simpleName}: ${t.message ?: "(no message)"}",
-                            severity = Severity.FAIL,
-                        )
-                    )
-                }
+                .getOrElse { t -> listOf(checks.errorRow(t)) }
             _state.value = State(
                 results = results,
                 running = false,
@@ -53,7 +43,4 @@ class DoctorViewModel(
             // Re-run all checks so the fix's effect shows up.
             runAll()
         }
-
-    /** Plain-text dump suitable for copying to a support chat. Shared formatter. */
-    fun buildReport(): String = DoctorReport.format(_state.value.results)
 }

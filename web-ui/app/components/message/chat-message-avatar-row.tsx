@@ -37,7 +37,10 @@ export function ChatMessageAvatarRow({
     return null;
   }
 
-  const createdAtLabel = formatMessageTimestamp(message.createdAt, i18n.language);
+  const createdAtLabel = formatMessageTimestamp(
+    message.createdAt,
+    i18n.resolvedLanguage ?? i18n.language,
+  );
 
   if (message.role === "USER") {
     if (!displaySetting?.showUserAvatar) {
@@ -45,8 +48,7 @@ export function ChatMessageAvatarRow({
     }
 
     const userName =
-      displaySetting.userNickname.trim() ||
-      t("page:conversations.user.default_name", { defaultValue: "User" });
+      displaySetting.userNickname.trim() || t("page:conversations.user.default_name");
 
     return (
       <div className="flex w-full justify-end px-1">
@@ -74,7 +76,7 @@ export function ChatMessageAvatarRow({
   }
 
   const useAssistantAvatar = assistant?.useAssistantAvatar === true;
-  const defaultAssistantName = t("common:quick_jump.role_assistant", { defaultValue: "Assistant" });
+  const defaultAssistantName = t("common:quick_jump.role_assistant");
   const assistantName = assistant?.name?.trim() || defaultAssistantName;
   const modelName = model.displayName.trim() || model.modelId.trim() || defaultAssistantName;
   const title = useAssistantAvatar ? assistantName : modelName;

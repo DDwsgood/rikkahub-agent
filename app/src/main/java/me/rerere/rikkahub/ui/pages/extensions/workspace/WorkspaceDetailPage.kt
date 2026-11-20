@@ -32,6 +32,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -42,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,17 +55,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dokar.sonner.ToastType
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowTurnBackward
 import me.rerere.hugeicons.stroke.Bash
 import me.rerere.hugeicons.stroke.ComputerTerminal01
 import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.Download01
 import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.FileImport
 import me.rerere.hugeicons.stroke.Folder01
+import me.rerere.hugeicons.stroke.Link01
 import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.Settings03
@@ -72,12 +79,15 @@ import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
 import me.rerere.rikkahub.data.ai.tools.resolveWorkspaceToolApproval
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.files.WorkspacePublicExport
+import me.rerere.rikkahub.data.preferences.WorkspaceSharedDirPreferences
 import androidx.compose.ui.res.stringResource
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.ImagePreviewDialog
 import me.rerere.rikkahub.ui.components.ui.RikkaConfirmDialog
 import me.rerere.rikkahub.ui.context.LocalNavController
+import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.fileSizeToString
 import me.rerere.rikkahub.utils.plus
@@ -95,6 +105,7 @@ fun WorkspaceDetailPage(id: String) {
     val navController = LocalNavController.current
     val vm: WorkspaceDetailVM = koinViewModel(parameters = { parametersOf(id) })
     val state by vm.state.collectAsStateWithLifecycle()
+    val sharedDirEnabled by vm.sharedDirEnabled.collectAsStateWithLifecycle(initialValue = false)
     val installProgress by vm.installProgress.collectAsStateWithLifecycle()
     val installError by vm.installError.collectAsStateWithLifecycle()
     val pagerState = rememberPagerState { 2 }
@@ -103,6 +114,7 @@ fun WorkspaceDetailPage(id: String) {
     var showInstallDialog by remember { mutableStateOf(false) }
     var previewImageUri by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
+    val toaster = LocalToaster.current
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -124,6 +136,17 @@ fun WorkspaceDetailPage(id: String) {
         if (uri == null) return@rememberLauncherForActivityResult
         val outputStream = context.contentResolver.openOutputStream(uri) ?: return@rememberLauncherForActivityResult
         vm.exportFile(entry, outputStream)
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                vm.onResumeCheckSharedAccess()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     BackHandler(enabled = pagerState.currentPage == 1 && state.path.isNotBlank()) {
@@ -189,10 +212,12 @@ fun WorkspaceDetailPage(id: String) {
             when (page) {
                 0 -> WorkspaceBasicPage(
                     workspace = state.workspace,
+                    sharedDirEnabled = sharedDirEnabled,
                     installProgress = installProgress,
                     onInstallRootfs = { showInstallDialog = true },
                     onToolApprovalChange = vm::setToolApproval,
                     onSdcardModeChange = vm::setSdcardMode,
+                    onSharedDirToggle = vm::setSharedDirEnabled,
                 )
 
                 1 -> WorkspaceFilesPage(
@@ -200,6 +225,15 @@ fun WorkspaceDetailPage(id: String) {
                     contentPadding = PaddingValues(),
                     onSelectArea = vm::selectArea,
                     onGoUp = vm::goUp,
+                    onOpenInSystemFiles = {
+                        val root = state.workspace?.root ?: return@WorkspaceFilesPage
+                        if (!WorkspacePublicExport.openWorkspaceInSystemFiles(context, root)) {
+                            toaster.show(
+                                context.getString(R.string.workspace_detail_open_in_files_unavailable),
+                                type = ToastType.Warning,
+                            )
+                        }
+                    },
                     onOpen = { entry ->
                         when {
                             entry.isDirectory -> vm.open(entry)
@@ -209,31 +243,54 @@ fun WorkspaceDetailPage(id: String) {
                                     Screen.WorkspaceFileEditor(id, state.area.name, entry.path)
                                 )
 
-                                WorkspaceFileType.IMAGE -> vm.exportToCacheFile(entry, context.cacheDir) { file ->
+                                WorkspaceFileType.IMAGE -> vm.exportToCacheFile(entry, context) { file ->
                                     // 传绝对路径 (而非 content:// URI): Coil 可直接加载,
                                     // 预览弹窗的保存按钮 saveMessageImage 只认 "/" 开头路径, content URI 会报错
                                     previewImageUri = file.absolutePath
                                 }
 
-                                WorkspaceFileType.OTHER -> vm.exportToCacheFile(entry, context.cacheDir) { file ->
-                                    val uri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.fileprovider",
-                                        file,
-                                    )
-                                    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(
-                                        file.extension.lowercase()
-                                    ) ?: "*/*"
-                                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                                        setDataAndType(uri, mime)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    runCatching {
-                                        context.startActivity(Intent.createChooser(intent, null))
+                                WorkspaceFileType.OTHER -> vm.exportToCacheFile(entry, context) { file ->
+                                    if (!WorkspacePublicExport.openCachedFileExternally(context, file)) {
+                                        toaster.show(
+                                            context.getString(R.string.workspace_file_open_externally_failed),
+                                            type = ToastType.Warning,
+                                        )
                                     }
                                 }
                             }
                         }
+                    },
+                    onOpenExternally = { entry ->
+                        vm.exportToCacheFile(entry, context) { file ->
+                            if (!WorkspacePublicExport.openCachedFileExternally(context, file)) {
+                                toaster.show(
+                                    context.getString(R.string.workspace_file_open_externally_failed),
+                                    type = ToastType.Warning,
+                                )
+                            }
+                        }
+                    },
+                    onSaveToDownloads = { entry ->
+                        vm.saveToDownloads(
+                            entry = entry,
+                            onSuccess = { displayPath ->
+                                toaster.show(
+                                    context.getString(R.string.workspace_file_saved_to_downloads, displayPath),
+                                    type = ToastType.Success,
+                                )
+                            },
+                            onPermissionRequired = {
+                                exportTarget = entry
+                                exportLauncher.launch(entry.name)
+                            },
+                            onFailure = { errMsg ->
+                                toaster.show(
+                                    errMsg?.takeIf { it.isNotBlank() }
+                                        ?: context.getString(R.string.workspace_file_save_to_downloads_failed),
+                                    type = ToastType.Error,
+                                )
+                            },
+                        )
                     },
                     onDelete = { deleteTarget = it },
                     onExport = { entry ->
@@ -241,18 +298,13 @@ fun WorkspaceDetailPage(id: String) {
                         exportLauncher.launch(entry.name)
                     },
                     onShare = { entry ->
-                        vm.exportToCacheFile(entry, context.cacheDir) { file ->
-                            val uri = FileProvider.getUriForFile(
-                                context,
-                                "${context.packageName}.fileprovider",
-                                file,
-                            )
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "application/octet-stream"
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        vm.exportToCacheFile(entry, context) { file ->
+                            if (!WorkspacePublicExport.shareCachedFile(context, file)) {
+                                toaster.show(
+                                    context.getString(R.string.workspace_file_open_externally_failed),
+                                    type = ToastType.Warning,
+                                )
                             }
-                            context.startActivity(Intent.createChooser(intent, null))
                         }
                     },
                 )
@@ -313,10 +365,12 @@ fun WorkspaceDetailPage(id: String) {
 @Composable
 private fun WorkspaceBasicPage(
     workspace: WorkspaceEntity?,
+    sharedDirEnabled: Boolean,
     installProgress: RootfsInstallProgress?,
     onInstallRootfs: () -> Unit,
     onToolApprovalChange: (String, Boolean) -> Unit,
     onSdcardModeChange: (WorkspaceSdcardMode) -> Unit,
+    onSharedDirToggle: (Boolean) -> Unit,
 ) {
     val shellStatus = workspace?.shellStatus
     val installing = installProgress != null || shellStatus == WorkspaceShellStatus.INSTALLING.name
@@ -406,6 +460,14 @@ private fun WorkspaceBasicPage(
                 onModeChange = onSdcardModeChange,
             )
         }
+
+        item {
+            WorkspaceSharedDirCard(
+                workspace = workspace,
+                enabled = sharedDirEnabled,
+                onToggle = onSharedDirToggle,
+            )
+        }
     }
 }
 
@@ -476,19 +538,36 @@ private fun workspaceToolApprovalItems() = listOf(
     "workspace_read_file" to stringResource(R.string.workspace_detail_tool_read_file),
     "workspace_write_file" to stringResource(R.string.workspace_detail_tool_write_file),
     "workspace_edit_file" to stringResource(R.string.workspace_detail_tool_edit_file),
+    "workspace_export_to_downloads" to stringResource(R.string.workspace_detail_tool_export_to_downloads),
     "workspace_shell" to stringResource(R.string.workspace_detail_tool_shell),
     "workspace_run_background" to stringResource(R.string.workspace_detail_tool_run_background),
     "workspace_background_status" to stringResource(R.string.workspace_detail_tool_background_status),
     "workspace_background_kill" to stringResource(R.string.workspace_detail_tool_background_kill),
 )
 
+@Composable
+private fun rememberAllFilesAccessGranted(): Boolean {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var granted by remember { mutableStateOf(PermissionHelper.hasAllFilesAccess(context)) }
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                granted = PermissionHelper.hasAllFilesAccess(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return granted
+}
+
 /**
  * 共享存储 (sdcard) 挂载模式三档选择。
  *
  * 挂载实现是 proot 的路径绑定 (无内核级只读): READ_ONLY 的只读语义由工具层
- * (文件 API 门禁 + WorkspaceSdcardGuard 命令分类器) 强制; READ_WRITE 需要系统
- * 的 "所有文件访问" 授权 (MANAGE_EXTERNAL_STORAGE 已在 manifest 声明), 未
- * 授权时显示引导按钮跳转系统设置页, 复用 PermissionHelper 现有入口。
+ * (文件 API 门禁 + WorkspaceSdcardGuard 命令分类器) 强制; READ_ONLY 和 READ_WRITE
+ * 在 Android 11+ 上都需要 "所有文件访问" 授权 (MANAGE_EXTERNAL_STORAGE) 才能看到已有文件。
  */
 @Composable
 private fun WorkspaceSdcardCard(
@@ -497,8 +576,8 @@ private fun WorkspaceSdcardCard(
 ) {
     val context = LocalContext.current
     val selectedMode = workspace?.sdcardModeEnum() ?: WorkspaceSdcardMode.NONE
-    val needsAllFilesGrant =
-        selectedMode != WorkspaceSdcardMode.NONE && !PermissionHelper.hasAllFilesAccess(context)
+    val allFilesGranted = rememberAllFilesAccessGranted()
+    val needsAllFilesGrant = selectedMode != WorkspaceSdcardMode.NONE && !allFilesGranted
     val options = listOf(
         WorkspaceSdcardMode.NONE to stringResource(R.string.workspace_detail_sdcard_mode_none),
         WorkspaceSdcardMode.READ_ONLY to stringResource(R.string.workspace_detail_sdcard_mode_read_only),
@@ -540,32 +619,116 @@ private fun WorkspaceSdcardCard(
                 }
             }
 
-            when (selectedMode) {
-                WorkspaceSdcardMode.READ_ONLY -> Text(
+            if (selectedMode == WorkspaceSdcardMode.READ_ONLY) {
+                Text(
                     text = stringResource(R.string.workspace_detail_sdcard_read_only_note),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
 
-                WorkspaceSdcardMode.READ_WRITE -> if (needsAllFilesGrant) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = stringResource(R.string.workspace_detail_sdcard_grant_hint),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        Button(
-                            onClick = {
-                                runCatching { context.startActivity(PermissionHelper.allFilesAccessIntent(context)) }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(stringResource(R.string.workspace_detail_sdcard_grant_button))
-                        }
+            if (needsAllFilesGrant) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = stringResource(R.string.workspace_detail_sdcard_grant_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Button(
+                        onClick = {
+                            runCatching { context.startActivity(PermissionHelper.allFilesAccessIntent(context)) }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(stringResource(R.string.workspace_detail_sdcard_grant_button))
                     }
                 }
+            }
+        }
+    }
+}
 
-                WorkspaceSdcardMode.NONE -> Unit
+/**
+ * 可选的专属公共共享目录 `/shared` 卡片 (`/sdcard/Documents/RikkaHub/<workspace>/`)。
+ * 保持 `/workspace` 在私有高速分区以维护 POSIX/git/venv 兼容，同时为已授全盘权限的设备
+ * 提供受审批保护的直出公共目录。
+ */
+@Composable
+private fun WorkspaceSharedDirCard(
+    workspace: WorkspaceEntity?,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+    val allFilesGranted = rememberAllFilesAccessGranted()
+    val displayPath = workspace?.let {
+        WorkspaceSharedDirPreferences.displayPath(it.name, it.id)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CustomColors.cardColorsOnSurfaceContainer,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.workspace_detail_shared_dir_title),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = stringResource(R.string.workspace_detail_shared_dir_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onToggle,
+                    enabled = workspace != null,
+                )
+            }
+
+            if (enabled) {
+                if (displayPath != null) {
+                    Text(
+                        text = stringResource(R.string.workspace_detail_shared_dir_path, displayPath),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.workspace_detail_shared_dir_approval_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!allFilesGranted) {
+                    Text(
+                        text = stringResource(R.string.workspace_detail_shared_dir_grant_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Button(
+                        onClick = {
+                            runCatching { context.startActivity(PermissionHelper.allFilesAccessIntent(context)) }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(stringResource(R.string.workspace_detail_sdcard_grant_button))
+                    }
+                }
             }
         }
     }
@@ -687,7 +850,10 @@ private fun WorkspaceFilesPage(
     contentPadding: PaddingValues,
     onSelectArea: (WorkspaceStorageArea) -> Unit,
     onGoUp: () -> Unit,
+    onOpenInSystemFiles: () -> Unit,
     onOpen: (WorkspaceFileEntry) -> Unit,
+    onOpenExternally: (WorkspaceFileEntry) -> Unit,
+    onSaveToDownloads: (WorkspaceFileEntry) -> Unit,
     onDelete: (WorkspaceFileEntry) -> Unit,
     onExport: (WorkspaceFileEntry) -> Unit,
     onShare: (WorkspaceFileEntry) -> Unit,
@@ -702,6 +868,32 @@ private fun WorkspaceFilesPage(
                 selected = state.area,
                 onSelected = onSelectArea,
             )
+        }
+
+        if (state.area == WorkspaceStorageArea.FILES && state.workspace != null) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(
+                        onClick = onOpenInSystemFiles,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.Folder01,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.workspace_detail_open_in_files),
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                    Text(
+                        text = stringResource(R.string.workspace_detail_open_in_files_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
 
         item {
@@ -728,6 +920,8 @@ private fun WorkspaceFilesPage(
             WorkspaceFileCard(
                 entry = entry,
                 onOpen = { onOpen(entry) },
+                onOpenExternally = { onOpenExternally(entry) },
+                onSaveToDownloads = { onSaveToDownloads(entry) },
                 onDelete = { onDelete(entry) },
                 onExport = { onExport(entry) },
                 onShare = { onShare(entry) },
@@ -790,6 +984,8 @@ private fun WorkspacePathBar(
 private fun WorkspaceFileCard(
     entry: WorkspaceFileEntry,
     onOpen: () -> Unit,
+    onOpenExternally: () -> Unit,
+    onSaveToDownloads: () -> Unit,
     onDelete: () -> Unit,
     onExport: () -> Unit,
     onShare: () -> Unit,
@@ -847,6 +1043,32 @@ private fun WorkspaceFileCard(
                     onDismissRequest = { menuExpanded = false },
                 ) {
                     if (!entry.isDirectory) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.workspace_file_save_to_downloads)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = HugeIcons.Download01,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onSaveToDownloads()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.workspace_file_open_externally)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = HugeIcons.Link01,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onOpenExternally()
+                            },
+                        )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.common_export)) },
                             leadingIcon = {

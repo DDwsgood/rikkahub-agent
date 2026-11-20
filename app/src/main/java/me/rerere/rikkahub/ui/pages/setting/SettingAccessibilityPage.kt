@@ -76,6 +76,7 @@ fun SettingAccessibilityPage() {
 
     val captureOkFmt = stringResource(R.string.setting_page_accessibility_capture_ok_toast)
     val captureFailFmt = stringResource(R.string.setting_page_accessibility_capture_fail_toast)
+    val serviceInactiveReason = stringResource(R.string.setting_page_accessibility_service_inactive)
 
     // Re-check overlay permission on resume so the row updates immediately after the user
     // returns from the system settings deep-link.
@@ -196,7 +197,7 @@ fun SettingAccessibilityPage() {
                             val live = RikkaAccessibilityService.instance
                             if (live == null) {
                                 toaster.show(
-                                    String.format(captureFailFmt, "service not active"),
+                                    String.format(captureFailFmt, serviceInactiveReason),
                                     type = ToastType.Error,
                                 )
                                 return@launch

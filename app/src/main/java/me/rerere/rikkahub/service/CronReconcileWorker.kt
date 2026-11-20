@@ -8,19 +8,27 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.await
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.repository.ScheduledJobRepository
 import me.rerere.rikkahub.data.repository.ScheduledJobRunRepository
@@ -55,6 +63,8 @@ class CronReconcileWorker(
     private val scheduler: CronJobScheduler by inject()
     private val repo: ScheduledJobRepository by inject()
     private val runRepo: ScheduledJobRunRepository by inject()
+    private val deliveryPrefs: me.rerere.rikkahub.data.preferences.ScheduleDeliveryPreferences by inject()
+    private val diagnosticsStore: ScheduleRunDiagnosticsStore by inject()
     private val telegramPrefs: me.rerere.rikkahub.data.telegram.TelegramBotPreferences by inject()
     private val settingsStore: me.rerere.rikkahub.data.datastore.SettingsStore by inject()
 
@@ -62,16 +72,81 @@ class CronReconcileWorker(
 
     override suspend fun doWork(): Result {
         val kind = inputData.getString(KEY_KIND) ?: KIND_BOOT
-        // Every reconcile pass re-asserts the daily keep-alive alarm (no-op if armed).
-        CronDailyKeepAliveReceiver.armIfAbsent(applicationContext)
-        try {
-            setForeground(createReconcileForegroundInfo())
+
+        if (kind == KIND_OUTBOX_RECOVERY) {
+            return try {
+                ScheduleWebhookWorker.reconcilePendingOutbox(
+                    context = applicationContext,
+                    deliveryPrefs = deliveryPrefs,
+                    runRepo = runRepo,
+                    diagnosticsStore = diagnosticsStore,
+                )
+                withContext(NonCancellable) {
+                    scheduler.syncGlobalBackgroundInfrastructure()
+                }
+                Result.success()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                Log.w(TAG, "dedicated webhook outbox recovery failed; retrying", t)
+                Result.retry()
+            }
+        }
+
+        // Never swallow a DB read error as emptyList(): a transient Room/IO error must retry
+        // rather than tearing down periodic reconciliation for enabled jobs.
+        val enabledJobs = try {
+            repo.getEnabled()
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {
-            // Reconcile can still finish under normal WorkManager limits when an OEM
-            // rejects foreground promotion.
-            Log.w(TAG, "Unable to promote cron reconciliation to foreground", t)
+            Log.e(TAG, "failed to query enabled jobs; retrying reconcile", t)
+            return Result.retry()
+        }
+
+        if (enabledJobs.isEmpty()) {
+            // Reconcile any committed write-ahead Webhook outbox entries even after the last
+            // enabled job finished (e.g. a maxRuns=1 one-shot job that crashed before enqueue).
+            // Never swallow outbox reconcile failures before tearing down periodic recovery.
+            if (kind == KIND_PERIODIC) {
+                try {
+                    ScheduleWebhookWorker.reconcilePendingOutbox(
+                        context = applicationContext,
+                        deliveryPrefs = deliveryPrefs,
+                        runRepo = runRepo,
+                        diagnosticsStore = diagnosticsStore,
+                    )
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    Log.w(TAG, "zero-job periodic outbox reconcile failed; keeping periodic alive and retrying", t)
+                    return Result.retry()
+                }
+            }
+            // Coordinate global teardown through the scheduler's serialized lifecycle lock so
+            // a concurrent "enable first job" call or active outbox item can never lose recovery.
+            withContext(NonCancellable) {
+                scheduler.syncGlobalBackgroundInfrastructure()
+            }
+            if (kind == KIND_PERIODIC) {
+                // If teardown just cancelled this periodic work itself, propagate cancellation
+                // rather than reporting a spurious periodic-run confirmation Result.success().
+                currentCoroutineContext().ensureActive()
+                return Result.success()
+            }
+        } else {
+            scheduler.syncGlobalBackgroundInfrastructure()
+            // Only request foreground promotion for non-periodic (boot/time/perm) or heavy passes;
+            // routine hourly re-arm of a handful of alarms finishes in <1s without flashing FGS.
+            if (kind != KIND_PERIODIC || enabledJobs.size > 10) {
+                try {
+                    setForeground(createReconcileForegroundInfo())
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Unable to promote cron reconciliation to foreground", t)
+                }
+            }
         }
 
         var retry = false
@@ -84,6 +159,33 @@ class CronReconcileWorker(
             } catch (t: Throwable) {
                 Log.e(TAG, "stranded-row sweep failed", t)
                 retry = true
+            }
+        }
+
+        // Reconcile durable write-ahead Webhook outbox AFTER stranded-row sweep so crashed
+        // pre-commit runs are discarded cleanly while committed post-Room runs are re-enqueued.
+        try {
+            ScheduleWebhookWorker.reconcilePendingOutbox(
+                context = applicationContext,
+                deliveryPrefs = deliveryPrefs,
+                runRepo = runRepo,
+                diagnosticsStore = diagnosticsStore,
+            )
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            Log.e(TAG, "webhook outbox reconciliation failed", t)
+            retry = true
+        }
+
+        // Also run a periodic infrastructure sync after outbox reconciliation when enabledJobs
+        // is non-empty or empty, so clearing orphaned STAGED outbox records lets periodic work
+        // tear down cleanly when no enabled jobs remain.
+        if (kind == KIND_PERIODIC && enabledJobs.isEmpty()) {
+            // Already handled above
+        } else if (enabledJobs.isEmpty()) {
+            withContext(NonCancellable) {
+                scheduler.syncGlobalBackgroundInfrastructure()
             }
         }
 
@@ -149,11 +251,20 @@ class CronReconcileWorker(
         if (stranded.isEmpty()) return
 
         for (row in stranded) {
+            val nowMs = System.currentTimeMillis()
             runRepo.update(row.copy(
-                finishedAtMs = System.currentTimeMillis(),
+                finishedAtMs = nowMs,
                 outcome = "process_killed_replay",
                 errorMessage = "worker terminated mid-execute",
             ))
+            runCatching {
+                diagnosticsStore.markStrandedTerminal(
+                    runId = row.id,
+                    outcome = "process_killed_replay",
+                    finishedAtMs = nowMs,
+                    deliveryResult = "process_terminated",
+                )
+            }
         }
 
         // Single aggregate notification per boot rather than one per stranded row.
@@ -231,21 +342,36 @@ class CronReconcileWorker(
          * WorkManager's 15-minute minimum period.
          */
         const val KIND_PERIODIC = "periodic"
+        const val KIND_OUTBOX_RECOVERY = "outbox_recovery"
         private const val PERIODIC_WORK_NAME = "cron_reconcile_periodic"
         private const val PERIODIC_INTERVAL_HOURS = 1L
 
         /** Unique name for the widget/goAsync-timeout fallback reconcile. */
         private const val ONE_TIME_FALLBACK_WORK_NAME = "cron_reconcile_one_time_fallback"
 
+        /** Independent backed-off recovery trigger when a committed Webhook enqueue fails. */
+        private const val WEBHOOK_OUTBOX_RECOVERY_WORK_NAME = "cron_webhook_outbox_recovery"
+
         private const val RECONCILE_CHANNEL_ID = "rikkahub_cron_reconcile"
         // Distinct from CronJobWorker's 0x50000000-prefixed execution notification IDs.
         private const val RECONCILE_NOTIFICATION_ID = 0x005EC0DE
 
         /**
-         * Ensures the hourly self-healing reconcile is enqueued. Called from
-         * [CronBootReceiver] on every boot-like event; UPDATE keeps the request fresh
-         * without stacking duplicates (unique-work identity).
+         * Ensures the hourly self-healing reconcile is enqueued and awaits WorkManager confirmation.
          */
+        suspend fun schedulePeriodicAwait(context: Context) {
+            val req = PeriodicWorkRequestBuilder<CronReconcileWorker>(
+                PERIODIC_INTERVAL_HOURS, TimeUnit.HOURS,
+            )
+                .setInputData(Data.Builder().putString(KEY_KIND, KIND_PERIODIC).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                PERIODIC_WORK_NAME,
+                ExistingPeriodicWorkPolicy.UPDATE,
+                req,
+            ).await()
+        }
+
         fun schedulePeriodic(context: Context) {
             runCatching {
                 val req = PeriodicWorkRequestBuilder<CronReconcileWorker>(
@@ -256,6 +382,42 @@ class CronReconcileWorker(
                 WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                     PERIODIC_WORK_NAME,
                     ExistingPeriodicWorkPolicy.UPDATE,
+                    req,
+                )
+            }
+        }
+
+        /** Cancels the hourly periodic reconcile and awaits WorkManager confirmation. */
+        suspend fun cancelPeriodicAwait(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK_NAME).await()
+        }
+
+        /** Cancels the hourly periodic reconcile when zero scheduled jobs remain enabled. */
+        fun cancelPeriodic(context: Context) {
+            runCatching {
+                WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK_NAME)
+            }
+        }
+
+        /**
+         * Enqueues an independent backed-off recovery pass for committed Webhook outbox entries
+         * whose direct `ScheduleWebhookWorker.enqueueAwait` failed, ensuring delivery recovers
+         * automatically even when zero enabled cron jobs remain.
+         */
+        fun enqueueWebhookOutboxRecovery(context: Context) {
+            runCatching {
+                val req = OneTimeWorkRequestBuilder<CronReconcileWorker>()
+                    .setInputData(Data.Builder().putString(KEY_KIND, KIND_OUTBOX_RECOVERY).build())
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                            .build()
+                    )
+                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                    .build()
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    WEBHOOK_OUTBOX_RECOVERY_WORK_NAME,
+                    ExistingWorkPolicy.KEEP,
                     req,
                 )
             }

@@ -71,12 +71,14 @@ class RikkaNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         instance = this
+        _instanceFlow.value = this
         _bound.value = true
         Log.i(TAG, "listener connected")
     }
 
     override fun onListenerDisconnected() {
         instance = null
+        _instanceFlow.value = null
         _bound.value = false
         lastForwarded.clear()
         Log.i(TAG, "listener disconnected")
@@ -85,6 +87,7 @@ class RikkaNotificationListenerService : NotificationListenerService() {
 
     override fun onDestroy() {
         instance = null
+        _instanceFlow.value = null
         _bound.value = false
         scope.cancel()
         super.onDestroy()
@@ -305,6 +308,9 @@ class RikkaNotificationListenerService : NotificationListenerService() {
         @Volatile
         var instance: RikkaNotificationListenerService? = null
             private set
+
+        private val _instanceFlow = MutableStateFlow<RikkaNotificationListenerService?>(null)
+        val instanceFlow = _instanceFlow.asStateFlow()
     }
 }
 

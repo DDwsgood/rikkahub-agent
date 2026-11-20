@@ -104,68 +104,51 @@ class AssistantDetailVM(
 
     fun updateTags(tagIds: List<Uuid>, tags: List<Tag>) {
         viewModelScope.launch {
-            val settings = settings.value
-            settingsStore.update(
-                settings = settings.copy(
-                    assistantTags = tags
+            settingsStore.update { latest ->
+                val validTagIds = tags.map { it.id }.toSet()
+                val updatedAssistants = latest.assistants.map { item ->
+                    val candidateTags = if (item.id == assistantId) tagIds.toList() else item.tags
+                    val filtered = candidateTags.filter { it in validTagIds }
+                    if (filtered != item.tags) item.copy(tags = filtered) else item
+                }
+                val usedTagIds = updatedAssistants.flatMap { it.tags }.toSet()
+                val cleanedTags = tags.filter { it.id in usedTagIds }
+                latest.copy(
+                    assistants = updatedAssistants,
+                    assistantTags = cleanedTags,
                 )
-            )
-            update(
-                assistant.value.copy(
-                    tags = tagIds.toList()
-                )
-            )
+            }
             Log.d(TAG, "updateTags: ${tagIds.joinToString(",")}")
-            cleanupUnusedTags()
         }
     }
 
     fun cleanupUnusedTags() {
         viewModelScope.launch {
-            val settings = settings.value
-            val validTagIds = settings.assistantTags.map { it.id }.toSet()
-
-            // 清理 assistant 中的无效 tag id
-            val cleanedAssistants = settings.assistants.map { assistant ->
-                val validTags = assistant.tags.filter { tagId ->
-                    validTagIds.contains(tagId)
+            settingsStore.update { latest ->
+                val validTagIds = latest.assistantTags.map { it.id }.toSet()
+                val cleanedAssistants = latest.assistants.map { item ->
+                    val validTags = item.tags.filter { it in validTagIds }
+                    if (validTags.size != item.tags.size) item.copy(tags = validTags) else item
                 }
-                if (validTags.size != assistant.tags.size) {
-                    assistant.copy(tags = validTags)
-                } else {
-                    assistant
-                }
-            }
-
-            // 获取清理后的 assistant 中使用的 tag id
-            val usedTagIds = cleanedAssistants.flatMap { it.tags }.toSet()
-
-            // 清理未使用的 tags
-            val cleanedTags = settings.assistantTags.filter { tag ->
-                usedTagIds.contains(tag.id)
-            }
-
-            // 检查是否需要更新
-            val needUpdateAssistants = cleanedAssistants != settings.assistants
-            val needUpdateTags = cleanedTags.size != settings.assistantTags.size
-
-            if (needUpdateAssistants || needUpdateTags) {
-                settingsStore.update(
-                    settings = settings.copy(
+                val usedTagIds = cleanedAssistants.flatMap { it.tags }.toSet()
+                val cleanedTags = latest.assistantTags.filter { it.id in usedTagIds }
+                if (cleanedAssistants != latest.assistants || cleanedTags.size != latest.assistantTags.size) {
+                    latest.copy(
                         assistants = cleanedAssistants,
-                        assistantTags = cleanedTags
+                        assistantTags = cleanedTags,
                     )
-                )
+                } else {
+                    latest
+                }
             }
         }
     }
 
     fun update(assistant: Assistant) {
         viewModelScope.launch {
-            val settings = settings.value
-            settingsStore.update(
-                settings = settings.copy(
-                    assistants = settings.assistants.map {
+            settingsStore.update { latest ->
+                latest.copy(
+                    assistants = latest.assistants.map {
                         if (it.id == assistant.id) {
                             checkAvatarDelete(old = it, new = assistant) // 删除旧头像
                             checkBackgroundDelete(old = it, new = assistant) // 删除旧背景
@@ -173,8 +156,9 @@ class AssistantDetailVM(
                         } else {
                             it
                         }
-                    })
-            )
+                    }
+                )
+            }
         }
     }
 

@@ -23,7 +23,7 @@ object DoctorReport {
             DoctorCategory.entries.forEach { cat ->
                 val rows = checks.filter { it.category == cat }
                 if (rows.isEmpty()) return@forEach
-                appendLine("## ${cat.displayName}")
+                appendLine("## ${cat.reportName}")
                 rows.forEach { r ->
                     val mark = when (r.severity) {
                         Severity.OK -> "[ok]   "

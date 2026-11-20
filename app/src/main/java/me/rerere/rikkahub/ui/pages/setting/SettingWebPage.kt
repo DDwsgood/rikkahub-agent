@@ -278,10 +278,8 @@ fun SettingWebPage() {
                                     accessPasswordText = value
                                     scope.launch {
                                         settingsStore.update {
-                                            it.copy(
-                                                webServerAccessPassword = value,
-                                                webServerJwtEnabled = it.webServerJwtEnabled && value.isNotBlank()
-                                            )
+                                            // Clearing a password must not open an authenticated server.
+                                            it.copy(webServerAccessPassword = value)
                                         }
                                     }
                                 },

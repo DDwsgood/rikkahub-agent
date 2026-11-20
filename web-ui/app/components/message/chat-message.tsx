@@ -112,8 +112,15 @@ function hasEditableContent(parts: UIMessagePart[]): boolean {
   );
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat().format(value);
+function formatNumber(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value);
+}
+
+function formatDecimal(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(value);
 }
 
 function getDurationMs(createdAt: string, finishedAt?: string | null): number | null {
@@ -131,6 +138,7 @@ function getNerdStats(
   createdAt: string,
   finishedAt: string | null | undefined,
   t: TFunction,
+  locale: string,
 ) {
   const stats: Array<{ key: string; icon: React.ReactNode; label: string }> = [];
 
@@ -140,11 +148,11 @@ function getNerdStats(
     label:
       usage.cachedTokens > 0
         ? t("chat_message.prompt_tokens_with_cache", {
-            promptTokens: formatNumber(usage.promptTokens),
-            cachedTokens: formatNumber(usage.cachedTokens),
+            promptTokens: formatNumber(usage.promptTokens, locale),
+            cachedTokens: formatNumber(usage.cachedTokens, locale),
           })
         : t("chat_message.prompt_tokens", {
-            promptTokens: formatNumber(usage.promptTokens),
+            promptTokens: formatNumber(usage.promptTokens, locale),
           }),
   });
 
@@ -152,7 +160,7 @@ function getNerdStats(
     key: "completion",
     icon: <ArrowDown className="size-3" />,
     label: t("chat_message.completion_tokens", {
-      completionTokens: formatNumber(usage.completionTokens),
+      completionTokens: formatNumber(usage.completionTokens, locale),
     }),
   });
 
@@ -165,7 +173,7 @@ function getNerdStats(
       key: "speed",
       icon: <Zap className="size-3" />,
       label: t("chat_message.tokens_per_second", {
-        value: tps.toFixed(1),
+        value: formatDecimal(tps, locale),
       }),
     });
 
@@ -173,7 +181,7 @@ function getNerdStats(
       key: "duration",
       icon: <Clock3 className="size-3" />,
       label: t("chat_message.duration_seconds", {
-        value: durationSeconds.toFixed(1),
+        value: formatDecimal(durationSeconds, locale),
       }),
     });
   }
@@ -484,14 +492,20 @@ const ChatMessageNerdLineRow = React.memo(({
   message: MessageDto;
   alignRight: boolean;
 }) => {
-  const { t } = useTranslation("message");
+  const { t, i18n } = useTranslation("message");
   const displaySetting = useSettingsStore((state) => state.settings?.displaySetting);
 
   if (!displaySetting?.showTokenUsage || !message.usage) {
     return null;
   }
 
-  const stats = getNerdStats(message.usage, message.createdAt, message.finishedAt, t);
+  const stats = getNerdStats(
+    message.usage,
+    message.createdAt,
+    message.finishedAt,
+    t,
+    i18n.resolvedLanguage ?? i18n.language,
+  );
   if (stats.length === 0) return null;
 
   return (

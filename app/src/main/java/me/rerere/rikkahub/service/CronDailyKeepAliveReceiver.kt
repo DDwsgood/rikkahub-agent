@@ -10,31 +10,45 @@ import android.util.Log
 
 /**
  * Fossify-style "dummy" daily alarm: a self-perpetuating exact alarm whose only purpose is
- * keeping this app's AlarmManager pipeline warm. Some OEMs cold-treat apps that haven't
- * armed an alarm recently; one fire per day keeps the app on AlarmManager's active list
- * so real cron alarms deliver promptly.
+ * keeping this app's AlarmManager pipeline warm when at least one scheduled job is enabled.
  *
- * Hard cap: AT MOST one fire per day. MagicOS PowerGenie flags >3 setAlarmClock calls per
- * day as high-frequency wake-ups, so the interval stays well under that threshold and
- * [armIfAbsent] refuses to arm while a keep-alive alarm is already pending — call sites
- * (schedule/reconcile/boot) can never stack extra alarms.
- *
- * Direct-boot safe: [onReceive] only re-arms an alarm — no Room, DataStore or WorkManager
- * access — so the receiver is declared `directBootAware` and may fire before the device
- * is unlocked.
+ * Concurrency & direct-boot invariants:
+ * - All state-flag reads/writes (`KEY_ARMED` in device-protected SharedPreferences) and
+ *   AlarmManager arm/cancel calls are serialized under [stateLock] using synchronous `commit()`,
+ *   so an in-flight daily broadcast can NEVER pass the flag check before a concurrent [cancel]
+ *   and re-arm itself afterward.
+ * - Direct-boot safe: no Room, DataStore, or WorkManager access in [onReceive].
  */
 class CronDailyKeepAliveReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_KEEPALIVE) return
-        // Self-perpetuate: arm the next daily fire. Touches no storage, which keeps a fire
-        // that arrives while the device is still locked (direct boot) safe.
-        arm(context)
+        synchronized(stateLock) {
+            if (!isArmedFlagLocked(context)) return
+            armAlarmOnlyLocked(context)
+        }
     }
 
     companion object {
         const val ACTION_KEEPALIVE = "me.rerere.rikkahub.action.CRON_KEEPALIVE"
         private const val TAG = "CronDailyKeepAlive"
         private const val INTERVAL_MS = 24L * 60 * 60 * 1000
+        private const val PREFS_NAME = "cron_daily_keepalive_state"
+        private const val KEY_ARMED = "armed"
+        private val stateLock = Any()
+
+        private fun statePrefs(context: Context) = runCatching {
+            val dp = context.createDeviceProtectedStorageContext()
+            dp.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }.getOrElse {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }
+
+        private fun isArmedFlagLocked(context: Context): Boolean =
+            runCatching { statePrefs(context).getBoolean(KEY_ARMED, false) }.getOrDefault(false)
+
+        private fun setArmedFlagLocked(context: Context, armed: Boolean) {
+            runCatching { statePrefs(context).edit().putBoolean(KEY_ARMED, armed).commit() }
+        }
 
         private fun pendingIntent(context: Context, flags: Int): PendingIntent? =
             PendingIntent.getBroadcast(
@@ -48,16 +62,51 @@ class CronDailyKeepAliveReceiver : BroadcastReceiver() {
             )
 
         /**
-         * Arms the daily keep-alive alarm only when none is pending. Safe to call from any
-         * scheduling path — the FLAG_NO_CREATE probe keeps the ≤1/day cap intact.
+         * Arms the daily keep-alive alarm only when none is pending. Serialized under [stateLock].
          */
         fun armIfAbsent(context: Context) {
-            if (pendingIntent(context, PendingIntent.FLAG_NO_CREATE) != null) return
-            arm(context)
+            synchronized(stateLock) {
+                setArmedFlagLocked(context, true)
+                if (pendingIntent(context, PendingIntent.FLAG_NO_CREATE) != null) return
+                armAlarmOnlyLocked(context)
+            }
         }
 
-        /** Arms (or re-arms, on fire) the keep-alive alarm [INTERVAL_MS] from now. Never throws. */
+        /**
+         * Re-arms after reboot ONLY if the keep-alive flag was already armed before reboot
+         * (prevents zero-job devices from arming alarms on every boot).
+         */
+        fun rearmIfEnabled(context: Context) {
+            synchronized(stateLock) {
+                if (!isArmedFlagLocked(context)) return
+                armAlarmOnlyLocked(context)
+            }
+        }
+
+        /** Cancels any pending daily keep-alive alarm and clears the armed flag atomically. */
+        fun cancel(context: Context) {
+            synchronized(stateLock) {
+                setArmedFlagLocked(context, false)
+                runCatching {
+                    val pi = pendingIntent(context, PendingIntent.FLAG_NO_CREATE) ?: return
+                    val am = context.getSystemService(AlarmManager::class.java)
+                    am?.cancel(pi)
+                    pi.cancel()
+                }.onFailure {
+                    Log.w(TAG, "failed to cancel daily keep-alive alarm", it)
+                }
+            }
+        }
+
+        /** Arms the keep-alive alarm [INTERVAL_MS] from now and marks it armed. Never throws. */
         fun arm(context: Context) {
+            synchronized(stateLock) {
+                setArmedFlagLocked(context, true)
+                armAlarmOnlyLocked(context)
+            }
+        }
+
+        private fun armAlarmOnlyLocked(context: Context) {
             try {
                 val pi = pendingIntent(context, PendingIntent.FLAG_UPDATE_CURRENT) ?: return
                 val am = context.getSystemService(AlarmManager::class.java) ?: return
@@ -65,8 +114,6 @@ class CronDailyKeepAliveReceiver : BroadcastReceiver() {
                 try {
                     am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
                 } catch (_: SecurityException) {
-                    // Exact-alarm permission revoked — an inexact alarm still keeps the
-                    // pipeline warm.
                     am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
                 }
             } catch (t: Throwable) {

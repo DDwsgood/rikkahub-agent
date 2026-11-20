@@ -5,12 +5,19 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import kotlinx.coroutines.flow.Flow
 import me.rerere.rikkahub.data.db.entity.ScheduledJobRunEntity
 
 @Dao
 interface ScheduledJobRunDao {
+    @Query("SELECT * FROM scheduled_job_runs WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): ScheduledJobRunEntity?
+
     @Query("SELECT * FROM scheduled_job_runs WHERE jobId = :jobId ORDER BY startedAtMs DESC LIMIT :limit")
     suspend fun getRecent(jobId: String, limit: Int): List<ScheduledJobRunEntity>
+
+    @Query("SELECT * FROM scheduled_job_runs WHERE jobId = :jobId ORDER BY startedAtMs DESC LIMIT :limit")
+    fun observeRecent(jobId: String, limit: Int): Flow<List<ScheduledJobRunEntity>>
 
     @Query("SELECT * FROM scheduled_job_runs WHERE finishedAtMs IS NULL AND startedAtMs < :stalenessMs")
     suspend fun getStranded(stalenessMs: Long): List<ScheduledJobRunEntity>
@@ -19,7 +26,7 @@ interface ScheduledJobRunDao {
     suspend fun insert(row: ScheduledJobRunEntity)
 
     @Update
-    suspend fun update(row: ScheduledJobRunEntity)
+    suspend fun update(row: ScheduledJobRunEntity): Int
 
     /**
      * Trim history for a single job, retaining the [keep] most-recent successful rows and the

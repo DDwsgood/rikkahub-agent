@@ -149,7 +149,7 @@ fun ImageGenPage(
                     IconButton(onClick = vm::startNewSession) {
                         Icon(
                             imageVector = HugeIcons.Add01,
-                            contentDescription = "New session"
+                            contentDescription = stringResource(R.string.imggen_page_new_session)
                         )
                     }
                 }
@@ -413,7 +413,7 @@ private fun InputBar(
             ) {
                 Icon(
                     imageVector = HugeIcons.Add01,
-                    contentDescription = "Add reference image"
+                    contentDescription = stringResource(R.string.imggen_page_add_reference_image)
                 )
             }
 
@@ -608,7 +608,7 @@ private fun ImageGalleryScreen(
                                             onClick = {
                                                 clipboardManager.setText(AnnotatedString(it.prompt))
                                                 toaster.show(
-                                                    message = "Prompt copied to clipboard",
+                                                    message = context.getString(R.string.copied),
                                                     type = ToastType.Success
                                                 )
                                             },
@@ -616,7 +616,7 @@ private fun ImageGalleryScreen(
                                         ) {
                                             Icon(
                                                 imageVector = HugeIcons.Copy01,
-                                                contentDescription = "Copy prompt",
+                                                contentDescription = stringResource(R.string.imggen_page_copy_prompt),
                                                 modifier = Modifier.size(16.dp)
                                             )
                                         }

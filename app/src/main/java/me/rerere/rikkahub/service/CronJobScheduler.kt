@@ -144,6 +144,7 @@ class CronJobScheduler(
     private val context: Context,
     private val repo: ScheduledJobRepository,
     private val runRepo: ScheduledJobRunRepository,
+    private val deliveryPrefs: me.rerere.rikkahub.data.preferences.ScheduleDeliveryPreferences? = null,
 ) {
     private val wm get() = WorkManager.getInstance(context)
     private val alarmManager get() = context.getSystemService(AlarmManager::class.java)
@@ -170,18 +171,59 @@ class CronJobScheduler(
         val nextRunAtMs: Long?,
     )
 
+    private val globalInfraLock = Mutex()
+
+    /**
+     * Coordinates the global background safety net (hourly periodic reconcile + daily dummy
+     * keep-alive alarm) under a single mutex based on the LIVE enabled-jobs table, awaiting
+     * WorkManager operations so an old zero-job teardown can never cancel a freshly enabled job.
+     */
+    suspend fun syncGlobalBackgroundInfrastructure() = globalInfraLock.withLock {
+        val hasEnabled = repo.getEnabled().isNotEmpty()
+        val hasPendingWebhooks = try {
+            deliveryPrefs?.hasActivePendingWebhooks() == true
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            // Fail safe: if we cannot read the outbox, keep periodic reconcile armed rather than
+            // tearing down the recovery loop while deliveries may still be pending.
+            Log.w(TAG, "syncGlobalBackgroundInfrastructure: outbox probe failed; preserving periodic reconcile", t)
+            true
+        }
+        if (hasEnabled) {
+            CronDailyKeepAliveReceiver.armIfAbsent(context)
+            runCatching { CronReconcileWorker.schedulePeriodicAwait(context) }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    Log.w(TAG, "syncGlobalBackgroundInfrastructure: schedulePeriodic failed", it)
+                }
+        } else {
+            CronDailyKeepAliveReceiver.cancel(context)
+            if (hasPendingWebhooks) {
+                // Keep hourly reconcile armed while committed/unsettled webhook outbox items remain
+                // (e.g. after a maxRuns=1 last job completes with an enqueue failure).
+                runCatching { CronReconcileWorker.schedulePeriodicAwait(context) }
+                    .onFailure {
+                        if (it is CancellationException) throw it
+                        Log.w(TAG, "syncGlobalBackgroundInfrastructure: keep periodic for pending outbox failed", it)
+                    }
+            } else {
+                runCatching { CronReconcileWorker.cancelPeriodicAwait(context) }
+                    .onFailure {
+                        if (it is CancellationException) throw it
+                        Log.w(TAG, "syncGlobalBackgroundInfrastructure: cancelPeriodic failed", it)
+                    }
+            }
+        }
+    }
+
     suspend fun schedule(job: ScheduledJobEntity): ScheduleResult {
-        // Keep the daily keep-alive alarm armed so the AlarmManager pipeline stays warm
-        // (Fossify-style dummy alarm; at most one fire per day).
-        CronDailyKeepAliveReceiver.armIfAbsent(context)
-        // Re-assert the hourly self-healing reconcile on every scheduling call. Boot/time/
-        // permission broadcasts also register it, but a fresh install that creates a job
-        // without ever seeing one of those broadcasts would otherwise have no periodic
-        // safety net. Idempotent — enqueueUniquePeriodicWork with UPDATE.
-        CronReconcileWorker.schedulePeriodic(context)
-        return withJobLock(job.id) {
+        val res = withJobLock(job.id) {
             scheduleLocked(job)
         }
+        runCatching { syncGlobalBackgroundInfrastructure() }
+            .onFailure { if (it is CancellationException) throw it }
+        return res
     }
 
     /**
@@ -289,6 +331,11 @@ class CronJobScheduler(
                 desiredBackend
             }
             Backend.NONE -> desiredBackend // handled above, but exhaustiveness
+        }
+
+        // Mirror into system Calendar ONLY after the durable schedule/alarm path is armed.
+        deliveryPrefs?.let { prefs ->
+            CalendarReminderMirror.syncJob(context, prefs, job.copy(nextRunAtMs = nextRun), nextRun)
         }
 
         return ScheduleResult(effectiveBackend, nextRun)
@@ -430,6 +477,12 @@ class CronJobScheduler(
         }
         // Alarm cancellation is synchronous — always run it before surfacing any failure.
         cancelAllAlarms(jobId)
+        deliveryPrefs?.let { prefs ->
+            CalendarReminderMirror.removeJob(context, prefs, jobId)
+        }
+        // Coordinate global teardown under globalInfraLock based on live DB state.
+        runCatching { syncGlobalBackgroundInfrastructure() }
+            .onFailure { if (it is CancellationException) throw it }
         if (firstFailure != null) {
             Log.e(TAG, "cancel($jobId): a WorkManager cancel failed", firstFailure)
             if (throwOnFailure) throw firstFailure
@@ -449,6 +502,8 @@ class CronJobScheduler(
         repo.update(updated)
         if (enabled) {
             scheduleLocked(updated)
+            runCatching { syncGlobalBackgroundInfrastructure() }
+                .onFailure { if (it is CancellationException) throw it }
         } else {
             cancelLocked(jobId = jobId, throwOnFailure = true)
         }
@@ -495,7 +550,15 @@ class CronJobScheduler(
             enabled = if (latest.scheduleType == "once" || maxReached) false else latest.enabled,
         )
         repo.update(updated)
-        if (updated.enabled) scheduleLocked(updated, skipBackupSlotMs = skipBackupSlotMs)
+        if (updated.enabled) {
+            scheduleLocked(updated, skipBackupSlotMs = skipBackupSlotMs)
+        } else {
+            deliveryPrefs?.let { prefs ->
+                CalendarReminderMirror.removeJob(context, prefs, jobId)
+            }
+            runCatching { syncGlobalBackgroundInfrastructure() }
+                .onFailure { if (it is CancellationException) throw it }
+        }
         updated
     }
 
@@ -539,7 +602,15 @@ class CronJobScheduler(
             )
         }
         repo.update(updated)
-        if (updated.enabled) scheduleLocked(updated, skipBackupSlotMs = skipBackupSlotMs)
+        if (updated.enabled) {
+            scheduleLocked(updated, skipBackupSlotMs = skipBackupSlotMs)
+        } else {
+            deliveryPrefs?.let { prefs ->
+                CalendarReminderMirror.removeJob(context, prefs, jobId)
+            }
+            runCatching { syncGlobalBackgroundInfrastructure() }
+                .onFailure { if (it is CancellationException) throw it }
+        }
         updated
     }
 
@@ -576,10 +647,15 @@ class CronJobScheduler(
     suspend fun reconcileAllEnabled(
         fireBudget: Int = MAX_CATCHUP_FIRES_PER_RECONCILE,
     ): List<String> {
-        CronDailyKeepAliveReceiver.armIfAbsent(context)
+        val enabledJobs = repo.getEnabled()
+        runCatching { syncGlobalBackgroundInfrastructure() }
+            .onFailure { if (it is CancellationException) throw it }
+        if (enabledJobs.isEmpty()) {
+            return emptyList()
+        }
         val failures = mutableListOf<String>()
         var remainingBudget = fireBudget.coerceAtLeast(0)
-        for (job in repo.getEnabled()) {
+        for (job in enabledJobs) {
             try {
                 val fired = withJobLock(job.id) { reconcileJobLocked(job, remainingBudget) }
                 remainingBudget = (remainingBudget - fired).coerceAtLeast(0)
@@ -687,6 +763,7 @@ class CronJobScheduler(
                     .putString(CronJobWorker.KEY_JOB_ID, job.id)
                     .putString(CronJobWorker.KEY_JOB_NAME, job.name)
                     .putString(CronJobWorker.KEY_JOB_MODE, job.mode)
+                    .putString(CronJobWorker.KEY_TRIGGER_SOURCE, "catchup")
                     .putLong(CronJobWorker.KEY_SCHEDULED_AT_MS, plan.fireSlotsMs[index])
                     .build())
                 .addTag(workTagFor(job.id))

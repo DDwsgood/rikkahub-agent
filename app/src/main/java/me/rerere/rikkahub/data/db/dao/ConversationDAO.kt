@@ -88,6 +88,14 @@ interface ConversationDAO {
     @Query("UPDATE conversationentity SET folder_id = :folderId WHERE id = :id")
     suspend fun updateFolderId(id: String, folderId: String)
 
+    /** Atomic title update on an existing row only — never inserts deleted rows or overwrites nodes. */
+    @Query("UPDATE conversationentity SET title = :title WHERE id = :id")
+    suspend fun updateTitle(id: String, title: String): Int
+
+    /** Atomic conditional title update for non-forced auto-titling — only fills a blank title. */
+    @Query("UPDATE conversationentity SET title = :title WHERE id = :id AND TRIM(title) = ''")
+    suspend fun updateTitleIfBlank(id: String, title: String): Int
+
     @Query("UPDATE conversationentity SET folder_id = '' WHERE folder_id = :folderId")
     suspend fun clearFolder(folderId: String)
 

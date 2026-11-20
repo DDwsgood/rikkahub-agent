@@ -4,19 +4,21 @@ import android.content.Context
 import com.auth0.jwt.JWT
 import com.auth0.jwt.JWTVerifier
 import com.auth0.jwt.algorithms.Algorithm
-import io.ktor.http.auth.HttpAuthHeader
+import com.auth0.jwt.exceptions.JWTVerificationException
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.createRouteScopedPlugin
 import io.ktor.server.application.install
-import io.ktor.server.auth.Authentication
-import io.ktor.server.auth.authenticate
-import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.routing.RouteSelector
+import io.ktor.server.routing.RouteSelectorEvaluation
+import io.ktor.server.routing.RoutingResolveContext
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
@@ -38,14 +40,12 @@ import me.rerere.rikkahub.web.routes.folderRoutes
 import me.rerere.rikkahub.web.routes.settingsRoutes
 import java.security.MessageDigest
 import java.util.Date
-import java.util.UUID
 
 private const val WEB_JWT_ISSUER = "rikkahub-web"
 private const val WEB_JWT_AUDIENCE = "rikkahub-web-client"
 private const val WEB_JWT_SUBJECT = "web-access"
 private const val WEB_JWT_TTL_MILLIS = 30L * 24 * 60 * 60 * 1000
 private const val WEB_ACCESS_TOKEN_QUERY_KEY = "access_token"
-private const val WEB_AUTH_REALM = "rikkahub-web-api"
 
 /**
  * Configure Web API for the Ktor application.
@@ -54,7 +54,7 @@ private const val WEB_AUTH_REALM = "rikkahub-web-api"
  * Example usage:
  * ```
  * startWebServer(port = 8080) {
- *     configureWebApi(context, chatService, conversationRepo, settingsStore, filesManager)
+ *     configureWebApi(context, chatService, conversationRepo, folderRepo, settingsStore, filesManager)
  * }
  * ```
  */
@@ -64,10 +64,8 @@ fun Application.configureWebApi(
     conversationRepo: ConversationRepository,
     folderRepo: FolderRepository,
     settingsStore: SettingsStore,
-    filesManager: FilesManager
+    filesManager: FilesManager,
 ) {
-    val jwtEnabled = settingsStore.settingsFlow.value.webServerJwtEnabled
-
     install(ContentNegotiation) {
         json(JsonInstant)
     }
@@ -87,65 +85,21 @@ fun Application.configureWebApi(
         }
     }
 
-    if (jwtEnabled) {
-        install(Authentication) {
-            jwt("auth-jwt") {
-                realm = WEB_AUTH_REALM
-                verifier { _ ->
-                    // Dynamically read the current password on each request so that
-                    // tokens signed after a password change are validated correctly.
-                    val currentPassword = settingsStore.settingsFlow.value.webServerAccessPassword
-                    val secret = currentPassword.ifBlank {
-                        // Keep protected routes closed when jwt is enabled but password is missing.
-                        "__missing_password_${UUID.randomUUID()}__"
-                    }
-                    buildWebJwtVerifier(secret)
-                }
-                authHeader { call ->
-                    extractAccessToken(
-                        authorizationHeader = call.request.headers[HttpHeaders.Authorization],
-                        queryToken = call.request.queryParameters[WEB_ACCESS_TOKEN_QUERY_KEY]
-                    )?.let { token ->
-                        HttpAuthHeader.Single("Bearer", token)
-                    }
-                }
-                validate { credential ->
-                    val currentPassword = settingsStore.settingsFlow.value.webServerAccessPassword
-                    if (currentPassword.isBlank()) {
-                        null
-                    } else {
-                        credential.payload.subject?.takeIf { it == WEB_JWT_SUBJECT }?.let {
-                            io.ktor.server.auth.jwt.JWTPrincipal(credential.payload)
-                        }
-                    }
-                }
-                challenge { _, _ ->
-                    val currentPassword = settingsStore.settingsFlow.value.webServerAccessPassword
-                    if (currentPassword.isBlank()) {
-                        call.respond(
-                            HttpStatusCode.Forbidden,
-                            ErrorResponse("Access password is not configured", HttpStatusCode.Forbidden.value)
-                        )
-                    } else {
-                        call.respond(
-                            HttpStatusCode.Unauthorized,
-                            ErrorResponse("Unauthorized", HttpStatusCode.Unauthorized.value)
-                        )
-                    }
-                }
-            }
+    val webAccess = createRouteScopedPlugin("WebAccess") {
+        onCall { call ->
+            call.webAccessError(settingsStore)?.let { throw it }
         }
     }
 
     routing {
         route("/api") {
             post("/auth/token") {
-                val settings = settingsStore.settingsFlow.value
-                if (!settings.webServerJwtEnabled) {
+                val access = settingsStore.readWebAccess()
+                if (!access.enabled) {
                     throw BadRequestException("JWT auth is disabled")
                 }
 
-                val accessPassword = settings.webServerAccessPassword
+                val accessPassword = access.password
                 if (accessPassword.isBlank()) {
                     throw BadRequestException("Access password is not configured")
                 }
@@ -167,16 +121,13 @@ fun Application.configureWebApi(
 
             aiIconRoutes(context)
 
-            if (jwtEnabled) {
-                authenticate("auth-jwt") {
-                    conversationRoutes(chatService, conversationRepo, folderRepo, settingsStore)
-                    folderRoutes(chatService, folderRepo, settingsStore)
-                    eventsRoutes(chatService, conversationRepo, folderRepo, settingsStore)
-                    settingsRoutes(settingsStore)
-                    filesRoutes(filesManager, context)
-                    assetsRoutes(context)
-                }
-            } else {
+            createChild(object : RouteSelector() {
+                override suspend fun evaluate(context: RoutingResolveContext, segmentIndex: Int) =
+                    RouteSelectorEvaluation.Transparent
+            }).apply {
+                // Every protected request uses the current persisted policy, including while
+                // an already running server switches from open access to JWT.
+                install(webAccess)
                 conversationRoutes(chatService, conversationRepo, folderRepo, settingsStore)
                 folderRoutes(chatService, folderRepo, settingsStore)
                 eventsRoutes(chatService, conversationRepo, folderRepo, settingsStore)
@@ -185,6 +136,22 @@ fun Application.configureWebApi(
                 assetsRoutes(context)
             }
         }
+    }
+}
+
+internal suspend fun ApplicationCall.webAccessError(settingsStore: SettingsStore): ApiException? {
+    val access = settingsStore.readWebAccess()
+    if (!access.enabled) return null
+    if (access.password.isBlank()) return ForbiddenException("Access password is not configured")
+    val token = extractAccessToken(
+        authorizationHeader = request.headers[HttpHeaders.Authorization],
+        queryToken = request.queryParameters[WEB_ACCESS_TOKEN_QUERY_KEY],
+    ) ?: return UnauthorizedException("Unauthorized")
+    return try {
+        buildWebJwtVerifier(access.password).verify(token)
+        null
+    } catch (_: JWTVerificationException) {
+        UnauthorizedException("Unauthorized")
     }
 }
 

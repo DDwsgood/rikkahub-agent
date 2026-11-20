@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.datastore.SettingsStore
@@ -74,6 +75,7 @@ class WebServerManager(
         val startId = ++nextStartId
 
         appScope.launch {
+            if (startId != nextStartId) return@launch
             // 仅本机模式绑定回环地址
             val host = if (localhostOnly) HOST_LOOPBACK else HOST_ALL_INTERFACES
             val baseState = WebServerState(
@@ -84,6 +86,10 @@ class WebServerManager(
             )
             try {
                 _state.value = _state.value.copy(isLoading = true, startId = startId)
+                val settings = settingsStore.settingsFlowRaw.first()
+                // A stop or a newer start may have arrived while DataStore was loading.
+                if (startId != nextStartId) return@launch
+                check(!settings.init) { "Web server settings are unavailable" }
                 Log.i(TAG, "Starting web server on $host:$port")
                 if (!isPortAvailable(port)) {
                     Log.w(TAG, "Port $port is already in use")
@@ -91,7 +97,9 @@ class WebServerManager(
                     return@launch
                 }
                 server = startWebServer(port = port, host = host) {
-                    configureWebApi(context, chatService, conversationRepo, folderRepo, settingsStore, filesManager)
+                    configureWebApi(
+                        context, chatService, conversationRepo, folderRepo, settingsStore, filesManager,
+                    )
                 }.start(wait = false)
 
                 _state.value = baseState.copy(isRunning = true)
@@ -115,6 +123,7 @@ class WebServerManager(
                 }
                 Log.i(TAG, "Web server started successfully on $host:$port")
             } catch (e: Exception) {
+                if (startId != nextStartId) return@launch
                 Log.e(TAG, "Failed to start web server", e)
                 _state.value = baseState.copy(error = e.message)
             }
@@ -126,6 +135,7 @@ class WebServerManager(
     }
 
     fun stop() {
+        ++nextStartId
         _state.value =
             _state.value.copy(isRunning = false, isLoading = true, hostname = null, address = null, error = null)
         appScope.launch {

@@ -19,6 +19,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -39,6 +40,7 @@ import me.rerere.rikkahub.data.datastore.findAssistantById
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
 import me.rerere.rikkahub.data.db.entity.ScheduledJobRunEntity
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.preferences.WebhookDeliveryState
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.ScheduledJobRepository
 import me.rerere.rikkahub.data.repository.ScheduledJobRunRepository
@@ -176,9 +178,16 @@ internal fun decideConcurrentSkip(isManual: Boolean): ConcurrentSkipDecision =
  */
 private object CronJobRunningTracker {
     private val running = ConcurrentHashMap.newKeySet<String>()
+    private val activeRuns = ConcurrentHashMap.newKeySet<String>()
     fun start(jobId: String): Boolean = running.add(jobId)
     fun stop(jobId: String) { running.remove(jobId) }
+    fun registerRun(runId: String) { activeRuns.add(runId) }
+    fun unregisterRun(runId: String) { activeRuns.remove(runId) }
+    fun isRunActive(runId: String): Boolean = activeRuns.contains(runId)
 }
+
+internal fun isCronRunActiveInCurrentProcess(runId: String): Boolean =
+    CronJobRunningTracker.isRunActive(runId)
 
 class CronJobWorker(
     appContext: Context,
@@ -194,6 +203,8 @@ class CronJobWorker(
     private val localTools: LocalTools by inject()
     private val directRunner: DirectModeActionRunner by inject()
     private val agentRunRepo: AgentRunRepository by inject()
+    private val diagnosticsStore: ScheduleRunDiagnosticsStore by inject()
+    private val deliveryPrefs: me.rerere.rikkahub.data.preferences.ScheduleDeliveryPreferences by inject()
 
     /** Required for expedited exact-alarm work on Android 11 and lower. */
     override suspend fun getForegroundInfo(): ForegroundInfo {
@@ -213,10 +224,37 @@ class CronJobWorker(
         val isBackup = inputData.getBoolean(KEY_IS_BACKUP, false)
         val requestedSlotMs = inputData.getLong(KEY_SCHEDULED_AT_MS, Long.MIN_VALUE)
             .takeUnless { it == Long.MIN_VALUE }
+        val alarmReceivedAtMs = inputData.getLong(KEY_ALARM_RECEIVED_AT_MS, Long.MIN_VALUE)
+            .takeUnless { it == Long.MIN_VALUE }
+        val triggerSource = inputData.getString(KEY_TRIGGER_SOURCE) ?: when {
+            isManual -> "manual"
+            isBackup -> "wm_backup"
+            else -> "wm_fallback"
+        }
 
         if (!CronJobRunningTracker.start(jobId)) {
-            recordRun(jobId, scheduledAtMs = System.currentTimeMillis(),
-                outcome = "concurrent_skip", mode = "?", convId = null, errorMessage = null)
+            val skipNowMs = System.currentTimeMillis()
+            val skipRunId = Uuid.random().toString()
+            recordRun(skipRunId, jobId, scheduledAtMs = requestedSlotMs ?: skipNowMs,
+                outcome = "concurrent_skip", mode = inputData.getString(KEY_JOB_MODE) ?: "?", convId = null, errorMessage = null)
+            runCatching {
+                diagnosticsStore.record(
+                    ScheduleRunTrace(
+                        runId = skipRunId,
+                        jobId = jobId,
+                        jobName = inputData.getString(KEY_JOB_NAME) ?: jobId,
+                        mode = inputData.getString(KEY_JOB_MODE) ?: "?",
+                        triggerSource = triggerSource,
+                        scheduledAtMs = requestedSlotMs ?: skipNowMs,
+                        alarmReceivedAtMs = alarmReceivedAtMs,
+                        workerStartedAtMs = skipNowMs,
+                        foregroundResult = "skipped_concurrent",
+                        finishedAtMs = skipNowMs,
+                        executionDurationMs = 0L,
+                        outcome = "concurrent_skip",
+                    )
+                )
+            }
             // A natural fire that loses the concurrency race must NOT consume and drop its
             // slot — returning RETRY lets WorkManager re-attempt it once the running fire
             // completes (its own completion keeps the chain alive either way).
@@ -227,13 +265,19 @@ class CronJobWorker(
         }
 
         val nowMs = System.currentTimeMillis()
+        val workerStartElapsedMs = android.os.SystemClock.elapsedRealtime()
         val runRowId = Uuid.random().toString()
+        CronJobRunningTracker.registerRun(runRowId)
         var ledgerId: String? = null
         var runRowInserted = false
         var runRowTerminal = false
+        var stagedWebhookDeliveryId: String? = null
+        var recoverOutboxAfterCancellation = false
         var jobMode: String? = inputData.getString(KEY_JOB_MODE)
         var jobName: String? = inputData.getString(KEY_JOB_NAME)
-        var slotMs: Long = nowMs
+        var slotMs: Long = requestedSlotMs ?: nowMs
+        var foregroundResult = "skipped"
+        var foregroundAtMs: Long? = null
 
         try {
             val job = repo.getById(jobId) ?: return Result.success()
@@ -245,11 +289,15 @@ class CronJobWorker(
             // only while this user-requested job is active; there is no always-on service.
             try {
                 setForeground(createExecutionForegroundInfo(jobId, job.name))
+                foregroundResult = "promoted"
+                foregroundAtMs = System.currentTimeMillis()
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
                 // Short jobs can still complete under normal WorkManager limits when an OEM
                 // rejects foreground promotion. Keep the run alive and retain diagnostics.
+                foregroundResult = "denied:${t::class.simpleName}"
+                foregroundAtMs = System.currentTimeMillis()
                 Log.w(TAG, "Unable to promote scheduled job $jobId to foreground", t)
             }
 
@@ -270,14 +318,6 @@ class CronJobWorker(
             )
             slotMs = scheduledAtMs
 
-            // Duplicate-fire guard runs BEFORE the optimistic insert, else the insert
-            // self-matches. Manual fires skip the guard so the user can always force a
-            // fresh fire. Non-skip rows for EXACTLY this slot are consulted (not the
-            // global most-recent row), so a newer concurrent_skip can never mask the real
-            // same-slot row, and a natural fire is only ever compared against its own slot.
-            // The source-aware [shouldSuppressSameSlotFire] rule applies to both the backup
-            // and the primary path, so either racing order is idempotent (a real execution
-            // suppresses a duplicate at any age; only legacy manual rows keep the window).
             if (!isManual) {
                 val priorRow = runRepo.getMostRecentNonSkipForSlot(jobId, scheduledAtMs)
                 val suppress = if (isBackup) shouldSuppressBackupFire(priorRow, nowMs)
@@ -285,26 +325,38 @@ class CronJobWorker(
                 if (suppress) {
                     Log.w(TAG, "doWork: suppressing duplicate fire for $jobId " +
                             "(prior row ${priorRow!!.id} same scheduledAtMs=$scheduledAtMs outcome=${priorRow.outcome} backup=$isBackup)")
+                    val replayDoneMs = System.currentTimeMillis()
                     runRepo.insert(ScheduledJobRunEntity(
                         id = runRowId,
                         jobId = jobId,
                         mode = job.mode,
                         scheduledAtMs = scheduledAtMs,
                         startedAtMs = nowMs,
-                        finishedAtMs = nowMs,
+                        finishedAtMs = replayDoneMs,
                         outcome = "process_killed_replay",
                         conversationId = null,
                         errorMessage = "duplicate fire suppressed (prior run ${priorRow.id})",
                     ))
-                    // Suppressing a replay must not break the recursive schedule chain. The
-                    // original process may have died after side effects but before it armed
-                    // the next slot. One-shots are treated as consumed (at-most-once);
-                    // recurring jobs advance from the prior fire while retaining the stable
-                    // input slot used above for replay identity. Runs through the scheduler
-                    // so the transition is linearized and re-reads the latest Room row; the
-                    // scheduler no-ops if the control plane already advanced past the slot,
-                    // and never cancels the slot-scoped backup this backup worker is itself
-                    // running (it completes naturally).
+                    runCatching {
+                        diagnosticsStore.record(
+                            ScheduleRunTrace(
+                                runId = runRowId,
+                                jobId = jobId,
+                                jobName = job.name,
+                                mode = job.mode,
+                                triggerSource = "$triggerSource:replay_suppressed",
+                                scheduledAtMs = scheduledAtMs,
+                                alarmReceivedAtMs = alarmReceivedAtMs,
+                                workerStartedAtMs = nowMs,
+                                foregroundResult = foregroundResult,
+                                foregroundAtMs = foregroundAtMs,
+                                finishedAtMs = replayDoneMs,
+                                executionDurationMs = (android.os.SystemClock.elapsedRealtime() - workerStartElapsedMs).coerceAtLeast(0L),
+                                outcome = "process_killed_replay",
+                                deliveryResult = "suppressed_duplicate",
+                            )
+                        )
+                    }
                     scheduler.advanceAfterSuppressedReplay(
                         jobId, priorRow.startedAtMs, duplicateSlotMs = scheduledAtMs,
                         skipBackupSlotMs = if (isBackup) scheduledAtMs else null,
@@ -328,6 +380,27 @@ class CronJobWorker(
                 errorMessage = null,
             ))
             runRowInserted = true
+
+            // Incremental checkpoint #1 (in-flight): persisted BEFORE execution so if the OS
+            // kills the process mid-run, boot recovery patches this trace with terminal outcome
+            // while preserving alarm receipt, worker start, and FGS promotion evidence.
+            runCatching {
+                diagnosticsStore.record(
+                    ScheduleRunTrace(
+                        runId = runRowId,
+                        jobId = jobId,
+                        jobName = job.name,
+                        mode = job.mode,
+                        triggerSource = triggerSource,
+                        scheduledAtMs = scheduledAtMs,
+                        alarmReceivedAtMs = alarmReceivedAtMs,
+                        workerStartedAtMs = nowMs,
+                        foregroundResult = foregroundResult,
+                        foregroundAtMs = foregroundAtMs,
+                        outcome = "running",
+                    )
+                )
+            }
 
             // Phase 24 — open the cross-pillar ledger row alongside the domain detail row.
             // domain_id is keyed per-fire (jobId:slot) so a replay or a later fire of the
@@ -359,29 +432,125 @@ class CronJobWorker(
                     .onFailure { Log.w(TAG, "wake notification failed for $jobId", it) }
             }
 
+            var directStepSummaries: List<String> = emptyList()
             val (outcome, errorMessage, convIdMaybe) = when (job.mode) {
                 "llm"    -> runLlm(job)
-                "direct" -> runDirect(job)
+                "direct" -> {
+                    val (o, e, summaries) = runDirectWithSummaries(job)
+                    directStepSummaries = summaries
+                    Triple(o, e, null)
+                }
                 else     -> Triple("failed", "unknown_mode:${job.mode}", null)
             }
+            val finishedAtMs = System.currentTimeMillis()
+            val executionDurationMs = (android.os.SystemClock.elapsedRealtime() - workerStartElapsedMs).coerceAtLeast(0L)
+            val expectedConversationId = convIdMaybe?.toString()
+            val expectedErrorMessage = errorMessage?.take(500)
 
-            runRepo.update(ScheduledJobRunEntity(
-                id = runRowId,
-                jobId = jobId,
-                mode = job.mode,
-                scheduledAtMs = scheduledAtMs,
-                startedAtMs = nowMs,
-                finishedAtMs = System.currentTimeMillis(),
-                outcome = outcome,
-                conversationId = convIdMaybe?.toString(),
-                errorMessage = errorMessage?.take(500),
-            ))
-            runRowTerminal = true
+            // Phase 1 of 2-phase write-ahead Webhook outbox: stage the pending outbox entry
+            // BEFORE committing the terminal Room run row, capturing exact expected commit fields
+            // plus process/boot ownership + monotonic uptime so reconciliation:
+            // - NEVER promotes a STAGED payload if Room committed a different crash `failed` row (P1-3).
+            // - Reclaims orphaned STAGED rows on periodic passes without device reboot when the
+            //   owner process dies, without misclassifying live running jobs (P1-4).
+            // - Promotes STAGED -> COMMITTED right after normal Room commit, decoupling delivery
+            //   from trimmable run history rows.
+            var pendingWebhook: me.rerere.rikkahub.data.preferences.PendingWebhookDelivery? = null
+            var outboxStageErrorCode: String? = null
+            withContext(NonCancellable) {
+                try {
+                    val cfg = deliveryPrefs.current()
+                    val isSuccess = outcome == "success"
+                    val wantsWebhook = cfg.isWebhookUsable &&
+                        ((isSuccess && cfg.webhookNotifyOnSuccess) || (!isSuccess && cfg.webhookNotifyOnFailure))
+                    if (wantsWebhook) {
+                        val resultText = extractDeliverySummary(outcome, errorMessage, convIdMaybe, directStepSummaries)
+                        val entry = me.rerere.rikkahub.data.preferences.PendingWebhookDelivery(
+                            deliveryId = "$jobId-$scheduledAtMs",
+                            runId = runRowId,
+                            jobId = jobId,
+                            jobName = job.name,
+                            mode = job.mode,
+                            outcome = outcome,
+                            summary = resultText,
+                            timestampMs = finishedAtMs,
+                            destinationBinding = cfg.destinationBinding(),
+                            createdAtMs = finishedAtMs,
+                            commitVerificationEnabled = true,
+                            expectedConversationId = expectedConversationId,
+                            expectedErrorMessage = expectedErrorMessage,
+                            ownerProcessId = ProcessRuntimeIdentity.processInstanceId,
+                            ownerBootId = ProcessRuntimeIdentity.currentBootId(applicationContext),
+                            stagedElapsedMs = ProcessRuntimeIdentity.monotonicNowMs(),
+                        )
+                        when (deliveryPrefs.stagePendingWebhook(entry)) {
+                            me.rerere.rikkahub.data.preferences.OutboxStageResult.STAGED -> {
+                                pendingWebhook = entry
+                                stagedWebhookDeliveryId = entry.deliveryId
+                            }
+                            me.rerere.rikkahub.data.preferences.OutboxStageResult.ALREADY_PRESENT -> Unit
+                            me.rerere.rikkahub.data.preferences.OutboxStageResult.CAPACITY_EXCEEDED -> {
+                                Log.w(TAG, "webhook outbox full for $jobId; rejecting enqueue")
+                                outboxStageErrorCode = "webhook:outbox_full"
+                            }
+                        }
+                    }
+                } catch (err: Throwable) {
+                    Log.w(TAG, "webhook outbox persist error for $jobId: ${err::class.simpleName}")
+                    outboxStageErrorCode = "webhook:outbox_error"
+                }
+            }
 
-            // Phase 24 — mirror the terminal outcome into the cross-pillar ledger. Cron
-            // outcomes map to: success → succeeded; timed_out / failed / unknown → failed.
-            // (concurrent_skip / skipped_catchup / process_killed_replay never reach here —
-            // they early-return before the ledger row is opened.)
+            // Keep the Room commit, its in-memory acknowledgement, and outbox promotion
+            // together so coroutine cancellation cannot interrupt the acknowledgement.
+            val committedRun = withContext(NonCancellable) {
+                val updatedRows = runRepo.update(ScheduledJobRunEntity(
+                    id = runRowId,
+                    jobId = jobId,
+                    mode = job.mode,
+                    scheduledAtMs = scheduledAtMs,
+                    startedAtMs = nowMs,
+                    finishedAtMs = finishedAtMs,
+                    outcome = outcome,
+                    conversationId = expectedConversationId,
+                    errorMessage = expectedErrorMessage,
+                ))
+                if (updatedRows != 1) {
+                    // The row may have been removed by task deletion while this worker ran.
+                    pendingWebhook?.let { entry ->
+                        runCatching {
+                            deliveryPrefs.markOutboxTerminal(
+                                deliveryId = entry.deliveryId,
+                                summary = "webhook:uncommitted_discarded",
+                                nowMs = finishedAtMs,
+                                onlyIfStateIn = setOf(WebhookDeliveryState.STAGED),
+                                expectedRunId = entry.runId,
+                            )
+                        }.onFailure {
+                            CronReconcileWorker.enqueueWebhookOutboxRecovery(applicationContext)
+                        }
+                    }
+                    ledgerId?.let { id ->
+                        runCatching { agentRunRepo.markTerminal(id, AgentRunStatus.cancelled, "run_row_removed") }
+                            .onFailure { Log.w(TAG, "Unable to close deleted run ledger for $jobId", it) }
+                    }
+                    return@withContext false
+                }
+                runRowTerminal = true
+                pendingWebhook?.let { entry ->
+                    val committed = runCatching {
+                        deliveryPrefs.markOutboxCommitted(entry.deliveryId, finishedAtMs, expectedRunId = entry.runId)
+                    }.onFailure {
+                        Log.w(TAG, "webhook outbox markCommitted failed for $jobId: ${it::class.simpleName}")
+                    }.getOrDefault(false)
+                    if (!committed) {
+                        CronReconcileWorker.enqueueWebhookOutboxRecovery(applicationContext)
+                    }
+                }
+                true
+            }
+            if (!committedRun) return Result.success()
+
             ledgerId?.let { id ->
                 agentRunRepo.markTerminal(
                     id = id,
@@ -390,49 +559,123 @@ class CronJobWorker(
                 )
             }
 
-            // Failure notification (post once per failure; the existing channel handles dedup)
+            // Persist failure notification, completion diagnostics, and durable Webhook enqueue
+            // BEFORE calling completeNaturalRun(). In WorkManager fallback mode (no exact-alarm
+            // grant), completeNaturalRun() re-enqueues the next slot with ExistingWorkPolicy.REPLACE
+            // under this worker's own unique work name, which immediately cancels this worker's
+            // coroutine. Furthermore, completion diagnostics are written BEFORE ScheduleWebhookWorker
+            // is enqueued so a fast delivery can never race ahead and get overwritten to `queued`.
+            val deliveryParts = mutableListOf<String>()
             if (outcome != "success") {
                 postFailureNotification(job.name, "$outcome: ${errorMessage.orEmpty()}")
+                deliveryParts += "local_failure_notif"
+            }
+            if (pendingWebhook != null) {
+                deliveryParts += "webhook:queued"
+            } else if (outboxStageErrorCode != null) {
+                deliveryParts += outboxStageErrorCode
             }
 
-            // Manual fires (trigger_job_now) are bonus — they get a history row but
-            // don't bump runs_so_far or lastRunAtMs (per spec Decision 13). The regular
-            // schedule continues unaffected.
-            if (!isManual) {
-                // The terminal transition (lastRunAtMs / runsSoFar / once/maxRuns
-                // enabled flip + re-schedule) goes through the scheduler's linearized
-                // completeNaturalRun, which re-reads the latest Room row — preserving a
-                // user pause/mode edit that landed during the run and never re-arming a
-                // paused job. Derive runsSoFar from the authoritative success-count query
-                // (post-update, so the final outcome is already committed) to avoid
-                // runsSoFar drift after a replay.
-                //
-                // This tail runs in NonCancellable: a fallback worker's completeNaturalRun
-                // re-enqueues the NEXT slot under the same unique name with REPLACE, and
-                // WorkManager may cancel the currently-running work while we await that
-                // enqueue. The next fire is already durable by then; the only thing that
-                // must not be lost is the post-transition cleanup (history trim) below.
-                withContext(NonCancellable) {
+            withContext(NonCancellable) {
+                // Checkpoint #2 (execution complete + delivery queued) persisted BEFORE enqueuing
+                // ScheduleWebhookWorker and BEFORE schedule advancement.
+                val finishedTrace = ScheduleRunTrace(
+                    runId = runRowId,
+                    jobId = jobId,
+                    jobName = job.name,
+                    mode = job.mode,
+                    triggerSource = triggerSource,
+                    scheduledAtMs = scheduledAtMs,
+                    alarmReceivedAtMs = alarmReceivedAtMs,
+                    workerStartedAtMs = nowMs,
+                    foregroundResult = foregroundResult,
+                    foregroundAtMs = foregroundAtMs,
+                    finishedAtMs = finishedAtMs,
+                    executionDurationMs = executionDurationMs,
+                    outcome = outcome,
+                    deliveryResult = deliveryParts.takeIf { it.isNotEmpty() }?.joinToString(", "),
+                )
+                runCatching { diagnosticsStore.record(finishedTrace) }
+                    .onFailure { Log.w(TAG, "diagnosticsStore.record (finished) failed for $jobId", it) }
+
+                pendingWebhook?.let { entry ->
+                    try {
+                        ScheduleWebhookWorker.enqueueAwait(
+                            context = applicationContext,
+                            runId = entry.runId,
+                            payload = ScheduleWebhookPayload(
+                                deliveryId = entry.deliveryId,
+                                jobId = entry.jobId,
+                                jobName = entry.jobName,
+                                mode = entry.mode,
+                                outcome = entry.outcome,
+                                summary = entry.summary,
+                                timestampMs = entry.timestampMs,
+                            ),
+                            destinationBinding = entry.destinationBinding,
+                        )
+                    } catch (err: Throwable) {
+                        // Keep the committed outbox record intact, mark interim retry status
+                        // (deliveryFinishedAtMs remains null), and trigger an independent backed-off
+                        // recovery worker so even the last enabled job recovers without waiting for
+                        // a new app launch.
+                        Log.w(TAG, "webhook outbox enqueue deferred for $jobId: ${err::class.simpleName}")
+                        runCatching {
+                            diagnosticsStore.updateDelivery(
+                                runId = runRowId,
+                                webhookSummary = "webhook:enqueue_retry_pending",
+                                attemptAtMs = System.currentTimeMillis(),
+                                attemptDurationMs = 0L,
+                                isFinal = false,
+                            )
+                        }
+                        CronReconcileWorker.enqueueWebhookOutboxRecovery(applicationContext)
+                    }
+                }
+
+                // LAST STEP: advance schedule chain & trim old history. Even if fallback mode
+                // cancels this worker right here via ExistingWorkPolicy.REPLACE, every terminal
+                // artifact (outbox, Room row, ledger, failure notif, trace, Webhook work) is durable.
+                if (!isManual) {
                     val successCount = runRepo.countSuccessful(job.id)
-                    // skipBackupSlotMs = this worker's own slot when it IS the backup, so the
-                    // re-schedule never cancels the backup that is currently executing it.
                     scheduler.completeNaturalRun(
                         jobId, nowMs, successCount,
                         skipBackupSlotMs = if (isBackup) scheduledAtMs else null,
                     )
-                    // Trim history inside the same NonCancellable block so a self-REPLACE
-                    // cancellation can't skip it (see CronJobScheduler class KDoc).
-                    runRepo.trim(jobId, keep = 100)
                 }
-            } else {
-                // Manual fires don't go through completeNaturalRun; trim directly.
                 runRepo.trim(jobId, keep = 100)
             }
 
             return Result.success()
         } catch (c: CancellationException) {
-            // WorkManager cancellation (deadline, replacement, system preemption) must
-            // retain its structured-concurrency semantics so the work can be replayed.
+            // A cancelled suspend call is not proof that Room did not commit. Leave STAGED
+            // intact so reconciliation can inspect the actual row; COMMITTED can be enqueued.
+            recoverOutboxAfterCancellation = stagedWebhookDeliveryId != null
+            if (!runRowTerminal) {
+                withContext(NonCancellable) {
+                    val cancelledAtMs = System.currentTimeMillis()
+                    runCatching {
+                        diagnosticsStore.record(
+                            ScheduleRunTrace(
+                                runId = runRowId,
+                                jobId = jobId,
+                                jobName = jobName ?: jobId,
+                                mode = jobMode ?: "?",
+                                triggerSource = triggerSource,
+                                scheduledAtMs = slotMs,
+                                alarmReceivedAtMs = alarmReceivedAtMs,
+                                workerStartedAtMs = nowMs,
+                                foregroundResult = foregroundResult,
+                                foregroundAtMs = foregroundAtMs,
+                                finishedAtMs = cancelledAtMs,
+                                executionDurationMs = (android.os.SystemClock.elapsedRealtime() - workerStartElapsedMs).coerceAtLeast(0L),
+                                outcome = "cancelled",
+                                deliveryResult = "worker_cancelled",
+                            )
+                        )
+                    }
+                }
+            }
             throw c
         } catch (t: Throwable) {
             // an unexpected non-cancellation failure must not silently break the
@@ -445,6 +688,23 @@ class CronJobWorker(
             // outcome — a crash AFTER the terminal update (e.g. inside completeNaturalRun
             // or trim) must never overwrite a success row with 'failed'.
             if (!runRowTerminal) {
+                val crashedAtMs = System.currentTimeMillis()
+                // Cancel any STAGED pre-commit webhook entry immediately so a failed Room
+                // commit followed by this crash handler's `failed` row can never promote or send
+                // a contradictory STAGED success payload (P1-3).
+                stagedWebhookDeliveryId?.let { delId ->
+                    withContext(NonCancellable) {
+                        runCatching {
+                            deliveryPrefs.markOutboxTerminal(
+                                deliveryId = delId,
+                                summary = "webhook:aborted_before_commit",
+                                nowMs = crashedAtMs,
+                                onlyIfStateIn = setOf(WebhookDeliveryState.STAGED),
+                                expectedRunId = runRowId,
+                            )
+                        }
+                    }
+                }
                 runCatching {
                     val failedRow = ScheduledJobRunEntity(
                         id = runRowId,
@@ -452,7 +712,7 @@ class CronJobWorker(
                         mode = jobMode ?: "?",
                         scheduledAtMs = slotMs,
                         startedAtMs = nowMs,
-                        finishedAtMs = System.currentTimeMillis(),
+                        finishedAtMs = crashedAtMs,
                         outcome = "failed",
                         conversationId = null,
                         errorMessage = ("worker crashed: ${t::class.simpleName}: ${t.message.orEmpty()}")
@@ -460,6 +720,26 @@ class CronJobWorker(
                     )
                     if (runRowInserted) runRepo.update(failedRow) else runRepo.insert(failedRow)
                 }.onFailure { Log.w(TAG, "doWork: failed to record crash row for $jobId", it) }
+                runCatching {
+                    diagnosticsStore.record(
+                        ScheduleRunTrace(
+                            runId = runRowId,
+                            jobId = jobId,
+                            jobName = jobName ?: jobId,
+                            mode = jobMode ?: "?",
+                            triggerSource = triggerSource,
+                            scheduledAtMs = slotMs,
+                            alarmReceivedAtMs = alarmReceivedAtMs,
+                            workerStartedAtMs = nowMs,
+                            foregroundResult = foregroundResult,
+                            foregroundAtMs = foregroundAtMs,
+                            finishedAtMs = crashedAtMs,
+                            executionDurationMs = (android.os.SystemClock.elapsedRealtime() - workerStartElapsedMs).coerceAtLeast(0L),
+                            outcome = "failed",
+                            deliveryResult = "worker_crashed:${t::class.simpleName}",
+                        )
+                    )
+                }.onFailure { Log.w(TAG, "doWork: failed to record crash diagnostic for $jobId", it) }
             }
             runCatching {
                 ledgerId?.let { id ->
@@ -494,7 +774,11 @@ class CronJobWorker(
             }
             return Result.success()
         } finally {
+            CronJobRunningTracker.unregisterRun(runRowId)
             CronJobRunningTracker.stop(jobId)
+            if (recoverOutboxAfterCancellation) {
+                CronReconcileWorker.enqueueWebhookOutboxRecovery(applicationContext)
+            }
         }
     }
 
@@ -529,29 +813,23 @@ class CronJobWorker(
         conversationRepo.insertConversation(conv)
         chatService.initializeConversation(conv.id, updateGlobalAssistant = false)
         HeadlessConversations.mark(conv.id)
+        var turn: SendMessageTurn? = null
+        var finished = false
         try {
             // sendMessage now returns a completion handle so the cron path observes
             // the REAL success/failure — including provider/network/model exceptions that
             // ChatService catches internally and surfaces via addError. The old
             // flow-goes-null wait cannot distinguish "finished" from "finished with error".
-            val handle = chatService.sendMessage(conv.id, listOf(UIMessagePart.Text(prompt)))
+            val handle = chatService.startMessageTurn(conv.id, listOf(UIMessagePart.Text(prompt)))
+            turn = handle
             // Wait for the send to terminate, with a 15-min wall-clock cap.
             val result = awaitSendMessageResult(
-                handle = handle,
+                handle = handle.result,
                 timeoutMs = 15L * 60_000L,
             )
+            finished = result != null
             return when {
-                result == null -> {
-                    // The wall-clock cap fired but ChatService's generation coroutine is
-                    // still running. Stop it explicitly so a timed-out LLM turn can't
-                    // keep burning tokens/network in the background until the next send.
-                    runCatching { chatService.stopGeneration(conv.id) }
-                        .onFailure {
-                            if (it is CancellationException) throw it
-                            Log.w(TAG, "runLlm: stopGeneration failed for ${conv.id}", it)
-                        }
-                    Triple("timed_out", "llm turn exceeded 15min", conv.id)
-                }
+                result == null -> Triple("timed_out", "llm turn exceeded 15min", conv.id)
                 result.success -> Triple("success", null, conv.id)
                 else -> Triple("failed", result.errorMessage ?: "llm send failed", conv.id)
             }
@@ -562,40 +840,40 @@ class CronJobWorker(
         } catch (t: Throwable) {
             return Triple("failed", "${t::class.simpleName}: ${t.message.orEmpty()}", conv.id)
         } finally {
-            HeadlessConversations.unmark(conv.id)
+            withContext(NonCancellable) {
+                turn?.job?.let { job ->
+                    if (finished) job.join() else job.cancelAndJoin()
+                }
+                HeadlessConversations.unmark(conv.id)
+            }
         }
     }
 
-    private suspend fun runDirect(job: ScheduledJobEntity): Triple<String, String?, Uuid?> {
-        // Replay idempotency guard: if WorkManager replays this worker after a process kill,
-        // a run row for this job will already exist with a very recent startedAtMs.
-        // Treat any non-skip row created within the last 5 minutes as a duplicate and bail.
-        val actionsJson = job.actionsJson ?: return Triple("failed", "missing_actions_for_direct_mode", null)
+    private suspend fun runDirectWithSummaries(job: ScheduledJobEntity): Triple<String, String?, List<String>> {
+        val actionsJson = job.actionsJson ?: return Triple("failed", "missing_actions_for_direct_mode", emptyList())
         val parsed = DirectModeActionRunner.parse(actionsJson).getOrElse {
-            return Triple("failed", "actions_parse:${(it as? DirectModeActionRunner.ParseError)?.code ?: it.message}", null)
+            return Triple("failed", "actions_parse:${(it as? DirectModeActionRunner.ParseError)?.code ?: it.message}", emptyList())
         }
-        // Tool list scoped to the job's assistant — same path ChatService uses.
         val assistantUuid = runCatching { Uuid.parse(job.assistantId) }.getOrNull()
-            ?: return Triple("failed", "bad_assistant_id:${job.assistantId}", null)
+            ?: return Triple("failed", "bad_assistant_id:${job.assistantId}", emptyList())
         val settings = settingsStore.awaitLoadedSettings()
         val assistant = settings.findAssistantById(assistantUuid)
-            ?: return Triple("failed", "assistant_not_found", null)
-        // Headless context — sub-agent recursion guard fires from this dispatch path so
-        // a cron job's direct-mode action sequence cannot itself spawn a sub-agent.
+            ?: return Triple("failed", "assistant_not_found", emptyList())
         val tools = localTools.getTools(
             assistant.localTools,
             me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                 callerAssistantId = assistantUuid.toString(),
-                callerConversationId = null,  // direct-mode has no conversation
+                callerConversationId = null,
                 callerWorkspaceId = assistant.workspaceId?.toString(),
                 isHeadless = true,
             ),
         )
         val seq = directRunner.run(parsed, tools)
-        return Triple(seq.finalOutcome, seq.errorMessage, null)
+        return Triple(seq.finalOutcome, seq.errorMessage, seq.stepSummaries)
     }
 
     private suspend fun recordRun(
+        runId: String,
         jobId: String,
         scheduledAtMs: Long,
         outcome: String,
@@ -608,7 +886,7 @@ class CronJobWorker(
         // bridge needed (which would have blocked the worker thread).
         runCatching {
             runRepo.insert(ScheduledJobRunEntity(
-                id = Uuid.random().toString(),
+                id = runId,
                 jobId = jobId,
                 mode = mode,
                 scheduledAtMs = scheduledAtMs,
@@ -619,6 +897,43 @@ class CronJobWorker(
                 errorMessage = errorMessage?.take(500),
             ))
         }.onFailure { Log.w(TAG, "recordRun failed", it) }
+    }
+
+    private suspend fun extractDeliverySummary(
+        outcome: String,
+        errorMessage: String?,
+        convId: Uuid?,
+        directStepSummaries: List<String>,
+    ): String {
+        if (outcome != "success") {
+            // Send sanitized high-level reason to external webhooks (never leak raw internal
+            // exception traces/paths/credentials from errorMessage).
+            val sanitizedReason = when {
+                outcome == "timed_out" -> "Execution timed out"
+                errorMessage?.startsWith("action ") == true -> errorMessage.substringBefore(':').trim() + " failed"
+                errorMessage?.startsWith("missing_") == true || errorMessage?.startsWith("bad_") == true ||
+                    errorMessage?.startsWith("assistant_not_found") == true || errorMessage?.startsWith("unknown_mode") == true ->
+                    errorMessage.substringBefore(':').trim()
+                else -> "Execution failed ($outcome). Open RikkaHub Scheduled Jobs for details."
+            }
+            return sanitizedReason
+        }
+        if (convId != null) {
+            val text = runCatching {
+                val conv = conversationRepo.getConversationById(convId) ?: return@runCatching ""
+                conv.messageNodes
+                    .mapNotNull { it.messages.getOrNull(it.selectIndex) }
+                    .lastOrNull { it.role == me.rerere.ai.core.MessageRole.ASSISTANT }
+                    ?.toText()
+                    ?.trim()
+                    .orEmpty()
+            }.getOrDefault("")
+            if (text.isNotBlank()) return text.take(3000)
+        }
+        if (directStepSummaries.isNotEmpty()) {
+            return directStepSummaries.joinToString("\n").take(3000)
+        }
+        return "Completed ($outcome)"
     }
 
     private fun postFailureNotification(jobName: String, errorMessage: String) {
@@ -724,6 +1039,8 @@ class CronJobWorker(
         const val KEY_JOB_MODE = "cron_job_mode"
         const val KEY_MANUAL = "cron_job_manual"
         const val KEY_SCHEDULED_AT_MS = "cron_job_scheduled_at_ms"
+        const val KEY_ALARM_RECEIVED_AT_MS = "cron_job_alarm_received_at_ms"
+        const val KEY_TRIGGER_SOURCE = "cron_job_trigger_source"
         const val KEY_IS_BACKUP = "cron_job_is_backup"
         const val CHANNEL_ID = "rikkahub_cron_jobs"
         private const val WAKE_NOTIFICATION_ID = Int.MAX_VALUE - 102

@@ -123,13 +123,15 @@ class ChatVM(
     // MCP管理器
     val mcpManager = chatService.mcpManager
 
-    // 更新设置
-    fun updateSettings(newSettings: Settings): Job {
+    // 更新设置（事务式读改写，避免旧快照覆盖并发修改）
+    fun updateSettings(transform: (Settings) -> Settings): Job {
         return viewModelScope.launch {
-            val oldSettings = settings.value
-            // 检查用户头像是否有变化，如果有则删除旧头像
-            checkUserAvatarDelete(oldSettings, newSettings)
-            settingsStore.update(newSettings)
+            settingsStore.update { oldSettings ->
+                val newSettings = transform(oldSettings)
+                // 检查用户头像是否有变化，如果有则删除旧头像
+                checkUserAvatarDelete(oldSettings, newSettings)
+                newSettings
+            }
         }
     }
 
@@ -322,7 +324,7 @@ class ChatVM(
     fun generateTitle(conversation: Conversation, force: Boolean = false) {
         viewModelScope.launch {
             val conversationFull = conversationRepo.getConversationById(conversation.id) ?: return@launch
-            chatService.generateTitle(_conversationId, conversationFull, force)
+            chatService.generateTitle(conversationFull.id, conversationFull, force)
         }
     }
 

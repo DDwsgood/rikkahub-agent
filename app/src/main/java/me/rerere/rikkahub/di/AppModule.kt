@@ -42,8 +42,10 @@ val appModule = module {
 
     single { ScheduledJobRepository(get<me.rerere.rikkahub.data.db.AppDatabase>().scheduledJobDao()) }
     single { me.rerere.rikkahub.data.repository.ScheduledJobRunRepository(get<me.rerere.rikkahub.data.db.AppDatabase>().scheduledJobRunDao()) }
+    single { me.rerere.rikkahub.data.preferences.ScheduleDeliveryPreferences(get()) }
+    single { me.rerere.rikkahub.service.ScheduleRunDiagnosticsStore(get()) }
     single { me.rerere.rikkahub.service.DirectModeActionRunner(get()) }
-    single { CronJobScheduler(get(), get(), get()) }
+    single { CronJobScheduler(get(), get(), get(), get()) }
     single { SshHostRepository(get<me.rerere.rikkahub.data.db.AppDatabase>().sshHostDao()) }
     single { TelegramChatRepository(get<me.rerere.rikkahub.data.db.AppDatabase>().telegramChatDao()) }
     single { TelegramBotPreferences(get()) }

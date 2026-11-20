@@ -133,8 +133,8 @@ const COLOR_THEME_OPTIONS: Array<{
 ];
 
 const LANGUAGE_OPTIONS = [
-  { value: "zh-CN", label: "简体中文" },
-  { value: "en-US", label: "English" },
+  { value: "zh-CN", labelKey: "language_zh_cn" },
+  { value: "en-US", labelKey: "language_en_us" },
 ] as const;
 
 type ConversationListItem =
@@ -142,7 +142,7 @@ type ConversationListItem =
   | { type: "date-header"; date: string; label: string }
   | { type: "item"; conversation: ConversationListDto };
 
-function getDateLabel(date: dayjs.Dayjs, t: TFunction): string {
+function getDateLabel(date: dayjs.Dayjs, t: TFunction, locale: string): string {
   const today = dayjs().startOf("day");
   const yesterday = today.subtract(1, "day");
 
@@ -151,7 +151,7 @@ function getDateLabel(date: dayjs.Dayjs, t: TFunction): string {
 
   const native = date.toDate();
   const sameYear = date.year() === today.year();
-  const formatter = new Intl.DateTimeFormat(undefined, {
+  const formatter = new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
     ...(sameYear ? {} : { year: "numeric" }),
@@ -162,6 +162,7 @@ function getDateLabel(date: dayjs.Dayjs, t: TFunction): string {
 function groupConversations(
   conversations: ConversationListDto[],
   t: TFunction,
+  locale: string,
 ): ConversationListItem[] {
   const items: ConversationListItem[] = [];
   const pinned = conversations.filter((c) => c.isPinned);
@@ -179,7 +180,7 @@ function groupConversations(
     const date = dayjs(c.updateAt).startOf("day");
     const dateKey = date.format("YYYY-MM-DD");
     if (dateKey !== lastDate) {
-      items.push({ type: "date-header", date: dateKey, label: getDateLabel(date, t) });
+      items.push({ type: "date-header", date: dateKey, label: getDateLabel(date, t, locale) });
       lastDate = dateKey;
     }
     items.push({ type: "item", conversation: c });
@@ -561,10 +562,11 @@ function resolveLanguage(language: string): (typeof LANGUAGE_OPTIONS)[number]["v
 }
 
 function LanguageSwitcher() {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const currentLanguage = resolveLanguage(i18n.resolvedLanguage ?? i18n.language);
   const currentOption =
     LANGUAGE_OPTIONS.find((option) => option.value === currentLanguage) ?? LANGUAGE_OPTIONS[0];
+  const currentOptionLabel = t(`conversation_sidebar.${currentOption.labelKey}`);
 
   return (
     <DropdownMenu>
@@ -574,14 +576,14 @@ function LanguageSwitcher() {
           size="icon-sm"
           className="text-foreground"
           type="button"
-          aria-label={`Language: ${currentOption.label}`}
-          title={`Language: ${currentOption.label}`}
+          aria-label={t("conversation_sidebar.language_label", { label: currentOptionLabel })}
+          title={t("conversation_sidebar.language_label", { label: currentOptionLabel })}
         >
           <Languages className="size-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-40" side="top" align="end">
-        <DropdownMenuLabel>Language</DropdownMenuLabel>
+        <DropdownMenuLabel>{t("conversation_sidebar.language")}</DropdownMenuLabel>
         {LANGUAGE_OPTIONS.map((option) => {
           const selected = option.value === currentLanguage;
           return (
@@ -591,7 +593,7 @@ function LanguageSwitcher() {
                 void i18n.changeLanguage(option.value);
               }}
             >
-              <span className="flex-1">{option.label}</span>
+              <span className="flex-1">{t(`conversation_sidebar.${option.labelKey}`)}</span>
               <Check className={selected ? "size-4" : "size-4 opacity-0"} />
             </DropdownMenuItem>
           );
@@ -816,8 +818,8 @@ export const ConversationSidebar = React.memo(
     );
 
     const groupedItems = React.useMemo(
-      () => groupConversations(conversations, t),
-      [conversations, i18n.resolvedLanguage, t],
+      () => groupConversations(conversations, t, i18n.resolvedLanguage ?? i18n.language),
+      [conversations, i18n.resolvedLanguage, i18n.language, t],
     );
 
     const filteredAssistants = React.useMemo(() => {
@@ -856,7 +858,7 @@ export const ConversationSidebar = React.memo(
           setSwitchingAssistantId(null);
         }
       },
-      [currentAssistantId, onAssistantChange],
+      [currentAssistantId, onAssistantChange, t],
     );
 
     const handleBackToTop = React.useCallback(() => {
@@ -867,9 +869,9 @@ export const ConversationSidebar = React.memo(
 
     const handleWebLogout = React.useCallback(() => {
       clearWebAuthToken();
-      toast.success("Web session cleared");
+      toast.success(t("conversation_sidebar.web_session_cleared"));
       window.location.reload();
-    }, []);
+    }, [t]);
 
     React.useEffect(() => {
       const scrollContainer = document.getElementById("conversationScrollTarget");
@@ -1135,8 +1137,8 @@ export const ConversationSidebar = React.memo(
                 className="text-foreground"
                 type="button"
                 onClick={handleWebLogout}
-                aria-label="Clear web session"
-                title="Clear web session"
+                aria-label={t("conversation_sidebar.clear_web_session")}
+                title={t("conversation_sidebar.clear_web_session")}
               >
                 <LogOut className="size-4" />
               </Button>

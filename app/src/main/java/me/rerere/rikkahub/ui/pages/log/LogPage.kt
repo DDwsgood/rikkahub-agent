@@ -59,7 +59,7 @@ fun LogPage() {
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
-                title = { Text("Logs") },
+                title = { Text(stringResource(R.string.log_page_title)) },
                 navigationIcon = { BackButton() },
                 actions = {
                     IconButton(
@@ -219,7 +219,7 @@ private fun RequestLogCard(log: LogEntry.RequestLog, onClick: () -> Unit) {
             ) {
                 log.responseCode?.let { code ->
                     Text(
-                        text = "Status: $code",
+                        text = stringResource(R.string.log_page_status, code),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (code in 200..299) {
                             MaterialTheme.colorScheme.primary
@@ -239,7 +239,7 @@ private fun RequestLogCard(log: LogEntry.RequestLog, onClick: () -> Unit) {
 
             log.error?.let { error ->
                 Text(
-                    text = "Error: $error",
+                    text = stringResource(R.string.log_page_error, error),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -260,39 +260,39 @@ private fun RequestLogDetail(log: LogEntry.RequestLog) {
         ) {
             item {
                 Text(
-                    text = "Request Details",
+                    text = stringResource(R.string.log_page_request_details),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
             }
 
             item {
-                DetailSection("Time", dateFormat.format(Date(log.timestamp)))
+                DetailSection(stringResource(R.string.log_page_time), dateFormat.format(Date(log.timestamp)))
             }
 
             item {
-                DetailSection("URL", log.url)
+                DetailSection(stringResource(R.string.log_page_url), log.url)
             }
 
             item {
-                DetailSection("Method", log.method)
+                DetailSection(stringResource(R.string.log_page_method), log.method)
             }
 
             log.responseCode?.let { code ->
                 item {
-                    DetailSection("Status Code", code.toString())
+                    DetailSection(stringResource(R.string.log_page_status_code), code.toString())
                 }
             }
 
             log.durationMs?.let { duration ->
                 item {
-                    DetailSection("Duration", "${duration}ms")
+                    DetailSection(stringResource(R.string.log_page_duration), "${duration}ms")
                 }
             }
 
             log.error?.let { error ->
                 item {
-                    DetailSection("Error", error)
+                    DetailSection(stringResource(R.string.log_page_error_label), error)
                 }
             }
 
@@ -300,7 +300,7 @@ private fun RequestLogDetail(log: LogEntry.RequestLog) {
                 item {
                     HorizontalDivider()
                     Text(
-                        text = "Request Headers",
+                        text = stringResource(R.string.log_page_request_headers),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(top = 8.dp)
@@ -317,7 +317,7 @@ private fun RequestLogDetail(log: LogEntry.RequestLog) {
                 item {
                     HorizontalDivider()
                     Text(
-                        text = "Request Body",
+                        text = stringResource(R.string.log_page_request_body),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(top = 8.dp)
@@ -345,7 +345,7 @@ private fun RequestLogDetail(log: LogEntry.RequestLog) {
                 item {
                     HorizontalDivider()
                     Text(
-                        text = "Response Headers",
+                        text = stringResource(R.string.log_page_response_headers),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(top = 8.dp)

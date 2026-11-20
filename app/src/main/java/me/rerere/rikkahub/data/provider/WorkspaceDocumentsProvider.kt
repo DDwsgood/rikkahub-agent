@@ -3,34 +3,47 @@ package me.rerere.rikkahub.data.provider
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.os.CancellationSignal
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
+import android.os.Process
+import android.os.ProxyFileDescriptorCallback
+import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import android.provider.DocumentsContract.Root
 import android.provider.DocumentsProvider
+import android.system.ErrnoException
+import android.system.OsConstants
 import android.webkit.MimeTypeMap
 import kotlinx.coroutines.runBlocking
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.workspace.WorkspaceManager
+import me.rerere.workspace.WorkspaceSafeFiles
 import org.koin.core.context.GlobalContext
 import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.channels.SeekableByteChannel
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
+import java.nio.file.OpenOption
+import java.nio.file.StandardOpenOption
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 通过 Storage Access Framework 将 workspace 的 files 目录暴露给系统文件管理器。
  *
- * 目录结构：
- * ```
- * <root>
- * └── {workspace name}        <- 每个 workspace（虚拟目录，对应 files/ 目录）
- *     └── ...                 <- files/ 目录下的实际文件
- * ```
- *
- * documentId 设计：
- * - 顶层根：[ROOT_DOC_ID]
- * - workspace 根目录：`ws/{root}`（root 为 workspace 在磁盘上的目录名，即 UUID）
- * - workspace 内文件：`ws/{root}/{相对 files/ 的路径}`
+ * 所有文件操作均从不受 PRoot 工作区控制的顶层 `workspacesBaseDir` 出发，沿
+ * `SecureDirectoryStream` 句柄链逐段校验（`openat` / `renameat` / `unlinkat` +
+ * `O_NOFOLLOW`），并通过 [StorageManager.openProxyFileDescriptor] 将同一句柄链打开的
+ * [SeekableByteChannel] 直接暴露给调用方，杜绝父目录替换造成的路径逃逸。
  */
 class WorkspaceDocumentsProvider : DocumentsProvider() {
 
@@ -75,7 +88,23 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
                 add(Document.COLUMN_LAST_MODIFIED, null)
             }
         } else {
-            addFileRow(cursor, target.root, resolveFile(target.root, target.relPath))
+            val baseDir = checkedBaseDir()
+            val segments = WorkspaceSafeFiles.parseRelativeSegments(target.relPath)
+            val attrs = WorkspaceSafeFiles.statEntryNoFollow(
+                root = baseDir,
+                relPath = baseRelPath(target.root, segments),
+                displayPath = documentId,
+            )
+            val displayName = if (segments.isEmpty()) workspaceName(target.root) else segments.last()
+            addEntryRow(
+                cursor = cursor,
+                root = target.root,
+                relPath = segments.joinToString("/"),
+                displayName = displayName,
+                isDir = attrs.isDirectory,
+                sizeBytes = if (attrs.isRegularFile) attrs.size() else 0L,
+                lastModifiedMs = attrs.lastModifiedTime().toMillis(),
+            )
         }
         return cursor
     }
@@ -87,20 +116,48 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
     ): Cursor {
         val cursor = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION)
         val parent = parseDocId(parentDocumentId)
+        val baseDir = checkedBaseDir()
         if (parent.isRoot) {
-            // 顶层：列出所有 workspace
             for (ws in allWorkspaces()) {
-                val dir = manager().filesDir(ws.root).also { it.mkdirs() }
-                addFileRow(cursor, ws.root, dir)
+                runCatching {
+                    manager().ensureWorkspace(ws.root)
+                    val attrs = WorkspaceSafeFiles.statEntryNoFollow(
+                        root = baseDir,
+                        relPath = baseRelPath(ws.root, emptyList()),
+                    )
+                    if (attrs.isDirectory) {
+                        addEntryRow(
+                            cursor = cursor,
+                            root = ws.root,
+                            relPath = "",
+                            displayName = ws.name,
+                            isDir = true,
+                            sizeBytes = 0L,
+                            lastModifiedMs = attrs.lastModifiedTime().toMillis(),
+                        )
+                    }
+                }
             }
         } else {
-            val dir = resolveFile(parent.root, parent.relPath)
-            if (dir.isDirectory) {
-                dir.listFiles()
-                    .orEmpty()
-                    .filter { !it.name.startsWith(".l2s.") }
-                    .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
-                    .forEach { addFileRow(cursor, parent.root, it) }
+            val parentSegments = WorkspaceSafeFiles.parseRelativeSegments(parent.relPath)
+            val entries = WorkspaceSafeFiles.listDirNoFollow(
+                root = baseDir,
+                relPath = baseRelPath(parent.root, parentSegments),
+            )
+            for (entry in entries) {
+                if (entry.name.startsWith(".l2s.")) continue
+                // Never expose symbolic links through SAF.
+                if (entry.isSymbolicLink) continue
+                val childRel = (parentSegments + entry.name).joinToString("/")
+                addEntryRow(
+                    cursor = cursor,
+                    root = parent.root,
+                    relPath = childRel,
+                    displayName = entry.name,
+                    isDir = entry.isDirectory,
+                    sizeBytes = entry.sizeBytes,
+                    lastModifiedMs = entry.lastModifiedMs,
+                )
             }
         }
         return cursor
@@ -111,10 +168,37 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         mode: String,
         signal: CancellationSignal?,
     ): ParcelFileDescriptor {
+        val ctx = context ?: throw FileNotFoundException("Provider context unavailable")
         val target = parseDocId(documentId)
-        require(!target.isRoot) { "Cannot open root as a document" }
-        val file = resolveFile(target.root, target.relPath)
-        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.parseMode(mode))
+        require(!target.isRoot && target.relPath.isNotEmpty()) { "Cannot open root as a document" }
+        val baseDir = checkedBaseDir()
+        val opened = try {
+            openWorkspaceChannel(baseDir, target.root, target.relPath, mode)
+        } catch (e: FileNotFoundException) {
+            throw e
+        } catch (e: NoSuchFileException) {
+            throw FileNotFoundException("Document not found: $documentId").apply { initCause(e) }
+        } catch (e: IllegalArgumentException) {
+            throw FileNotFoundException(e.message ?: "Refused to open document").apply { initCause(e) }
+        } catch (e: IOException) {
+            throw FileNotFoundException("Failed to open document safely: ${e.message}").apply { initCause(e) }
+        }
+
+        val storageManager = ctx.getSystemService(StorageManager::class.java)
+            ?: run {
+                runCatching { opened.channel.close() }
+                throw FileNotFoundException("StorageManager unavailable")
+            }
+        return try {
+            storageManager.openProxyFileDescriptor(
+                opened.pfdAccessMode,
+                ChannelProxyFileDescriptorCallback(opened.channel, opened.appendOnly),
+                proxyHandler,
+            )
+        } catch (t: Throwable) {
+            runCatching { opened.channel.close() }
+            throw FileNotFoundException("Failed to wrap safe channel: ${t.message}").apply { initCause(t) }
+        }
     }
 
     override fun createDocument(
@@ -125,36 +209,49 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         val parent = parseDocId(parentDocumentId)
         require(!parent.isRoot) { "Cannot create document at root" }
         manager().ensureWorkspace(parent.root)
-        val parentDir = resolveFile(parent.root, parent.relPath)
-        require(parentDir.isDirectory) { "Parent is not a directory" }
-        val target = uniqueChild(parentDir, displayName)
-        if (mimeType == Document.MIME_TYPE_DIR) {
-            require(target.mkdir()) { "Failed to create directory: $displayName" }
-        } else {
-            require(target.createNewFile()) { "Failed to create file: $displayName" }
-        }
+        val baseDir = checkedBaseDir()
+        val createdRel = createWorkspaceDocument(
+            baseDir = baseDir,
+            root = parent.root,
+            parentRelPath = parent.relPath,
+            isDir = mimeType == Document.MIME_TYPE_DIR,
+            displayName = displayName,
+        )
         notifyChange(parentDocumentId)
-        return buildDocId(parent.root, relPathOf(parent.root, target))
+        return buildDocId(parent.root, createdRel)
     }
 
     override fun deleteDocument(documentId: String) {
         val target = parseDocId(documentId)
         require(!target.isRoot && target.relPath.isNotEmpty()) { "Cannot delete this document" }
-        val file = resolveFile(target.root, target.relPath)
-        val ok = if (file.isDirectory) file.deleteRecursively() else file.delete()
+        val baseDir = checkedBaseDir()
+        val segments = WorkspaceSafeFiles.parseRelativeSegments(target.relPath)
+        require(segments.isNotEmpty()) { "Cannot delete workspace root" }
+        val ok = WorkspaceSafeFiles.deleteChildInRootNoFollow(
+            root = baseDir,
+            relPath = baseRelPath(target.root, segments),
+            recursive = true,
+        )
         require(ok) { "Failed to delete: $documentId" }
-        notifyChange(buildDocId(target.root, target.relPath.substringBeforeLast('/', "")))
+        notifyChange(buildDocId(target.root, segments.dropLast(1).joinToString("/")))
     }
 
     override fun renameDocument(documentId: String, displayName: String): String {
         val target = parseDocId(documentId)
         require(!target.isRoot && target.relPath.isNotEmpty()) { "Cannot rename this document" }
-        val file = resolveFile(target.root, target.relPath)
-        val dest = File(file.parentFile, displayName.replace('/', '_'))
-        require(!dest.exists()) { "Target already exists: $displayName" }
-        require(file.renameTo(dest)) { "Failed to rename: $documentId" }
-        notifyChange(buildDocId(target.root, target.relPath.substringBeforeLast('/', "")))
-        return buildDocId(target.root, relPathOf(target.root, dest))
+        val baseDir = checkedBaseDir()
+        val safeName = sanitizeSegment(displayName)
+        val srcSegments = WorkspaceSafeFiles.parseRelativeSegments(target.relPath)
+        require(srcSegments.isNotEmpty()) { "Cannot rename workspace root" }
+        val dstSegments = srcSegments.dropLast(1) + safeName
+        WorkspaceSafeFiles.moveNoFollow(
+            root = baseDir,
+            sourceRelPath = baseRelPath(target.root, srcSegments),
+            targetRelPath = baseRelPath(target.root, dstSegments),
+            overwrite = false,
+        )
+        notifyChange(buildDocId(target.root, srcSegments.dropLast(1).joinToString("/")))
+        return buildDocId(target.root, dstSegments.joinToString("/"))
     }
 
     override fun copyDocument(sourceDocumentId: String, targetParentDocumentId: String): String {
@@ -162,17 +259,16 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         val targetParent = parseDocId(targetParentDocumentId)
         require(!source.isRoot && source.relPath.isNotEmpty()) { "Cannot copy this document" }
         require(!targetParent.isRoot) { "Cannot copy to root" }
-        val srcFile = resolveFile(source.root, source.relPath)
-        val destDir = resolveFile(targetParent.root, targetParent.relPath)
-        require(destDir.isDirectory) { "Target is not a directory" }
-        val dest = uniqueChild(destDir, srcFile.name)
-        // 防止把目录复制到自身内部
-        require(!dest.canonicalPath.startsWith(srcFile.canonicalPath + File.separator)) {
-            "Cannot copy a directory into itself"
-        }
-        require(srcFile.copyRecursively(dest)) { "Failed to copy: $sourceDocumentId" }
+        val baseDir = checkedBaseDir()
+        val copiedRel = copyWorkspaceDocument(
+            baseDir = baseDir,
+            srcRoot = source.root,
+            srcRelPath = source.relPath,
+            dstRoot = targetParent.root,
+            dstParentRelPath = targetParent.relPath,
+        )
         notifyChange(targetParentDocumentId)
-        return buildDocId(targetParent.root, relPathOf(targetParent.root, dest))
+        return buildDocId(targetParent.root, copiedRel)
     }
 
     override fun moveDocument(
@@ -184,49 +280,73 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         val targetParent = parseDocId(targetParentDocumentId)
         require(!source.isRoot && source.relPath.isNotEmpty()) { "Cannot move this document" }
         require(!targetParent.isRoot) { "Cannot move to root" }
-        val srcFile = resolveFile(source.root, source.relPath)
-        val destDir = resolveFile(targetParent.root, targetParent.relPath)
-        require(destDir.isDirectory) { "Target is not a directory" }
-        val dest = uniqueChild(destDir, srcFile.name)
-        // 防止把目录移动到自身内部
-        require(!dest.canonicalPath.startsWith(srcFile.canonicalPath + File.separator)) {
-            "Cannot move a directory into itself"
-        }
-        if (!srcFile.renameTo(dest)) {
-            // 所有 workspace 都在应用私有目录下，renameTo 一般可行；失败则回退为复制+删除
-            require(srcFile.copyRecursively(dest)) { "Failed to move: $sourceDocumentId" }
-            require(if (srcFile.isDirectory) srcFile.deleteRecursively() else srcFile.delete()) {
-                "Failed to remove source after move: $sourceDocumentId"
-            }
-        }
-        notifyChange(buildDocId(source.root, source.relPath.substringBeforeLast('/', "")))
+        val baseDir = checkedBaseDir()
+        val srcSegments = WorkspaceSafeFiles.parseRelativeSegments(source.relPath)
+        require(srcSegments.isNotEmpty()) { "Cannot move workspace root" }
+
+        val finalRel = moveWorkspaceDocument(
+            baseDir = baseDir,
+            srcRoot = source.root,
+            srcRelPath = source.relPath,
+            dstRoot = targetParent.root,
+            dstParentRelPath = targetParent.relPath,
+        )
+
+        notifyChange(buildDocId(source.root, srcSegments.dropLast(1).joinToString("/")))
         notifyChange(targetParentDocumentId)
-        return buildDocId(targetParent.root, relPathOf(targetParent.root, dest))
+        return buildDocId(targetParent.root, finalRel)
     }
 
     override fun getDocumentType(documentId: String): String {
         val target = parseDocId(documentId)
         if (target.isRoot) return Document.MIME_TYPE_DIR
-        return mimeOf(resolveFile(target.root, target.relPath))
+        val baseDir = checkedBaseDir()
+        val segments = WorkspaceSafeFiles.parseRelativeSegments(target.relPath)
+        val attrs = WorkspaceSafeFiles.statEntryNoFollow(
+            root = baseDir,
+            relPath = baseRelPath(target.root, segments),
+            displayPath = documentId,
+        )
+        return if (attrs.isDirectory) Document.MIME_TYPE_DIR else mimeOfName(segments.lastOrNull().orEmpty())
     }
 
     override fun isChildDocument(parentDocumentId: String, documentId: String): Boolean {
-        val parent = parseDocId(parentDocumentId)
-        val child = parseDocId(documentId)
+        val parent = runCatching { parseDocId(parentDocumentId) }.getOrNull() ?: return false
+        val child = runCatching { parseDocId(documentId) }.getOrNull() ?: return false
         if (child.isRoot) return false
         if (parent.isRoot) return true
         if (parent.root != child.root) return false
-        if (parent.relPath.isEmpty()) return true
-        return child.relPath == parent.relPath || child.relPath.startsWith(parent.relPath + "/")
+        val baseDir = runCatching { checkedBaseDir() }.getOrNull() ?: return false
+        val parentSegs = runCatching { WorkspaceSafeFiles.parseRelativeSegments(parent.relPath) }.getOrNull() ?: return false
+        val childSegs = runCatching { WorkspaceSafeFiles.parseRelativeSegments(child.relPath) }.getOrNull() ?: return false
+        if (childSegs.size < parentSegs.size) return false
+        if (childSegs.subList(0, parentSegs.size) != parentSegs) return false
+        // Confirm neither parent nor child traverses any symlink.
+        return runCatching {
+            WorkspaceSafeFiles.statEntryNoFollow(baseDir, baseRelPath(parent.root, parentSegs))
+            WorkspaceSafeFiles.statEntryNoFollow(baseDir, baseRelPath(child.root, childSegs))
+            true
+        }.getOrDefault(false)
     }
 
     // --- helpers ---
 
-    private fun addFileRow(cursor: MatrixCursor, root: String, file: File) {
-        val relPath = relPathOf(root, file)
-        val isDir = file.isDirectory
+    private fun checkedBaseDir(): File {
+        val baseDir = manager().workspacesBaseDir
+        WorkspaceSafeFiles.requireRealDirNoSymlink(baseDir)
+        return baseDir
+    }
+
+    private fun addEntryRow(
+        cursor: MatrixCursor,
+        root: String,
+        relPath: String,
+        displayName: String,
+        isDir: Boolean,
+        sizeBytes: Long,
+        lastModifiedMs: Long,
+    ) {
         val flags = when {
-            // workspace 根目录：仅允许在其内部创建文件，不能删除/重命名 workspace 本身
             relPath.isEmpty() -> Document.FLAG_DIR_SUPPORTS_CREATE
             isDir -> Document.FLAG_DIR_SUPPORTS_CREATE or
                 Document.FLAG_SUPPORTS_DELETE or Document.FLAG_SUPPORTS_RENAME or
@@ -237,54 +357,19 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         }
         cursor.newRow().apply {
             add(Document.COLUMN_DOCUMENT_ID, buildDocId(root, relPath))
-            add(Document.COLUMN_DISPLAY_NAME, if (relPath.isEmpty()) workspaceName(root) else file.name)
-            add(Document.COLUMN_MIME_TYPE, if (isDir) Document.MIME_TYPE_DIR else mimeOf(file))
+            add(Document.COLUMN_DISPLAY_NAME, displayName)
+            add(Document.COLUMN_MIME_TYPE, if (isDir) Document.MIME_TYPE_DIR else mimeOfName(displayName))
             add(Document.COLUMN_FLAGS, flags)
-            add(Document.COLUMN_SIZE, if (isDir) null else file.length())
-            add(Document.COLUMN_LAST_MODIFIED, file.lastModified())
+            add(Document.COLUMN_SIZE, if (isDir) null else sizeBytes)
+            add(Document.COLUMN_LAST_MODIFIED, lastModifiedMs)
         }
     }
 
-    private fun mimeOf(file: File): String {
-        if (file.isDirectory) return Document.MIME_TYPE_DIR
-        val ext = file.extension.lowercase()
+    private fun mimeOfName(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
         return ext.takeIf { it.isNotEmpty() }
             ?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
             ?: "application/octet-stream"
-    }
-
-    private fun uniqueChild(parent: File, name: String): File {
-        val safe = name.replace('/', '_').ifBlank { "untitled" }
-        var candidate = File(parent, safe)
-        if (!candidate.exists()) return candidate
-        val stem = candidate.nameWithoutExtension
-        val ext = candidate.extension.let { if (it.isNotEmpty()) ".$it" else "" }
-        var n = 1
-        do {
-            candidate = File(parent, "$stem ($n)$ext")
-            n++
-        } while (candidate.exists())
-        return candidate
-    }
-
-    /** 将 workspace files 目录下的文件解析为相对路径（root 自身返回空串） */
-    private fun relPathOf(root: String, file: File): String {
-        val base = manager().filesDir(root).canonicalFile
-        return file.canonicalFile.relativeTo(base).path.replace(File.separatorChar, '/')
-    }
-
-    /** 解析 documentId 指向的实际文件，并校验路径不逃逸 workspace files 目录 */
-    private fun resolveFile(root: String, relPath: String): File {
-        val base = manager().filesDir(root).canonicalFile
-        base.mkdirs()
-        val normalized = relPath.trim().trimStart('/')
-        require(!normalized.contains('\u0000')) { "Path contains invalid character" }
-        if (normalized.isEmpty()) return base
-        val target = File(base, normalized).canonicalFile
-        require(target.path == base.path || target.path.startsWith(base.path + File.separator)) {
-            "Path escapes workspace root: $relPath"
-        }
-        return target
     }
 
     private fun parseDocId(documentId: String): DocId {
@@ -298,27 +383,15 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         return DocId(isRoot = false, root = root, relPath = relPath)
     }
 
-    /**
-     * Validate the workspace [root] segment parsed from an UNTRUSTED documentId (this provider
-     * is reachable by other apps via SAF) before it reaches [WorkspaceManager.filesDir], which
-     * resolves it as File(baseDir, root). Without this a crafted documentId like
-     * "ws/../databases/..." makes filesDir() escape the workspaces base directory; the relPath
-     * guard in [resolveFile] only constrains relPath and anchors to whatever base the root
-     * produced, so it cannot catch a malicious root. Reject any path-significant character and
-     * require the root to name a real workspace.
-     */
     private fun requireValidRoot(root: String) {
         require(
             root.isNotBlank() &&
                 root != "." && root != ".." &&
                 !root.contains('/') && !root.contains('\\') &&
-                !root.contains("..") && !root.contains(' ')
+                !root.contains("..") && !root.contains('\u0000')
         ) { "Invalid workspace root" }
         require(allWorkspaces().any { it.root == root }) { "Unknown workspace: $root" }
     }
-
-    private fun buildDocId(root: String, relPath: String): String =
-        if (relPath.isEmpty()) "$DOC_PREFIX$root" else "$DOC_PREFIX$root/$relPath"
 
     private fun notifyChange(parentDocumentId: String) {
         val ctx = context ?: return
@@ -329,16 +402,321 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         ctx.contentResolver.notifyChange(uri, null)
     }
 
+    private fun buildDocId(root: String, relPath: String): String =
+        if (relPath.isEmpty()) "$DOC_PREFIX$root" else "$DOC_PREFIX$root/$relPath"
+
     private data class DocId(
         val isRoot: Boolean,
         val root: String,
         val relPath: String,
     )
 
+    internal data class OpenedSafChannel(
+        val channel: SeekableByteChannel,
+        val pfdAccessMode: Int,
+        val appendOnly: Boolean,
+    )
+
+    /**
+     * Bridges a pinned [SeekableByteChannel] (opened via `SecureDirectoryStream.newByteChannel`
+     * with `O_NOFOLLOW`) directly to a [ParcelFileDescriptor] via [StorageManager.openProxyFileDescriptor].
+     */
+    internal class ChannelProxyFileDescriptorCallback(
+        private val channel: SeekableByteChannel,
+        private val appendOnly: Boolean,
+    ) : ProxyFileDescriptorCallback() {
+
+        @Throws(ErrnoException::class)
+        override fun onGetSize(): Long = synchronized(channel) {
+            try {
+                channel.size()
+            } catch (e: IOException) {
+                throw ErrnoException("onGetSize", OsConstants.EIO, e)
+            }
+        }
+
+        @Throws(ErrnoException::class)
+        override fun onRead(offset: Long, size: Int, data: ByteArray): Int = synchronized(channel) {
+            if (size <= 0) return 0
+            try {
+                if (offset >= channel.size()) return 0
+                channel.position(offset)
+                val buf = ByteBuffer.wrap(data, 0, size)
+                var total = 0
+                while (buf.hasRemaining()) {
+                    val n = channel.read(buf)
+                    if (n < 0) break
+                    total += n
+                }
+                total
+            } catch (e: IOException) {
+                throw ErrnoException("onRead", OsConstants.EIO, e)
+            }
+        }
+
+        @Throws(ErrnoException::class)
+        override fun onWrite(offset: Long, size: Int, data: ByteArray): Int = synchronized(channel) {
+            if (size <= 0) return 0
+            try {
+                val targetOffset = if (appendOnly) channel.size() else offset
+                channel.position(targetOffset)
+                val buf = ByteBuffer.wrap(data, 0, size)
+                var total = 0
+                while (buf.hasRemaining()) {
+                    val n = channel.write(buf)
+                    if (n <= 0) break
+                    total += n
+                }
+                total
+            } catch (e: IOException) {
+                throw ErrnoException("onWrite", OsConstants.EIO, e)
+            }
+        }
+
+        @Throws(ErrnoException::class)
+        override fun onFsync() = synchronized(channel) {
+            try {
+                (channel as? FileChannel)?.force(true)
+                Unit
+            } catch (e: IOException) {
+                throw ErrnoException("onFsync", OsConstants.EIO, e)
+            }
+        }
+
+        override fun onRelease() {
+            synchronized(channel) {
+                runCatching { channel.close() }
+            }
+        }
+    }
+
     companion object {
-        private const val ROOT_ID = "rikkahub_workspaces"
-        private const val ROOT_DOC_ID = "root"
-        private const val DOC_PREFIX = "ws/"
+        const val ROOT_ID = "rikkahub_workspaces"
+        const val ROOT_DOC_ID = "root"
+        const val DOC_PREFIX = "ws/"
+        private const val FILES_DIR = "files"
+
+        private val createLocks = ConcurrentHashMap<String, Any>()
+        private fun createLockFor(root: String): Any = createLocks.computeIfAbsent(root) { Any() }
+
+        private val proxyHandler: Handler by lazy {
+            val thread = HandlerThread("WorkspaceSafProxy", Process.THREAD_PRIORITY_BACKGROUND).apply {
+                isDaemon = true
+                start()
+            }
+            Handler(thread.looper)
+        }
+
+        fun buildWorkspaceDocumentId(workspaceRoot: String): String = "$DOC_PREFIX$workspaceRoot"
+
+        internal fun baseRelPath(root: String, relSegments: List<String>): String =
+            (listOf(root, FILES_DIR) + relSegments).joinToString("/")
+
+        internal fun sanitizeSegment(name: String): String {
+            val cleaned = name
+                .replace('\u0000', '_')
+                .replace('/', '_')
+                .replace('\\', '_')
+                .trim()
+            require(cleaned.isNotEmpty() && cleaned != "." && cleaned != "..") {
+                "Invalid document name: $name"
+            }
+            return cleaned
+        }
+
+        /**
+         * Parses a SAF open mode string (`r`, `w`, `wt`, `wa`, `rw`, `rwt`, `rwa`) into
+         * [ParcelFileDescriptor] access mode bits + NIO [OpenOption] set.
+         */
+        internal fun parseSafOpenMode(mode: String): Triple<Int, Set<OpenOption>, Boolean> {
+            val normalized = mode.trim().lowercase()
+            require(normalized.isNotEmpty() && normalized.all { it in "rwta" }) {
+                "Invalid open mode: $mode"
+            }
+            val hasR = 'r' in normalized
+            val hasW = 'w' in normalized
+            val hasT = 't' in normalized
+            val hasA = 'a' in normalized
+            require(hasR || hasW) { "Open mode must include 'r' or 'w': $mode" }
+            require(!(hasT && hasA)) { "Open mode cannot combine truncate and append: $mode" }
+
+            val accessMode = when {
+                hasR && hasW -> ParcelFileDescriptor.MODE_READ_WRITE
+                hasW -> ParcelFileDescriptor.MODE_WRITE_ONLY
+                else -> ParcelFileDescriptor.MODE_READ_ONLY
+            }
+            val options = mutableSetOf<OpenOption>(LinkOption.NOFOLLOW_LINKS)
+            if (hasR) options += StandardOpenOption.READ
+            if (hasW) {
+                options += StandardOpenOption.WRITE
+                options += StandardOpenOption.CREATE
+            }
+            if (hasT) options += StandardOpenOption.TRUNCATE_EXISTING
+            return Triple(accessMode, options, hasA)
+        }
+
+        /**
+         * Core SAF document opener: walks from uncontrolled [baseDir] through
+         * `[root, "files", ...dirSegments]` strictly via [WorkspaceSafeFiles.openChannelNoFollow].
+         * Exposed `internal` so JVM unit tests can exercise the exact SAF open chain.
+         */
+        internal fun openWorkspaceChannel(
+            baseDir: File,
+            root: String,
+            relPath: String,
+            mode: String,
+        ): OpenedSafChannel {
+            val segments = WorkspaceSafeFiles.parseRelativeSegments(relPath)
+            require(segments.isNotEmpty()) { "Cannot open workspace root as a document" }
+            val (accessMode, openOptions, appendOnly) = parseSafOpenMode(mode)
+            val dirSegments = listOf(root, FILES_DIR) + segments.dropLast(1)
+            val leaf = segments.last()
+            val channel = WorkspaceSafeFiles.openChannelNoFollow(
+                root = baseDir,
+                dirSegments = dirSegments,
+                leaf = leaf,
+                openOptions = openOptions,
+                createMissingDirs = false,
+                displayPath = "$root/$relPath",
+            )
+            return OpenedSafChannel(channel, accessMode, appendOnly)
+        }
+
+        /**
+         * Core SAF document/directory creator using pinned FD-relative creation (`renameat` for
+         * directories, `CREATE_NEW | NOFOLLOW_LINKS` for files) starting from uncontrolled [baseDir].
+         */
+        internal fun createWorkspaceDocument(
+            baseDir: File,
+            root: String,
+            parentRelPath: String,
+            isDir: Boolean,
+            displayName: String,
+        ): String {
+            val parentSegments = WorkspaceSafeFiles.parseRelativeSegments(parentRelPath)
+            val safeBaseName = runCatching { sanitizeSegment(displayName) }.getOrDefault("untitled")
+            val dotIdx = safeBaseName.lastIndexOf('.')
+            val stem = if (dotIdx > 0) safeBaseName.substring(0, dotIdx) else safeBaseName
+            val ext = if (dotIdx > 0) safeBaseName.substring(dotIdx) else ""
+
+            return synchronized(createLockFor(root)) {
+                WorkspaceSafeFiles.withPinnedDirAndRoot(
+                    root = baseDir,
+                    dirSegments = listOf(root, FILES_DIR) + parentSegments,
+                    createMissing = false,
+                ) { rootSds, rootPath, parentSds, dirPath, _ ->
+                    var attempt = 0
+                    while (attempt <= 10_000) {
+                        val candidateName = if (attempt == 0) safeBaseName else "$stem ($attempt)$ext"
+                        try {
+                            if (isDir) {
+                                WorkspaceSafeFiles.createDirectoryInPinnedDir(
+                                    rootSds = rootSds,
+                                    rootPath = rootPath,
+                                    parentSds = parentSds,
+                                    childName = candidateName,
+                                    failIfExists = true,
+                                )
+                            } else {
+                                val opts: Set<OpenOption> = setOf(
+                                    StandardOpenOption.CREATE_NEW,
+                                    StandardOpenOption.WRITE,
+                                    LinkOption.NOFOLLOW_LINKS,
+                                )
+                                parentSds.newByteChannel(dirPath.fileSystem.getPath(candidateName), opts).close()
+                            }
+                            return@withPinnedDirAndRoot (parentSegments + candidateName).joinToString("/")
+                        } catch (_: FileAlreadyExistsException) {
+                            attempt++
+                        }
+                    }
+                    throw IllegalStateException("Failed to allocate unique name for: $displayName")
+                }
+            }
+        }
+
+        private inline fun <T> withOrderedCreateLocks(firstRoot: String, secondRoot: String, block: () -> T): T {
+            if (firstRoot == secondRoot) {
+                return synchronized(createLockFor(firstRoot), block)
+            }
+            val (a, b) = if (firstRoot < secondRoot) firstRoot to secondRoot else secondRoot to firstRoot
+            return synchronized(createLockFor(a)) {
+                synchronized(createLockFor(b), block)
+            }
+        }
+
+        /**
+         * Core SAF document/directory mover for BOTH same-workspace and cross-workspace moves.
+         * Because every workspace lives under the same trusted [baseDir] volume, ALL moves use a
+         * single FD-relative atomic non-overwrite move ([WorkspaceSafeFiles.moveNoFollow] with
+         * `overwrite = false`, backed by kernel `renameat2(RENAME_NOREPLACE)` on Android) — never
+         * copy-then-delete.
+         */
+        internal fun moveWorkspaceDocument(
+            baseDir: File,
+            srcRoot: String,
+            srcRelPath: String,
+            dstRoot: String,
+            dstParentRelPath: String,
+        ): String {
+            val srcSegments = WorkspaceSafeFiles.parseRelativeSegments(srcRelPath)
+            require(srcSegments.isNotEmpty()) { "Cannot move workspace root" }
+            val dstParentSegments = WorkspaceSafeFiles.parseRelativeSegments(dstParentRelPath)
+            return withOrderedCreateLocks(srcRoot, dstRoot) {
+                val baseName = srcSegments.last()
+                val dotIdx = baseName.lastIndexOf('.')
+                val stem = if (dotIdx > 0) baseName.substring(0, dotIdx) else baseName
+                val ext = if (dotIdx > 0) baseName.substring(dotIdx) else ""
+                var attempt = 0
+                while (attempt <= 10_000) {
+                    val candidate = if (attempt == 0) baseName else "$stem ($attempt)$ext"
+                    val dstSegments = dstParentSegments + candidate
+                    try {
+                        WorkspaceSafeFiles.moveNoFollow(
+                            root = baseDir,
+                            sourceRelPath = baseRelPath(srcRoot, srcSegments),
+                            targetRelPath = baseRelPath(dstRoot, dstSegments),
+                            overwrite = false,
+                        )
+                        return@withOrderedCreateLocks dstSegments.joinToString("/")
+                    } catch (e: IllegalArgumentException) {
+                        if (e.message?.startsWith("Target already exists:") == true) {
+                            attempt++
+                        } else {
+                            throw e
+                        }
+                    }
+                }
+                throw IllegalStateException("Too many conflicting names for $baseName")
+            }
+        }
+
+        /**
+         * Core SAF document/directory copier pinned from uncontrolled [baseDir] via
+         * [WorkspaceSafeFiles.copyInRootNoFollow] with `fileKey()` cycle detection.
+         */
+        internal fun copyWorkspaceDocument(
+            baseDir: File,
+            srcRoot: String,
+            srcRelPath: String,
+            dstRoot: String,
+            dstParentRelPath: String,
+        ): String {
+            val srcSegments = WorkspaceSafeFiles.parseRelativeSegments(srcRelPath)
+            require(srcSegments.isNotEmpty()) { "Cannot copy workspace root" }
+            val dstParentSegments = WorkspaceSafeFiles.parseRelativeSegments(dstParentRelPath)
+            val createdName = synchronized(createLockFor(dstRoot)) {
+                WorkspaceSafeFiles.copyInRootNoFollow(
+                    srcRoot = baseDir,
+                    srcRelPath = baseRelPath(srcRoot, srcSegments),
+                    dstRoot = baseDir,
+                    dstParentRelPath = baseRelPath(dstRoot, dstParentSegments),
+                    requestedName = srcSegments.last(),
+                    allocateUniqueName = true,
+                )
+            }
+            return (dstParentSegments + createdName).joinToString("/")
+        }
 
         private val DEFAULT_ROOT_PROJECTION = arrayOf(
             Root.COLUMN_ROOT_ID,

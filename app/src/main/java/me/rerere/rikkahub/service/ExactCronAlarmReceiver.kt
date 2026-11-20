@@ -39,6 +39,7 @@ class ExactCronAlarmReceiver : BroadcastReceiver() {
         // building never depends on Room being ready in a cold-started process.
         val jobName = intent.getStringExtra(CronJobWorker.KEY_JOB_NAME)
         val jobMode = intent.getStringExtra(CronJobWorker.KEY_JOB_MODE)
+        val alarmReceivedAtMs = System.currentTimeMillis()
 
         val request = OneTimeWorkRequestBuilder<CronJobWorker>()
             .setInputData(
@@ -47,6 +48,8 @@ class ExactCronAlarmReceiver : BroadcastReceiver() {
                     .putString(CronJobWorker.KEY_JOB_NAME, jobName)
                     .putString(CronJobWorker.KEY_JOB_MODE, jobMode)
                     .putLong(CronJobWorker.KEY_SCHEDULED_AT_MS, scheduledAtMs)
+                    .putLong(CronJobWorker.KEY_ALARM_RECEIVED_AT_MS, alarmReceivedAtMs)
+                    .putString(CronJobWorker.KEY_TRIGGER_SOURCE, "exact_alarm")
                     .build()
             )
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)

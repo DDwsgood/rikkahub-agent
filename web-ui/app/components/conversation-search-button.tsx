@@ -48,7 +48,7 @@ function SnippetText({ snippet }: { snippet: string }) {
   return <>{parts}</>;
 }
 
-function formatRelativeTime(updateAt: number, t: (key: string) => string): string {
+function formatRelativeTime(updateAt: number, t: (key: string) => string, locale: string): string {
   const date = dayjs(updateAt);
   const today = dayjs().startOf("day");
   const yesterday = today.subtract(1, "day");
@@ -56,7 +56,7 @@ function formatRelativeTime(updateAt: number, t: (key: string) => string): strin
   if (date.isSame(yesterday, "day")) return t("conversation_sidebar.yesterday");
   const sameYear = date.year() === today.year();
   const native = date.toDate();
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
     ...(sameYear ? {} : { year: "numeric" }),
@@ -64,7 +64,8 @@ function formatRelativeTime(updateAt: number, t: (key: string) => string): strin
 }
 
 export function ConversationSearchButton({ onSelect }: ConversationSearchButtonProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.resolvedLanguage ?? i18n.language;
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [searching, setSearching] = React.useState(false);
@@ -189,7 +190,7 @@ export function ConversationSearchButton({ onSelect }: ConversationSearchButtonP
                         {item.title || t("conversation_search.unnamed_conversation")}
                       </span>
                       <span className="shrink-0 text-xs text-muted-foreground">
-                        {formatRelativeTime(item.updateAt, t)}
+                        {formatRelativeTime(item.updateAt, t, locale)}
                       </span>
                     </div>
                     <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">

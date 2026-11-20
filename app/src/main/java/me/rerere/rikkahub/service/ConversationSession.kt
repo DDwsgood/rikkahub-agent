@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.model.Conversation
 import java.util.concurrent.ConcurrentHashMap
@@ -27,6 +28,21 @@ class ConversationSession(
 ) {
     // 会话状态
     val state = MutableStateFlow(initial)
+
+    /**
+     * Explicit hydration marker: `false` until this session has been loaded from Room or
+     * explicitly created via `initializeConversation`/`saveConversation`. Prevents cold-session
+     * writes from assuming an empty persisted conversation uses the wrong global assistant.
+     */
+    @Volatile
+    var hydrated: Boolean = false
+
+    /**
+     * Serializes active `sendMessage` turn execution per conversation so even 3+ rapid sends
+     * (where an intermediate LAZY job is cancelled before starting and completes immediately)
+     * can never overlap with an earlier still-unwinding generation turn.
+     */
+    val sendExecutionMutex: Mutex = Mutex()
 
     // 原子引用计数
     private val refCount = AtomicInteger(0)
@@ -110,22 +126,24 @@ class ConversationSession(
     }
 
     fun setJob(job: Job?) {
-        // Atomic swap so two concurrent setJob callers can't race-write a stale job.
-        // The previous code (cancel() then assign) had a window where two writers could
-        // each read the prior value, A cancels old, B reads old (already cancelled,
-        // no-op), A writes newA, B writes newB → A's job is untracked but still running;
-        // getJob() returns B; stopGeneration only cancels B; A leaks until completion.
+        replaceJob(job)
+    }
+
+    /**
+     * Atomically swaps the active generation job to [job], cancels the displaced job, attaches
+     * the identity-checked completion hook, and returns the displaced previous job so callers
+     * can `join()` it outside any lock without two concurrent sends observing the same predecessor.
+     */
+    fun replaceJob(job: Job?): Job? {
         val previous = _generationJob.getAndUpdate { job }
         previous?.cancel()
-        // Identity-checked completion handler: only null the StateFlow if the value is
-        // STILL the same job we just set. Without this an out-of-order setJob(B) →
-        // A.invokeOnCompletion → clobber-B race could null out the live job.
         job?.invokeOnCompletion {
             _generationJob.compareAndSet(job, null)
             if (refCount.get() <= 0) {
                 scheduleIdleCheck()
             }
         }
+        return previous
     }
 
     fun getJob(): Job? = _generationJob.value

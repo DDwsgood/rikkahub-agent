@@ -438,6 +438,30 @@ class ConversationRepository(
         )
     }
 
+    /**
+     * Atomic single-column title update on an existing conversation row.
+     * Never inserts a deleted row and never rewrites `message_node` rows or attachments.
+     * When [onlyIfBlank] is true, only updates rows whose current title is blank.
+     * Returns `true` if a row was updated.
+     */
+    suspend fun updateConversationTitle(
+        conversationId: Uuid,
+        title: String,
+        onlyIfBlank: Boolean = false,
+    ): Boolean {
+        val idStr = conversationId.toString()
+        val affected = if (onlyIfBlank) {
+            conversationDAO.updateTitleIfBlank(idStr, title)
+        } else {
+            conversationDAO.updateTitle(idStr, title)
+        }
+        if (affected > 0) {
+            // Keep FTS title metadata in sync without touching message_node rows or attachments.
+            runCatching { messageFtsManager.updateConversationTitle(idStr, title) }
+        }
+        return affected > 0
+    }
+
     private fun conversationSummaryToConversation(entity: LightConversationEntity): Conversation {
         return Conversation(
             id = Uuid.parse(entity.id),

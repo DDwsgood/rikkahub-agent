@@ -320,7 +320,7 @@ private fun ProviderConfigureOpenAI(
 
     OutlinedTextField(
         value = provider.name,
-        onValueChange = { onEdit(provider.copy(name = it.trim())) },
+        onValueChange = { onEdit(provider.copy(name = it)) },
         label = { Text(stringResource(R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
     )
@@ -432,12 +432,45 @@ private fun OpenRouterRoutingSection(
     fun listToText(list: List<String>) = list.joinToString(", ")
     fun textToList(text: String) = text.split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
+    // Keep raw text buffers while typing so trailing commas / spaces are not stripped on every keystroke.
+    var orderText by remember { mutableStateOf(listToText(routing.order)) }
+    var onlyText by remember { mutableStateOf(listToText(routing.only)) }
+    var ignoreText by remember { mutableStateOf(listToText(routing.ignore)) }
+    var fallbackText by remember { mutableStateOf(listToText(routing.fallbackModels)) }
+    var quantizationsText by remember { mutableStateOf(listToText(routing.quantizations)) }
+
+    androidx.compose.runtime.LaunchedEffect(routing.order) {
+        if (textToList(orderText) != routing.order) orderText = listToText(routing.order)
+    }
+    androidx.compose.runtime.LaunchedEffect(routing.only) {
+        if (textToList(onlyText) != routing.only) onlyText = listToText(routing.only)
+    }
+    androidx.compose.runtime.LaunchedEffect(routing.ignore) {
+        if (textToList(ignoreText) != routing.ignore) ignoreText = listToText(routing.ignore)
+    }
+    androidx.compose.runtime.LaunchedEffect(routing.fallbackModels) {
+        if (textToList(fallbackText) != routing.fallbackModels) fallbackText = listToText(routing.fallbackModels)
+    }
+    androidx.compose.runtime.LaunchedEffect(routing.quantizations) {
+        if (textToList(quantizationsText) != routing.quantizations) {
+            quantizationsText = listToText(routing.quantizations)
+        }
+    }
+
     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-    Text("OpenRouter routing", style = MaterialTheme.typography.titleSmall)
+    Text(
+        stringResource(R.string.provider_openrouter_routing),
+        style = MaterialTheme.typography.titleSmall,
+    )
 
     // Sort
     val sortOptions = listOf(null, "price", "throughput", "latency")
-    val sortLabels = listOf("Auto", "Price", "Throughput", "Latency")
+    val sortLabels = listOf(
+        stringResource(R.string.provider_openrouter_sort_auto),
+        stringResource(R.string.provider_openrouter_sort_price),
+        stringResource(R.string.provider_openrouter_sort_throughput),
+        stringResource(R.string.provider_openrouter_sort_latency),
+    )
     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
         sortOptions.forEachIndexed { index, option ->
             SegmentedButton(
@@ -464,48 +497,63 @@ private fun OpenRouterRoutingSection(
     }
 
     OutlinedTextField(
-        value = listToText(routing.order),
-        onValueChange = { onChange(routing.copy(order = textToList(it))) },
-        label = { Text("Provider order (slugs, comma-separated)") },
+        value = orderText,
+        onValueChange = {
+            orderText = it
+            onChange(routing.copy(order = textToList(it)))
+        },
+        label = { Text(stringResource(R.string.provider_openrouter_order_label)) },
         placeholder = { Text("anthropic, google-vertex") },
         modifier = Modifier.fillMaxWidth(),
     )
     OutlinedTextField(
-        value = listToText(routing.only),
-        onValueChange = { onChange(routing.copy(only = textToList(it))) },
-        label = { Text("Only these providers") },
+        value = onlyText,
+        onValueChange = {
+            onlyText = it
+            onChange(routing.copy(only = textToList(it)))
+        },
+        label = { Text(stringResource(R.string.provider_openrouter_only_label)) },
         modifier = Modifier.fillMaxWidth(),
     )
     OutlinedTextField(
-        value = listToText(routing.ignore),
-        onValueChange = { onChange(routing.copy(ignore = textToList(it))) },
-        label = { Text("Ignore these providers") },
+        value = ignoreText,
+        onValueChange = {
+            ignoreText = it
+            onChange(routing.copy(ignore = textToList(it)))
+        },
+        label = { Text(stringResource(R.string.provider_openrouter_ignore_label)) },
         modifier = Modifier.fillMaxWidth(),
     )
     OutlinedTextField(
-        value = listToText(routing.fallbackModels),
-        onValueChange = { onChange(routing.copy(fallbackModels = textToList(it))) },
-        label = { Text("Fallback models (ids, comma-separated)") },
+        value = fallbackText,
+        onValueChange = {
+            fallbackText = it
+            onChange(routing.copy(fallbackModels = textToList(it)))
+        },
+        label = { Text(stringResource(R.string.provider_openrouter_fallback_label)) },
         placeholder = { Text("anthropic/claude-sonnet-4.5, deepseek/deepseek-chat") },
-        supportingText = { Text("Tried in order when the primary model is down, rate-limited, or refuses") },
+        supportingText = { Text(stringResource(R.string.provider_openrouter_fallback_desc)) },
         modifier = Modifier.fillMaxWidth(),
     )
 
-    RoutingToggle("Allow fallbacks beyond the list", routing.allowFallbacks) {
+    RoutingToggle(stringResource(R.string.provider_openrouter_allow_fallbacks), routing.allowFallbacks) {
         onChange(routing.copy(allowFallbacks = it))
     }
-    RoutingToggle("Require providers to support all parameters", routing.requireParameters) {
+    RoutingToggle(stringResource(R.string.provider_openrouter_require_parameters), routing.requireParameters) {
         onChange(routing.copy(requireParameters = it))
     }
-    RoutingToggle("Block data-collecting providers", routing.dataCollection == "deny") {
+    RoutingToggle(
+        stringResource(R.string.provider_openrouter_block_data_collection),
+        routing.dataCollection == "deny",
+    ) {
         onChange(routing.copy(dataCollection = if (it) "deny" else null))
     }
-    RoutingToggle("Zero Data Retention only", routing.zdr) {
+    RoutingToggle(stringResource(R.string.provider_openrouter_zdr), routing.zdr) {
         onChange(routing.copy(zdr = it))
     }
 
     Text(
-        "Max price (USD per 1M tokens). Leave empty or tap the clear icon for no price limit.",
+        stringResource(R.string.provider_openrouter_max_price_desc),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -520,7 +568,7 @@ private fun OpenRouterRoutingSection(
                 promptPriceText = it
                 onChange(routing.copy(maxPricePrompt = it.toDoubleOrNull()))
             },
-            label = { Text("Max $/1M prompt") },
+            label = { Text(stringResource(R.string.provider_openrouter_max_price_prompt)) },
             singleLine = true,
             trailingIcon = {
                 if (promptPriceText.isNotEmpty()) {
@@ -528,7 +576,7 @@ private fun OpenRouterRoutingSection(
                         promptPriceText = ""
                         onChange(routing.copy(maxPricePrompt = null))
                     }) {
-                        Icon(HugeIcons.Cancel01, contentDescription = "Clear")
+                        Icon(HugeIcons.Cancel01, contentDescription = stringResource(R.string.clear))
                     }
                 }
             },
@@ -540,7 +588,7 @@ private fun OpenRouterRoutingSection(
                 completionPriceText = it
                 onChange(routing.copy(maxPriceCompletion = it.toDoubleOrNull()))
             },
-            label = { Text("Max $/1M completion") },
+            label = { Text(stringResource(R.string.provider_openrouter_max_price_completion)) },
             singleLine = true,
             trailingIcon = {
                 if (completionPriceText.isNotEmpty()) {
@@ -548,7 +596,7 @@ private fun OpenRouterRoutingSection(
                         completionPriceText = ""
                         onChange(routing.copy(maxPriceCompletion = null))
                     }) {
-                        Icon(HugeIcons.Cancel01, contentDescription = "Clear")
+                        Icon(HugeIcons.Cancel01, contentDescription = stringResource(R.string.clear))
                     }
                 }
             },
@@ -557,9 +605,12 @@ private fun OpenRouterRoutingSection(
     }
 
     OutlinedTextField(
-        value = listToText(routing.quantizations),
-        onValueChange = { onChange(routing.copy(quantizations = textToList(it))) },
-        label = { Text("Quantizations (e.g. fp8, fp16)") },
+        value = quantizationsText,
+        onValueChange = {
+            quantizationsText = it
+            onChange(routing.copy(quantizations = textToList(it)))
+        },
+        label = { Text(stringResource(R.string.provider_openrouter_quantizations)) },
         modifier = Modifier.fillMaxWidth(),
     )
 }
@@ -585,7 +636,7 @@ private fun ProviderConfigureClaude(
 
     OutlinedTextField(
         value = provider.name,
-        onValueChange = { onEdit(provider.copy(name = it.trim())) },
+        onValueChange = { onEdit(provider.copy(name = it)) },
         label = { Text(stringResource(R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
         maxLines = 3,
@@ -687,9 +738,15 @@ private fun ProviderConfigureGoogle(
                     privateKey = json["private_key"]?.jsonPrimitive?.contentOrNull?.ifEmpty { null } ?: provider.privateKey,
                 )
             )
-            toaster.show("Service account imported", type = ToastType.Success)
+            toaster.show(
+                context.getString(R.string.provider_service_account_imported),
+                type = ToastType.Success,
+            )
         } catch (e: Exception) {
-            toaster.show("Failed to import: ${e.message}", type = ToastType.Error)
+            toaster.show(
+                context.getString(R.string.provider_service_account_import_failed, e.message ?: "?"),
+                type = ToastType.Error,
+            )
         }
     }
 
@@ -697,7 +754,7 @@ private fun ProviderConfigureGoogle(
 
     OutlinedTextField(
         value = provider.name,
-        onValueChange = { onEdit(provider.copy(name = it.trim())) },
+        onValueChange = { onEdit(provider.copy(name = it)) },
         label = { Text(stringResource(R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
     )
@@ -729,7 +786,7 @@ private fun ProviderConfigureGoogle(
                 !provider.baseUrl.isValidBaseUrl() || !provider.baseUrl.endsWith("/v1beta")
                 ),
             supportingText = if (!provider.baseUrl.endsWith("/v1beta")) {
-                { Text("The base URL usually ends with `/v1beta`") }
+                { Text(stringResource(R.string.provider_base_url_hint)) }
             } else null,
         )
     }
@@ -839,7 +896,7 @@ private fun ColumnScope.ProviderConfigureAICore(
 
     OutlinedTextField(
         value = provider.name,
-        onValueChange = { onEdit(provider.copy(name = it.trim())) },
+        onValueChange = { onEdit(provider.copy(name = it)) },
         label = { Text(stringResource(id = R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
         maxLines = 3,
@@ -920,7 +977,7 @@ private fun ColumnScope.ProviderConfigureLiteRT(
 
     OutlinedTextField(
         value = provider.name,
-        onValueChange = { onEdit(provider.copy(name = it.trim())) },
+        onValueChange = { onEdit(provider.copy(name = it)) },
         label = { Text(stringResource(id = R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
         maxLines = 3,
@@ -1162,8 +1219,7 @@ private fun ColumnScope.ProviderConfigureLlamaCpp(
                 if (nameIndex >= 0) cursor.getString(nameIndex) else null
             } else null
         } ?: uri.lastPathSegment ?: "model.gguf"
-        val inputStream = context.contentResolver.openInputStream(uri) ?: return@rememberLauncherForActivityResult
-        vm.installPickedFile(inputStream, fileName)
+        vm.installPickedFile(uri, fileName)
     }
 
     provider.description()
@@ -1178,7 +1234,7 @@ private fun ColumnScope.ProviderConfigureLlamaCpp(
 
     OutlinedTextField(
         value = provider.name,
-        onValueChange = { onEdit(provider.copy(name = it.trim())) },
+        onValueChange = { onEdit(provider.copy(name = it)) },
         label = { Text(stringResource(id = R.string.setting_provider_page_name)) },
         modifier = Modifier.fillMaxWidth(),
         maxLines = 3,

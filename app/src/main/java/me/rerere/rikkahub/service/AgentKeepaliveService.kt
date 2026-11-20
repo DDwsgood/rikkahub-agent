@@ -12,62 +12,151 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
+import me.rerere.rikkahub.data.preferences.ScheduleDeliveryPreferences
 
 /**
  * Optional user-enabled keep-alive foreground service (Termux-style): a low-importance
- * ongoing notification + a partial WakeLock that keep the process foreground-priority so
- * scheduled jobs and their exact alarms are far more likely to survive OEM-aggressive
- * background killers (ColorOS / MIUI / EMUI).
+ * ongoing notification + optional opt-in bounded partial WakeLock that keep the process
+ * foreground-priority so scheduled jobs and their exact alarms are more likely to survive
+ * OEM-aggressive background killers (ColorOS / MIUI / EMUI).
  *
- * This is a mitigation, not a guarantee — force-stop and OEM task-kill still win; the
- * alarm/boot/widget revive paths remain the real recovery chain.
- *
- * Coordination with [TelegramBotService]: when the bot is already running, its own FGS
- * plus per-poll wakelocks already hold the process foreground, so we skip acquiring our
- * own always-on WakeLock (it would be pure battery cost). The keepalive FGS still runs
- * alongside — FGS requires a posted notification, so the two services each show their
- * own low-importance ongoing notification; when the bot later stops, this service keeps
- * the coverage gap-free.
+ * WakeLock management is driven by a single serialized policy collector + renewal loop
+ * under [wakeLockMutex]:
+ * - Default (`keepaliveWakeLockEnabled == false`): FGS-only, zero screen-off CPU lock.
+ * - Opt-in (`keepaliveWakeLockEnabled == true`): acquires [WAKELOCK_CHUNK_MS] (30 min) and
+ *   unconditionally refreshes the timeout every [WAKELOCK_RENEW_INTERVAL_MS] (20 min) while
+ *   still opted in and TelegramBotService is not already holding coverage, preventing renewal gaps.
+ * - Turning off or service destruction immediately releases the lock under the same mutex.
  */
 class AgentKeepaliveService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val wakeLockMutex = Mutex()
+    private val wakeLockMonitor = Any()
+    private var destroyed: Boolean = false
     private var wakeLock: PowerManager.WakeLock? = null
-    private var wakeLockWatchdog: Job? = null
+    private var policyCollectorJob: Job? = null
+    private var renewalLoopJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        synchronized(wakeLockMonitor) {
+            destroyed = false
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_REFRESH_WAKELOCK) {
+            if (!isRunning) {
+                stopSelf(startId)
+                return START_NOT_STICKY
+            }
+            ensurePolicyCollectorStarted()
+            return START_STICKY
+        }
         try {
             startInForeground()
+            isRunning = true
         } catch (e: Throwable) {
-            // Android 12+: a sticky revive has no foreground "ticket", so startForeground()
-            // throws ForegroundServiceStartNotAllowedException (or SecurityException on
-            // Android 14+ if the FGS-type permission were missing). Same pattern as
-            // TelegramBotService — log loudly and stop instead of crashing.
             Log.e(TAG, "startForeground failed; service will not run", e)
+            isRunning = false
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        acquireWakeLockIfNeeded()
-        // START_STICKY: we WANT the OS to bring us back after an LMK kill — that's the
-        // whole point of the service. The try-catch above covers the A12+ sticky-revive
-        // case where the restart is allowed but promotion is denied.
+        ensurePolicyCollectorStarted()
         return START_STICKY
     }
 
+    /**
+     * Single serialized collector reacting immediately to `keepaliveWakeLockEnabled` changes
+     * without parallel refresh races.
+     */
+    private fun ensurePolicyCollectorStarted() {
+        if (policyCollectorJob?.isActive == true) return
+        policyCollectorJob = scope.launch {
+            val prefs = runCatching {
+                org.koin.core.context.GlobalContext.get().get<ScheduleDeliveryPreferences>()
+            }.getOrNull()
+            if (prefs == null) {
+                applyWakeLockPolicy(enabled = false)
+                return@launch
+            }
+            try {
+                prefs.flow
+                    .map { it.keepaliveWakeLockEnabled }
+                    .distinctUntilChanged()
+                    .collect { enabled ->
+                        applyWakeLockPolicy(enabled)
+                    }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                Log.w(TAG, "WakeLock policy collector failed; falling back to FGS-only", t)
+                applyWakeLockPolicy(enabled = false)
+            }
+        }
+    }
+
+    private suspend fun applyWakeLockPolicy(enabled: Boolean) {
+        wakeLockMutex.withLock {
+            renewalLoopJob?.cancel()
+            renewalLoopJob = null
+            if (!enabled) {
+                releaseWakeLockLocked()
+                Log.i(TAG, "Keepalive running in FGS-only mode (opt-in WakeLock disabled)")
+                return
+            }
+            refreshChunkLocked()
+            renewalLoopJob = scope.launch {
+                while (isActive) {
+                    delay(WAKELOCK_RENEW_INTERVAL_MS)
+                    wakeLockMutex.withLock {
+                        // Re-verify live opt-in policy before every renewal tick.
+                        val stillEnabled = runCatching {
+                            org.koin.core.context.GlobalContext.get()
+                                .get<ScheduleDeliveryPreferences>()
+                                .current()
+                                .keepaliveWakeLockEnabled
+                        }.getOrDefault(false)
+                        if (!stillEnabled) {
+                            releaseWakeLockLocked()
+                            return@launch
+                        }
+                        refreshChunkLocked()
+                    }
+                }
+            }
+        }
+    }
+
     override fun onDestroy() {
-        wakeLockWatchdog?.cancel()
-        releaseWakeLock()
+        isRunning = false
+        policyCollectorJob?.cancel()
+        renewalLoopJob?.cancel()
+        // Set `destroyed = true` and release under the EXACT SAME monitor that guards every
+        // acquire/refresh call, eliminating any race where an already-entered coroutine acquires
+        // the WakeLock after onDestroy() has released it.
+        synchronized(wakeLockMonitor) {
+            destroyed = true
+            runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -99,8 +188,6 @@ class AgentKeepaliveService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(contentIntent)
             .build()
-        // specialUse (declared in the manifest with a subtype property): no daily budget
-        // cap, the correct flavor for an indefinite user-requested keep-alive.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -109,58 +196,38 @@ class AgentKeepaliveService : Service() {
     }
 
     /**
-     * Acquire the partial WakeLock unless the Telegram bot's FGS is already holding the
-     * process foreground (see class KDoc — a second always-on lock would be redundant).
-     *
-     * The lock is acquired in [WAKELOCK_CHUNK_MS] chunks rather than forever: if our
-     * stop/release path ever fails (crash between acquire and onDestroy), the leak is
-     * bounded at 12 h instead of draining the battery until the next reboot. A lightweight
-     * watchdog coroutine re-arms the lock when a chunk expires while the service is still
-     * deliberately running, so coverage is continuous in practice.
+     * Caller MUST hold [wakeLockMutex]. Acquires or refreshes the non-reference-counted partial
+     * WakeLock to a fresh [WAKELOCK_CHUNK_MS] (30 min) window before the prior chunk expires,
+     * unless [TelegramBotService] is already running.
      */
-    private fun acquireWakeLockIfNeeded() {
+    private fun refreshChunkLocked() {
         if (TelegramBotService.isRunning) {
-            Log.i(TAG, "Telegram bot FGS already running — skipping keepalive wakelock")
-        } else {
-            lockWakeLock()
+            releaseWakeLockLocked()
+            return
         }
-        // The watchdog starts even when the bot currently owns the coverage: if the bot
-        // later stops while this service is still running, the watchdog picks the lock up
-        // and the transition stays gap-free.
-        if (wakeLockWatchdog?.isActive != true) {
-            wakeLockWatchdog = scope.launch {
-                while (true) {
-                    delay(WAKELOCK_WATCHDOG_INTERVAL_MS)
-                    // Re-acquire only when the previous chunk expired AND the Telegram bot
-                    // still isn't covering the process. If the bot started meanwhile we
-                    // release our lock so only one always-on holder remains.
-                    if (TelegramBotService.isRunning) {
-                        releaseWakeLock()
-                    } else {
-                        lockWakeLock()
-                    }
+        synchronized(wakeLockMonitor) {
+            if (destroyed) {
+                runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+                return
+            }
+            if (wakeLock == null) {
+                val pm = getSystemService(PowerManager::class.java) ?: return
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG).apply {
+                    setReferenceCounted(false)
                 }
             }
-        }
-    }
-
-    /** Creates the WakeLock on first use and acquires a fresh chunk when not held. */
-    private fun lockWakeLock() {
-        if (wakeLock == null) {
-            val pm = getSystemService(PowerManager::class.java) ?: return
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG).apply {
-                setReferenceCounted(false)
-            }
-        }
-        val lock = wakeLock ?: return
-        if (!lock.isHeld) {
+            val lock = wakeLock ?: return
+            // Calling acquire(timeout) on a non-reference-counted WakeLock resets the expiration
+            // timer seamlessly BEFORE the current 30-minute chunk expires (zero coverage gap).
             runCatching { lock.acquire(WAKELOCK_CHUNK_MS) }
-                .onFailure { Log.w(TAG, "wakelock acquire failed", it) }
+                .onFailure { Log.w(TAG, "wakelock acquire/refresh failed", it) }
         }
     }
 
-    private fun releaseWakeLock() {
-        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+    private fun releaseWakeLockLocked() {
+        synchronized(wakeLockMonitor) {
+            runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        }
     }
 
     companion object {
@@ -169,11 +236,18 @@ class AgentKeepaliveService : Service() {
         private const val NOTIF_ID = 0x4B31
         private const val WAKELOCK_TAG = "rikkahub:keepalive"
 
-        /** Per-acquire cap — see [acquireWakeLockIfNeeded]. */
-        private const val WAKELOCK_CHUNK_MS = 12L * 60 * 60_000L
+        /** Bounded per-acquire cap when opt-in WakeLock is enabled (30 min). */
+        private const val WAKELOCK_CHUNK_MS = 30L * 60_000L
 
-        /** How often the watchdog checks whether the lock needs re-arming. */
-        private const val WAKELOCK_WATCHDOG_INTERVAL_MS = 30L * 60_000L
+        /** Renew 10 minutes before chunk expiry so continuous coverage has zero gap. */
+        private const val WAKELOCK_RENEW_INTERVAL_MS = 20L * 60_000L
+
+        const val ACTION_REFRESH_WAKELOCK = "me.rerere.rikkahub.action.KEEPALIVE_REFRESH_WAKELOCK"
+
+        /** Process-local hint only (policy collector already reacts live via DataStore Flow). */
+        @Volatile
+        var isRunning: Boolean = false
+            private set
 
         fun start(context: Context) {
             val intent = Intent(context, AgentKeepaliveService::class.java)
@@ -181,6 +255,15 @@ class AgentKeepaliveService : Service() {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
+            }
+        }
+
+        fun refreshWakeLockIfRunning(context: Context) {
+            if (!isRunning) return
+            runCatching {
+                context.startService(
+                    Intent(context, AgentKeepaliveService::class.java).setAction(ACTION_REFRESH_WAKELOCK)
+                )
             }
         }
 

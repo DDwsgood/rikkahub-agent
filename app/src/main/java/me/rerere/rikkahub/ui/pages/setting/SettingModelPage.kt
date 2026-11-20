@@ -112,7 +112,7 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                 description = stringResource(R.string.setting_model_page_chat_model_desc),
                 modelId = settings.chatModelId,
                 providers = settings.providers,
-                onSelect = { vm.updateSettings(settings.copy(chatModelId = it.id)) },
+                onSelect = { model -> vm.updateSettings { it.copy(chatModelId = model.id) } },
             )
         }
         item {
@@ -121,7 +121,7 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                 description = stringResource(R.string.setting_model_page_fast_model_desc),
                 modelId = settings.fastModelId,
                 providers = settings.providers,
-                onSelect = { vm.updateSettings(settings.copy(fastModelId = it.id)) },
+                onSelect = { model -> vm.updateSettings { it.copy(fastModelId = model.id) } },
             )
         }
         item {
@@ -130,8 +130,8 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                 description = stringResource(R.string.setting_model_page_title_model_desc),
                 modelId = settings.titleModelId,
                 providers = settings.providers,
-                onSelect = { vm.updateSettings(settings.copy(titleModelId = it.id)) },
-                onClear = { vm.updateSettings(settings.copy(titleModelId = null)) },
+                onSelect = { model -> vm.updateSettings { it.copy(titleModelId = model.id) } },
+                onClear = { vm.updateSettings { it.copy(titleModelId = null) } },
             )
         }
         item {
@@ -146,7 +146,7 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                 description = stringResource(R.string.setting_model_page_translate_model_desc),
                 modelId = settings.translateModeId,
                 providers = settings.providers,
-                onSelect = { vm.updateSettings(settings.copy(translateModeId = it.id)) },
+                onSelect = { model -> vm.updateSettings { it.copy(translateModeId = model.id) } },
             )
         }
         item {
@@ -155,7 +155,7 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                 description = stringResource(R.string.setting_model_page_ocr_model_desc),
                 modelId = settings.ocrModelId,
                 providers = settings.providers,
-                onSelect = { vm.updateSettings(settings.copy(ocrModelId = it.id)) },
+                onSelect = { model -> vm.updateSettings { it.copy(ocrModelId = model.id) } },
             )
         }
         item {
@@ -164,7 +164,7 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                 description = stringResource(R.string.setting_model_page_compress_model_desc),
                 modelId = settings.compressModelId,
                 providers = settings.providers,
-                onSelect = { vm.updateSettings(settings.copy(compressModelId = it.id)) },
+                onSelect = { model -> vm.updateSettings { it.copy(compressModelId = model.id) } },
             )
         }
     }
@@ -189,8 +189,8 @@ private fun SuggestionModelSettingItem(
                 trailingContent = {
                     Switch(
                         checked = settings.enableSuggestion,
-                        onCheckedChange = {
-                            vm.updateSettings(settings.copy(enableSuggestion = it))
+                        onCheckedChange = { enabled ->
+                            vm.updateSettings { it.copy(enableSuggestion = enabled) }
                         }
                     )
                 },
@@ -214,7 +214,7 @@ private fun SuggestionModelSettingItem(
                             )
                             if (state.currentModel != null) {
                                 IconButton(
-                                    onClick = { vm.updateSettings(settings.copy(suggestionModelId = null)) },
+                                    onClick = { vm.updateSettings { it.copy(suggestionModelId = null) } },
                                     modifier = Modifier.size(20.dp),
                                 ) {
                                     Icon(HugeIcons.Cancel01, contentDescription = null, modifier = Modifier.size(14.dp))
@@ -239,7 +239,7 @@ private fun SuggestionModelSettingItem(
         )
     }
 
-    ModelListSheet(state = state, onSelect = { vm.updateSettings(settings.copy(suggestionModelId = it.id)) })
+    ModelListSheet(state = state, onSelect = { model -> vm.updateSettings { it.copy(suggestionModelId = model.id) } })
 }
 
 @Composable

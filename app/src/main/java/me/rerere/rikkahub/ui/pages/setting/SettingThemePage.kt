@@ -159,8 +159,8 @@ fun SettingThemePage(vm: SettingVM = koinViewModel()) {
                             PresetThemeButtonGroup(
                                 themeId = settings.themeId,
                                 modifier = Modifier.fillMaxWidth(),
-                                onChangeTheme = {
-                                    vm.updateSettings(settings.copy(themeId = it))
+                                onChangeTheme = { themeId ->
+                                    vm.updateSettings { it.copy(themeId = themeId) }
                                 }
                             )
                         }
@@ -224,7 +224,7 @@ fun SettingThemePage(vm: SettingVM = koinViewModel()) {
                         theme = theme,
                         isSelected = settings.themeId == theme.id,
                         onSelect = {
-                            vm.updateSettings(settings.copy(themeId = theme.id))
+                            vm.updateSettings { it.copy(themeId = theme.id) }
                         },
                         onExport = {
                             val json = themeJson.encodeToString(theme)
@@ -253,17 +253,18 @@ fun SettingThemePage(vm: SettingVM = koinViewModel()) {
             theme = editingTheme,
             onDismiss = { showEditSheet = false },
             onSave = { theme ->
-                val newThemes = if (editingTheme != null) {
-                    settings.customThemes.map { if (it.id == theme.id) theme else it }
-                } else {
-                    settings.customThemes + theme
-                }
-                vm.updateSettings(
-                    settings.copy(
+                val isEditing = editingTheme != null
+                vm.updateSettings { latest ->
+                    val newThemes = if (isEditing) {
+                        latest.customThemes.map { if (it.id == theme.id) theme else it }
+                    } else {
+                        latest.customThemes + theme
+                    }
+                    latest.copy(
                         customThemes = newThemes,
                         themeId = theme.id
                     )
-                )
+                }
                 showEditSheet = false
             }
         )
@@ -274,12 +275,12 @@ fun SettingThemePage(vm: SettingVM = koinViewModel()) {
             onDismiss = { showImportDialog = false },
             onImport = { theme ->
                 val importedTheme = theme.copy(id = Uuid.random().toString())
-                vm.updateSettings(
-                    settings.copy(
-                        customThemes = settings.customThemes + importedTheme,
+                vm.updateSettings { latest ->
+                    latest.copy(
+                        customThemes = latest.customThemes + importedTheme,
                         themeId = importedTheme.id
                     )
-                )
+                }
                 showImportDialog = false
                 toaster.show(importSuccessMsg, type = ToastType.Success)
             }
@@ -293,9 +294,12 @@ fun SettingThemePage(vm: SettingVM = koinViewModel()) {
         dismissText = stringResource(android.R.string.cancel),
         onConfirm = {
             deletingTheme?.let { theme ->
-                val newThemes = settings.customThemes.filter { it.id != theme.id }
-                val newThemeId = if (settings.themeId == theme.id) "sakura" else settings.themeId
-                vm.updateSettings(settings.copy(customThemes = newThemes, themeId = newThemeId))
+                val targetId = theme.id
+                vm.updateSettings { latest ->
+                    val newThemes = latest.customThemes.filter { it.id != targetId }
+                    val newThemeId = if (latest.themeId == targetId) "sakura" else latest.themeId
+                    latest.copy(customThemes = newThemes, themeId = newThemeId)
+                }
             }
             deletingTheme = null
         },
@@ -633,7 +637,7 @@ private fun ColorPickerRow(
             singleLine = true,
             isError = hslCodeError,
             supportingText = if (hslCodeError) {
-                { Text("Use hsl(267 36% 48%)") }
+                { Text(stringResource(R.string.setting_theme_page_hsl_invalid_hint)) }
             } else {
                 null
             },

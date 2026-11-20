@@ -10,6 +10,7 @@ import me.rerere.hugeicons.stroke.Tools
 import me.rerere.hugeicons.stroke.Share01
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.Cancel01
+import me.rerere.hugeicons.stroke.MoreVertical
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,6 +41,8 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FloatingToolbarDefaults.ScreenOffset
 import androidx.compose.material3.FloatingToolbarDefaults.floatingToolbarVerticalNestedScroll
@@ -70,6 +73,7 @@ import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -127,12 +131,15 @@ import me.rerere.rikkahub.ui.pages.setting.components.ProviderConnectionTester
 import me.rerere.rikkahub.ui.pages.setting.components.SettingProviderBalanceOption
 import me.rerere.rikkahub.ui.pages.setting.components.isUsingDefaultBaseUrl
 import me.rerere.rikkahub.ui.pages.setting.components.resetBaseUrlToDefault
+import me.rerere.locallm.LocalRuntime
+import me.rerere.rikkahub.ui.pages.setting.locallm.SettingLocalLlmViewModel
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.ui.theme.extendColors
 import me.rerere.rikkahub.utils.UiState
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
+import org.koin.core.parameter.parametersOf
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import kotlin.uuid.Uuid
@@ -147,24 +154,40 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
     val toaster = LocalToaster.current
     val context = LocalContext.current
 
-    val onEdit = { newProvider: ProviderSetting ->
-        val newSettings = settings.copy(
-            providers = settings.providers.map {
-                if (newProvider.id == it.id) {
-                    newProvider
-                } else {
-                    it
+    val onMutateProvider: ((ProviderSetting) -> ProviderSetting) -> Unit = { transform ->
+        vm.updateSettings { latest ->
+            latest.copy(
+                providers = latest.providers.map { existing ->
+                    if (existing.id == id) transform(existing) else existing
                 }
-            }
-        )
-        vm.updateSettings(newSettings)
+            )
+        }
     }
     val onDelete = {
-        val newSettings = settings.copy(
-            providers = settings.providers - provider
-        )
-        vm.updateSettings(newSettings)
+        val targetId = provider.id
+        val targetBuiltIn = provider.builtIn
+        vm.updateSettings { latest ->
+            latest.copy(
+                providers = latest.providers.filter { it.id != targetId },
+                deletedBuiltInProviderIds = if (targetBuiltIn) {
+                    latest.deletedBuiltInProviderIds + targetId
+                } else {
+                    latest.deletedBuiltInProviderIds
+                },
+            )
+        }
         navController.popBackStack()
+    }
+    var showDeleteProviderDialog by remember { mutableStateOf(false) }
+    // Hoist the config draft AND its baseline above HorizontalPager so switching to the Models
+    // tab never wipes unsaved edits AND saving applies only user-modified fields onto the live
+    // provider row inside DataStore (preserving concurrent model or background updates).
+    var draftBase by remember(provider.id) { mutableStateOf(provider) }
+    var configDraft by remember(provider.id) { mutableStateOf(provider) }
+    LaunchedEffect(provider.models) {
+        if (configDraft.models != provider.models) {
+            configDraft = configDraft.copyProvider(models = provider.models)
+        }
     }
 
     Scaffold(
@@ -197,8 +220,17 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                                 shareSheetState.show(provider)
                             }
                         ) {
-                            Icon(HugeIcons.Share01, null)
+                            Icon(HugeIcons.Share01, contentDescription = stringResource(R.string.share))
                         }
+                    }
+                    IconButton(
+                        onClick = { showDeleteProviderDialog = true }
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.Delete01,
+                            contentDescription = stringResource(R.string.delete),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
                     }
                 }
             )
@@ -240,15 +272,22 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                 0 -> {
                     SettingProviderConfigPage(
                         provider = provider,
-                        onEdit = {
-                            onEdit(it)
+                        draft = configDraft,
+                        onDraftChange = { configDraft = it },
+                        onEdit = { saved ->
+                            val baseline = draftBase
+                            configDraft = saved
+                            draftBase = saved
+                            onMutateProvider { latest ->
+                                mergeProviderConfigChanges(latest = latest, base = baseline, draft = saved)
+                            }
                             toaster.show(
                                 context.getString(R.string.setting_provider_page_save_success),
                                 type = ToastType.Success
                             )
                         },
                         onDelete = {
-                            onDelete()
+                            showDeleteProviderDialog = true
                         }
                     )
                 }
@@ -256,17 +295,56 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                 1 -> {
                     SettingProviderModelPage(
                         provider = provider,
-                        onEdit = onEdit
+                        onMutateProvider = onMutateProvider
                     )
                 }
             }
         }
+    }
+
+    if (showDeleteProviderDialog) {
+        val isOAuth = provider is ProviderSetting.Codex ||
+            provider is ProviderSetting.Grok ||
+            provider is ProviderSetting.GeminiOAuth
+        AlertDialog(
+            onDismissRequest = { showDeleteProviderDialog = false },
+            title = { Text(stringResource(R.string.setting_provider_delete_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        if (isOAuth) R.string.setting_provider_delete_oauth_note
+                        else R.string.setting_provider_delete_body,
+                        provider.name,
+                    )
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteProviderDialog = false }) {
+                    Text(stringResource(R.string.setting_provider_delete_cancel))
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteProviderDialog = false
+                        onDelete()
+                    }
+                ) {
+                    Text(
+                        text = stringResource(R.string.setting_provider_delete_confirm),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        )
     }
 }
 
 @Composable
 private fun SettingProviderConfigPage(
     provider: ProviderSetting,
+    draft: ProviderSetting,
+    onDraftChange: (ProviderSetting) -> Unit,
     onEdit: (ProviderSetting) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -291,8 +369,7 @@ private fun SettingProviderConfigPage(
         )
         return
     }
-    var internalProvider by remember(provider) { mutableStateOf(provider) }
-    var showDeleteDialog by remember { mutableStateOf(false) }
+    val internalProvider = draft
 
     Column(
         modifier = Modifier
@@ -304,16 +381,14 @@ private fun SettingProviderConfigPage(
     ) {
         ProviderConfigure(
             provider = internalProvider,
-            onEdit = {
-                internalProvider = it
-            }
+            onEdit = onDraftChange
         )
 
         if (internalProvider is ProviderSetting.OpenAI) {
             SettingProviderBalanceOption(
                 provider = internalProvider,
                 balanceOption = internalProvider.balanceOption,
-                onEdit = { internalProvider = internalProvider.copyProvider(balanceOption = it) }
+                onEdit = { onDraftChange(internalProvider.copyProvider(balanceOption = it)) }
             )
             ProviderBalanceText(providerSetting = provider, style = MaterialTheme.typography.labelSmall)
         }
@@ -329,19 +404,21 @@ private fun SettingProviderConfigPage(
 
             Spacer(Modifier.weight(1f))
 
-            if (!internalProvider.builtIn) {
-                IconButton(
-                    onClick = {
-                        showDeleteDialog = true
-                    },
-                ) {
-                    Icon(HugeIcons.Delete01, null)
-                }
+            IconButton(
+                onClick = {
+                    onDelete()
+                },
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Delete01,
+                    contentDescription = stringResource(R.string.delete),
+                    tint = MaterialTheme.colorScheme.error,
+                )
             }
 
             IconButton(
                 onClick = {
-                    internalProvider = internalProvider.resetBaseUrlToDefault()
+                    onDraftChange(internalProvider.resetBaseUrlToDefault())
                 },
                 enabled = !internalProvider.isUsingDefaultBaseUrl(),
             ) {
@@ -353,7 +430,14 @@ private fun SettingProviderConfigPage(
 
             Button(
                 onClick = {
-                    onEdit(internalProvider)
+                    val trimmedName = internalProvider.name.trim()
+                    val toSave = if (trimmedName.isNotEmpty()) {
+                        internalProvider.copyProvider(name = trimmedName)
+                    } else {
+                        internalProvider
+                    }
+                    onDraftChange(toSave)
+                    onEdit(toSave)
                 }
             ) {
                 Text(stringResource(R.string.setting_provider_page_save))
@@ -369,32 +453,124 @@ private fun SettingProviderConfigPage(
             )
         }
     }
+}
 
-    // Delete confirmation dialog
-    if (showDeleteDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
-            title = {
-                Text(stringResource(R.string.confirm_delete))
-            },
-            text = {
-                Text(stringResource(R.string.setting_provider_page_delete_dialog_text))
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showDeleteDialog = false
-                        onDelete()
-                    }
-                ) {
-                    Text(stringResource(R.string.delete))
-                }
-            }
+/**
+ * Field-level 3-way merge for provider config saves.
+ *
+ * Always preserves [latest.models] and applies ONLY fields the user actually changed between
+ * [base] (the snapshot when editing began / last saved) and [draft], so concurrent background
+ * updates (model additions/deletions, unrelated config tweaks) are never overwritten.
+ */
+internal fun mergeProviderConfigChanges(
+    latest: ProviderSetting,
+    base: ProviderSetting,
+    draft: ProviderSetting,
+): ProviderSetting {
+    if (draft::class != base::class) {
+        // Explicit provider-type conversion: keep latest models + builtIn flags intact.
+        return draft.copyProvider(
+            id = latest.id,
+            models = latest.models,
+            builtIn = latest.builtIn,
+            description = latest.description,
+            shortDescription = latest.shortDescription,
+        )
+    }
+    if (latest::class != base::class) {
+        // Underlying provider type changed concurrently; preserve latest rather than clobbering.
+        return latest
+    }
+    val mergedEnabled = if (draft.enabled != base.enabled) draft.enabled else latest.enabled
+    val mergedName = if (draft.name != base.name) draft.name else latest.name
+    val mergedBalance = if (draft.balanceOption != base.balanceOption) draft.balanceOption else latest.balanceOption
+
+    return when {
+        latest is ProviderSetting.OpenAI && base is ProviderSetting.OpenAI && draft is ProviderSetting.OpenAI ->
+            latest.copy(
+                enabled = mergedEnabled,
+                name = mergedName,
+                balanceOption = mergedBalance,
+                apiKey = if (draft.apiKey != base.apiKey) draft.apiKey else latest.apiKey,
+                baseUrl = if (draft.baseUrl != base.baseUrl) draft.baseUrl else latest.baseUrl,
+                chatCompletionsPath = if (draft.chatCompletionsPath != base.chatCompletionsPath) {
+                    draft.chatCompletionsPath
+                } else {
+                    latest.chatCompletionsPath
+                },
+                useResponseApi = if (draft.useResponseApi != base.useResponseApi) {
+                    draft.useResponseApi
+                } else {
+                    latest.useResponseApi
+                },
+                promptCaching = if (draft.promptCaching != base.promptCaching) {
+                    draft.promptCaching
+                } else {
+                    latest.promptCaching
+                },
+                includeHistoryReasoning = if (draft.includeHistoryReasoning != base.includeHistoryReasoning) {
+                    draft.includeHistoryReasoning
+                } else {
+                    latest.includeHistoryReasoning
+                },
+                routing = if (draft.routing != base.routing) draft.routing else latest.routing,
+            )
+
+        latest is ProviderSetting.Google && base is ProviderSetting.Google && draft is ProviderSetting.Google ->
+            latest.copy(
+                enabled = mergedEnabled,
+                name = mergedName,
+                balanceOption = mergedBalance,
+                apiKey = if (draft.apiKey != base.apiKey) draft.apiKey else latest.apiKey,
+                baseUrl = if (draft.baseUrl != base.baseUrl) draft.baseUrl else latest.baseUrl,
+                vertexAI = if (draft.vertexAI != base.vertexAI) draft.vertexAI else latest.vertexAI,
+                useServiceAccount = if (draft.useServiceAccount != base.useServiceAccount) {
+                    draft.useServiceAccount
+                } else {
+                    latest.useServiceAccount
+                },
+                privateKey = if (draft.privateKey != base.privateKey) draft.privateKey else latest.privateKey,
+                serviceAccountEmail = if (draft.serviceAccountEmail != base.serviceAccountEmail) {
+                    draft.serviceAccountEmail
+                } else {
+                    latest.serviceAccountEmail
+                },
+                location = if (draft.location != base.location) draft.location else latest.location,
+                projectId = if (draft.projectId != base.projectId) draft.projectId else latest.projectId,
+            )
+
+        latest is ProviderSetting.Claude && base is ProviderSetting.Claude && draft is ProviderSetting.Claude ->
+            latest.copy(
+                enabled = mergedEnabled,
+                name = mergedName,
+                balanceOption = mergedBalance,
+                apiKey = if (draft.apiKey != base.apiKey) draft.apiKey else latest.apiKey,
+                baseUrl = if (draft.baseUrl != base.baseUrl) draft.baseUrl else latest.baseUrl,
+                promptCaching = if (draft.promptCaching != base.promptCaching) {
+                    draft.promptCaching
+                } else {
+                    latest.promptCaching
+                },
+                promptCacheTtl = if (draft.promptCacheTtl != base.promptCacheTtl) {
+                    draft.promptCacheTtl
+                } else {
+                    latest.promptCacheTtl
+                },
+            )
+
+        latest is ProviderSetting.AICore && base is ProviderSetting.AICore && draft is ProviderSetting.AICore ->
+            latest.copy(
+                enabled = mergedEnabled,
+                name = mergedName,
+                balanceOption = mergedBalance,
+                releaseStage = if (draft.releaseStage != base.releaseStage) draft.releaseStage else latest.releaseStage,
+            )
+
+        else -> latest.copyProvider(
+            enabled = mergedEnabled,
+            name = mergedName,
+            balanceOption = mergedBalance,
+            models = latest.models,
         )
     }
 }
@@ -402,22 +578,39 @@ private fun SettingProviderConfigPage(
 @Composable
 private fun SettingProviderModelPage(
     provider: ProviderSetting,
-    onEdit: (ProviderSetting) -> Unit
+    onMutateProvider: ((ProviderSetting) -> ProviderSetting) -> Unit,
 ) {
     ModelList(
         providerSetting = provider,
-        onUpdateProvider = onEdit
+        onMutateProvider = onMutateProvider,
     )
 }
 
 @Composable
 private fun ModelList(
     providerSetting: ProviderSetting,
-    onUpdateProvider: (ProviderSetting) -> Unit
+    onMutateProvider: ((ProviderSetting) -> ProviderSetting) -> Unit,
 ) {
     val providerManager = koinInject<ProviderManager>()
     val toaster = LocalToaster.current
-    val modelList by produceState(emptyList(), providerSetting) {
+    val loadModelsFailedMsg = stringResource(R.string.setting_provider_detail_load_models_failed)
+    val localRuntime = when (providerSetting) {
+        is ProviderSetting.LiteRtLocal -> LocalRuntime.LiteRT
+        is ProviderSetting.LlamaCppLocal -> LocalRuntime.LlamaCpp
+        else -> null
+    }
+    val localLlmVm = localRuntime?.let { runtime ->
+        koinViewModel<SettingLocalLlmViewModel>(
+            key = "configure-${runtime.displayName}",
+            parameters = { parametersOf(runtime) },
+        )
+    }
+    // Key remote /models lookup on provider connection config without `models`, so adding,
+    // editing, deleting, or reordering local model entries never triggers redundant HTTP fetches.
+    val connectionKey = remember(providerSetting) {
+        providerSetting.copyProvider(models = emptyList())
+    }
+    val modelList by produceState(emptyList(), connectionKey) {
         runCatching {
             value = providerManager.getProviderByType(providerSetting)
                 .listModels(providerSetting)
@@ -433,7 +626,7 @@ private fun ModelList(
             // Surface real failures (missing/invalid API key, providers like
             // Minimax that return an HTTP 200 error envelope instead of a 4xx).
             toaster.show(
-                error.message ?: "Failed to load models",
+                error.message ?: loadModelsFailedMsg,
                 type = ToastType.Error
             )
         }
@@ -441,7 +634,18 @@ private fun ModelList(
     var expanded by rememberSaveable { mutableStateOf(true) }
     val lazyListState = rememberLazyListState()
     val reorderableLazyListState = rememberReorderableLazyListState(lazyListState) { from, to ->
-        onUpdateProvider(providerSetting.moveMove(from.index, to.index))
+        val models = providerSetting.models
+        if (from.index !in models.indices || to.index !in models.indices) {
+            return@rememberReorderableLazyListState
+        }
+        val movedId = models[from.index].id
+        val targetId = models[to.index].id
+        if (movedId == targetId) return@rememberReorderableLazyListState
+        onMutateProvider { latest ->
+            val fromIdx = latest.models.indexOfFirst { it.id == movedId }
+            val toIdx = latest.models.indexOfFirst { it.id == targetId }
+            if (fromIdx < 0 || toIdx < 0 || fromIdx == toIdx) latest else latest.moveMove(fromIdx, toIdx)
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -489,10 +693,17 @@ private fun ModelList(
                         ModelCard(
                             model = item,
                             onDelete = {
-                                onUpdateProvider(providerSetting.delModel(item))
+                                if (localLlmVm != null) {
+                                    localLlmVm.hideModelFromList(item.modelId)
+                                } else {
+                                    onMutateProvider { latest -> latest.delModel(item) }
+                                }
+                            },
+                            onDeleteWithFile = localLlmVm?.let { vm ->
+                                { vm.deleteModel(item.modelId) }
                             },
                             onEdit = { editedModel ->
-                                onUpdateProvider(providerSetting.editModel(editedModel))
+                                onMutateProvider { latest -> latest.editModel(editedModel) }
                             },
                             parentProvider = providerSetting,
                             modifier = Modifier
@@ -520,15 +731,15 @@ private fun ModelList(
             AddModelButton(
                 models = modelList,
                 selectedModels = providerSetting.models,
-                onAddModel = {
-                    onUpdateProvider(providerSetting.addModel(it))
+                onAddModel = { added ->
+                    onMutateProvider { latest -> latest.addModel(added) }
                 },
-                onRemoveModel = {
-                    onUpdateProvider(providerSetting.delModel(it))
+                onRemoveModel = { removed ->
+                    onMutateProvider { latest -> latest.delModel(removed) }
                 },
                 expanded = expanded,
                 parentProvider = providerSetting,
-                onUpdateProvider = onUpdateProvider
+                onMutateProvider = onMutateProvider,
             )
         }
     }
@@ -627,7 +838,7 @@ private fun ModelSettingsForm(
                         OutlinedTextField(
                             value = model.displayName,
                             onValueChange = {
-                                onModelChange(model.copy(displayName = it.trim()))
+                                onModelChange(model.copy(displayName = it))
                             },
                             label = { Text(stringResource(if (isEdit) R.string.setting_provider_page_model_name else R.string.setting_provider_page_model_display_name)) },
                             modifier = Modifier.fillMaxWidth(),
@@ -723,7 +934,7 @@ private fun AddModelButton(
     onAddModel: (Model) -> Unit,
     onRemoveModel: (Model) -> Unit,
     parentProvider: ProviderSetting,
-    onUpdateProvider: (ProviderSetting) -> Unit
+    onMutateProvider: ((ProviderSetting) -> ProviderSetting) -> Unit,
 ) {
     val dialogState = useEditState<Model> { onAddModel(it) }
     val scope = rememberCoroutineScope()
@@ -741,23 +952,23 @@ private fun AddModelButton(
             onModelDeselected = { model ->
                 onRemoveModel(model)
             },
-            onAllModelSelected = {
-                onUpdateProvider(
-                    parentProvider.copyProvider(
-                        models = parentProvider.models + it.filter { model ->
-                            parentProvider.models.none { existing -> existing.modelId == model.modelId }
+            onAllModelSelected = { selected ->
+                onMutateProvider { latest ->
+                    latest.copyProvider(
+                        models = latest.models + selected.filter { model ->
+                            latest.models.none { existing -> existing.modelId == model.modelId }
                         }.map { model -> model.enrichCapabilities() }
                     )
-                )
+                }
             },
             onAllModelDeselected = { filteredModels ->
-                onUpdateProvider(
-                    parentProvider.copyProvider(
-                        models = parentProvider.models.filter { model ->
+                onMutateProvider { latest ->
+                    latest.copyProvider(
+                        models = latest.models.filter { model ->
                             filteredModels.none { filtered -> filtered.modelId == model.modelId }
                         }
                     )
-                )
+                }
             }
         )
 
@@ -847,10 +1058,17 @@ private fun AddModelButton(
                         }
                         TextButton(
                             onClick = {
-                                if (modelState.modelId.isNotBlank() && modelState.displayName.isNotBlank()) {
+                                val trimmedId = modelState.modelId.trim()
+                                val trimmedName = modelState.displayName.trim()
+                                if (trimmedId.isNotEmpty() && trimmedName.isNotEmpty()) {
+                                    dialogState.currentState = modelState.copy(
+                                        modelId = trimmedId,
+                                        displayName = trimmedName,
+                                    )
                                     dialogState.confirm()
                                 }
                             },
+                            enabled = modelState.modelId.isNotBlank() && modelState.displayName.isNotBlank(),
                         ) {
                             Text(stringResource(R.string.setting_provider_page_add))
                         }
@@ -1180,15 +1398,91 @@ private fun ModelCard(
     model: Model,
     modifier: Modifier = Modifier,
     onDelete: () -> Unit,
+    onDeleteWithFile: (() -> Unit)? = null,
     onEdit: (Model) -> Unit,
     parentProvider: ProviderSetting
 ) {
     val dialogState = useEditState<Model> {
         onEdit(it)
     }
-    val swipeToDismissBoxState = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
+    val canDeleteModel = parentProvider !is ProviderSetting.AICore
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
+    if (showDeleteConfirm && canDeleteModel) {
+        val modelLabel = model.displayName.ifBlank { model.modelId }
+        if (onDeleteWithFile != null) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirm = false },
+                title = { Text(stringResource(R.string.setting_local_model_delete_title)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(stringResource(R.string.setting_local_model_delete_body, modelLabel))
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    showDeleteConfirm = false
+                                    dialogState.dismiss()
+                                    onDelete()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(stringResource(R.string.setting_local_model_remove_from_list))
+                            }
+                            TextButton(
+                                onClick = {
+                                    showDeleteConfirm = false
+                                    dialogState.dismiss()
+                                    onDeleteWithFile()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.setting_local_model_delete_with_file),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirm = false }) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                },
+            )
+        } else {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirm = false },
+                title = { Text(stringResource(R.string.setting_model_delete_title)) },
+                text = { Text(stringResource(R.string.setting_model_delete_body, modelLabel)) },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirm = false }) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showDeleteConfirm = false
+                            dialogState.dismiss()
+                            onDelete()
+                        }
+                    ) {
+                        Text(
+                            text = stringResource(R.string.delete),
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                },
+            )
+        }
+    }
 
     if (dialogState.isEditing) {
         dialogState.currentState?.let { editingModel ->
@@ -1221,7 +1515,7 @@ private fun ModelCard(
                             },
                             modifier = Modifier.align(Alignment.CenterStart)
                         ) {
-                            Icon(HugeIcons.Cancel01, null)
+                            Icon(HugeIcons.Cancel01, contentDescription = stringResource(R.string.cancel))
                         }
                         Text(
                             text = stringResource(R.string.setting_provider_page_edit_model),
@@ -1245,8 +1539,20 @@ private fun ModelCard(
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (canDeleteModel) {
+                            TextButton(
+                                onClick = { showDeleteConfirm = true },
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.delete),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
                         TextButton(
                             onClick = {
                                 dialogState.dismiss()
@@ -1256,10 +1562,13 @@ private fun ModelCard(
                         }
                         TextButton(
                             onClick = {
-                                if (editingModel.displayName.isNotBlank()) {
+                                val trimmedName = editingModel.displayName.trim()
+                                if (trimmedName.isNotEmpty()) {
+                                    dialogState.currentState = editingModel.copy(displayName = trimmedName)
                                     dialogState.confirm()
                                 }
                             },
+                            enabled = editingModel.displayName.isNotBlank(),
                         ) {
                             Text(stringResource(R.string.confirm))
                         }
@@ -1269,96 +1578,94 @@ private fun ModelCard(
         }
     }
 
-    SwipeToDismissBox(
-        state = swipeToDismissBoxState,
-        backgroundContent = {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = {
-                        scope.launch {
-                            swipeToDismissBoxState.reset()
-                        }
-                    }
-                ) {
-                    Icon(HugeIcons.Cancel01, null)
-                }
-                FilledIconButton(
-                    onClick = {
-                        scope.launch {
-                            onDelete()
-                            swipeToDismissBoxState.reset()
-                        }
-                    }
-                ) {
-                    Icon(
-                        HugeIcons.Delete01,
-                        contentDescription = stringResource(R.string.chat_page_delete)
-                    )
-                }
-            }
-        },
-        enableDismissFromStartToEnd = false,
-        gesturesEnabled = true,
-        modifier = modifier
+    OutlinedCard(
+        onClick = { dialogState.open(model.copy()) },
+        modifier = modifier,
     ) {
-        OutlinedCard {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = MaterialTheme.shapes.small,
             ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    shape = MaterialTheme.shapes.small,
-                ) {
-                    AutoAIIcon(
-                        name = model.modelId,
-                        modifier = Modifier.size(36.dp),
-                    )
-                }
-                Column(
-                    modifier = Modifier.weight(1f),
+                AutoAIIcon(
+                    name = model.modelId,
+                    modifier = Modifier.size(36.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = model.displayName,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text(
-                        text = model.displayName,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        if (model.providerOverwrite != null) {
-                            Tag(type = TagType.INFO) {
-                                Text(
-                                    model.providerOverwrite?.javaClass?.simpleName ?: model.providerOverwrite?.name
-                                    ?: "ProviderOverwrite"
-                                )
-                            }
+                    if (model.providerOverwrite != null) {
+                        Tag(type = TagType.INFO) {
+                            Text(
+                                model.providerOverwrite?.javaClass?.simpleName ?: model.providerOverwrite?.name
+                                ?: "ProviderOverwrite"
+                            )
                         }
-                        ModelTypeTag(model = model)
-                        ModelModalityTag(model = model)
-                        ModelAbilityTag(model = model)
                     }
+                    ModelTypeTag(model = model)
+                    ModelModalityTag(model = model)
+                    ModelAbilityTag(model = model)
                 }
+            }
 
-                // Edit button
-                IconButton(
-                    onClick = {
-                        dialogState.open(model.copy())
-                    }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(
+                        imageVector = HugeIcons.MoreVertical,
+                        contentDescription = stringResource(R.string.more_options),
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
                 ) {
-                    Icon(HugeIcons.Tools, "Edit")
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.setting_provider_page_edit_model)) },
+                        leadingIcon = { Icon(HugeIcons.Tools, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            dialogState.open(model.copy())
+                        },
+                    )
+                    if (canDeleteModel) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = stringResource(R.string.delete),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = HugeIcons.Delete01,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                showDeleteConfirm = true
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -1487,7 +1794,10 @@ private fun ProviderOverrideSettings(
                             modifier = Modifier.size(24.dp)
                         )
                         Text(
-                            text = "${providerOverride.name} (Override)",
+                            text = stringResource(
+                                R.string.setting_provider_detail_override_name,
+                                providerOverride.name,
+                            ),
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.weight(1f)
                         )
@@ -1497,14 +1807,20 @@ private fun ProviderOverrideSettings(
                                 showProviderConfig = true
                             }
                         ) {
-                            Icon(HugeIcons.Tools, contentDescription = "Edit override")
+                            Icon(
+                            HugeIcons.Tools,
+                            contentDescription = stringResource(R.string.setting_provider_detail_edit_override),
+                        )
                         }
                         IconButton(
                             onClick = {
                                 onUpdateProviderOverride(null)
                             }
                         ) {
-                            Icon(HugeIcons.Cancel01, contentDescription = "Remove override")
+                            Icon(
+                            HugeIcons.Cancel01,
+                            contentDescription = stringResource(R.string.setting_provider_detail_remove_override),
+                        )
                         }
                     }
                 }

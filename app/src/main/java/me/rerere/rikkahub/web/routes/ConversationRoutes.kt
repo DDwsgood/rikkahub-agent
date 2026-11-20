@@ -15,12 +15,14 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.takeWhile
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
+import me.rerere.rikkahub.web.webAccessError
 import me.rerere.rikkahub.web.dto.ConversationDto
 import me.rerere.rikkahub.web.dto.ConversationNodeUpdateEvent
 import me.rerere.rikkahub.web.dto.ConversationSnapshotEvent
@@ -190,10 +192,9 @@ fun Route.conversationRoutes(
                 throw BadRequestException("Title must not be blank")
             }
 
-            val conversation = conversationRepo.getConversationById(uuid)
-                ?: throw NotFoundException("Conversation not found")
-
-            chatService.saveConversation(uuid, conversation.copy(title = title))
+            if (!chatService.updateConversationTitle(uuid, title)) {
+                throw NotFoundException("Conversation not found")
+            }
             call.respond(HttpStatusCode.OK, mapOf("status" to "updated"))
         }
 
@@ -421,7 +422,9 @@ fun Route.conversationRoutes(
                     ConversationStreamPayload.BatchErrors(events)
                 }
 
-                merge(conversationEvents, errorEvents).collect { payload ->
+                merge(conversationEvents, errorEvents).takeWhile {
+                    call.webAccessError(settingsStore) == null
+                }.collect { payload ->
                     when (payload) {
                         is ConversationStreamPayload.Conversation -> {
                             sequence += 1

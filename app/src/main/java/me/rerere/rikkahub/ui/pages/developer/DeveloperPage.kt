@@ -26,9 +26,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.AILogging
 import me.rerere.rikkahub.data.datastore.AiLogLevel
 import org.koin.androidx.compose.koinViewModel
@@ -42,7 +44,7 @@ fun DeveloperPage(vm: DeveloperVM = koinViewModel()) {
             TopAppBar(
                 title = {
                     Text(
-                        text = "Developer Page",
+                        text = stringResource(R.string.developer_page_title),
                         maxLines = 1,
                     )
                 }
@@ -54,7 +56,7 @@ fun DeveloperPage(vm: DeveloperVM = koinViewModel()) {
                     selected = pager.currentPage == 0,
                     onClick = { scope.launch { pager.animateScrollToPage(0) } },
                     label = {
-                        Text(text = "Developer")
+                        Text(text = stringResource(R.string.developer_page_tab_developer))
                     },
                     icon = {
                         Icon(HugeIcons.FileScript, null)
@@ -88,7 +90,7 @@ fun LoggingPaging(vm: DeveloperVM) {
         items(1) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(text = "AI Log Level")
+                    Text(text = stringResource(R.string.developer_page_ai_log_level))
                     AiLogLevel.entries.forEach { item ->
                         Row(
                             modifier = Modifier

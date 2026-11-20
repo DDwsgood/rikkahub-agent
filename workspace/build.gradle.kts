@@ -7,6 +7,7 @@ android {
     namespace = "me.rerere.workspace"
 
     defaultConfig {
+        consumerProguardFiles("consumer-rules.pro")
         externalNativeBuild {
             cmake {
                 cppFlags += ""

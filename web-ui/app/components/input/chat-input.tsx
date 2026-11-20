@@ -565,7 +565,7 @@ function ChatInputInner({
                   >
                     {part.type === "image" ? (
                       <img
-                        alt="upload"
+                        alt={t("chat.attachment_preview_alt")}
                         className="size-5 rounded object-cover"
                         src={resolveFileUrl(part.url)}
                       />
@@ -574,6 +574,8 @@ function ChatInputInner({
                     )}
                     <span className="truncate">{partLabel(part, t)}</span>
                     <button
+                      aria-label={t("chat.remove_attachment", { name: partLabel(part, t) })}
+                      title={t("chat.remove_attachment", { name: partLabel(part, t) })}
                       className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                       onClick={async () => {
                         if (!ready || disabled || isGenerating || submitting)
@@ -646,6 +648,8 @@ function ChatInputInner({
                 />
                 <DropdownMenuTrigger asChild>
                   <Button
+                    aria-label={t("chat.add_attachment")}
+                    title={t("chat.add_attachment")}
                     variant="ghost"
                     size="icon"
                     disabled={!canUpload}
@@ -718,6 +722,8 @@ function ChatInputInner({
               />
             </div>
             <Button
+              aria-label={isGenerating && !submitting ? t("chat.stop") : t("chat.send")}
+              title={isGenerating && !submitting ? t("chat.stop") : t("chat.send")}
               onClick={() => {
                 void handlePrimaryAction();
               }}
@@ -770,6 +776,8 @@ function QuickMessageButton({
   disabled = false,
   onSelect,
 }: QuickMessageButtonProps) {
+  const { t } = useTranslation("input");
+
   if (quickMessages.length === 0) {
     return null;
   }
@@ -781,6 +789,8 @@ function QuickMessageButton({
           type="button"
           variant="ghost"
           size="icon"
+          aria-label={t("chat.quick_message_default_title")}
+          title={t("chat.quick_message_default_title")}
           disabled={disabled}
           className="size-8 rounded-full text-muted-foreground hover:text-foreground"
         >

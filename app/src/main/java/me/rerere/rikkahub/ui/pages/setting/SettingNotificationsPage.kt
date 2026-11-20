@@ -82,12 +82,14 @@ fun SettingNotificationsPage() {
     val cfg by listenerPrefs.flow.collectAsStateWithLifecycle(initialValue = NotificationListenerConfig())
     val tg by telegramPrefs.flow.collectAsStateWithLifecycle(initialValue = TelegramBotConfig())
 
-    // Live service handle: collected via StateFlow when the service is bound; falls back to
-    // empty defaults otherwise. Recompositions key off the listener's bound flag.
-    val svc = remember { RikkaNotificationListenerService.instance }
-    val boundFlow: StateFlow<Boolean> = svc?.bound ?: remember { MutableStateFlow(false) }
+    // Live service handle: reactively follows listener bind/unbind across returning from System
+    // Settings, without freezing a stale null reference from initial composition.
+    val svc by RikkaNotificationListenerService.instanceFlow.collectAsStateWithLifecycle()
+    val emptyBoundFlow = remember { MutableStateFlow(false) }
+    val emptyRecentFlow = remember { MutableStateFlow<List<NotificationEntry>>(emptyList()) }
+    val boundFlow: StateFlow<Boolean> = svc?.bound ?: emptyBoundFlow
     val bound by boundFlow.collectAsStateWithLifecycle()
-    val recentFlow: StateFlow<List<NotificationEntry>> = svc?.recent ?: remember { MutableStateFlow(emptyList()) }
+    val recentFlow: StateFlow<List<NotificationEntry>> = svc?.recent ?: emptyRecentFlow
     val recent by recentFlow.collectAsStateWithLifecycle()
 
     var pickerOpen by remember { mutableStateOf(false) }
@@ -226,11 +228,17 @@ fun SettingNotificationsPage() {
                     recent.asReversed().take(50).forEach { entry ->
                         item(
                             headlineContent = {
-                                Text("${entry.label}: ${entry.title.ifBlank { "(no title)" }}")
+                                Text(
+                                    "${entry.label}: " + entry.title.ifBlank {
+                                        stringResource(R.string.setting_page_notifications_untitled)
+                                    }
+                                )
                             },
                             supportingContent = {
                                 Text(
-                                    text = entry.text.take(120).ifBlank { "(no text)" } + " · " +
+                                    text = entry.text.take(120).ifBlank {
+                                        stringResource(R.string.setting_page_notifications_no_text)
+                                    } + " · " +
                                         formatRelativeTime(System.currentTimeMillis() - entry.postTimeMs),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,

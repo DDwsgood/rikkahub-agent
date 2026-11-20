@@ -85,7 +85,7 @@ fun S3Tab(
     var isBackingUp by remember { mutableStateOf(false) }
 
     fun updateS3Config(newConfig: S3Config) {
-        vm.updateSettings(settings.copy(s3Config = newConfig))
+        vm.updateS3Config(newConfig)
     }
 
     val lastBackupText = if (settings.backupReminderConfig.lastBackupTime == 0L) {

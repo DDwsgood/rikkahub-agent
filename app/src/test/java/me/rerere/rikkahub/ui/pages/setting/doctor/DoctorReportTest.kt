@@ -55,14 +55,14 @@ class DoctorReportTest {
                 check("b", DoctorCategory.Database, Severity.FAIL),
             ),
         )
-        assertTrue(out.contains("## ${DoctorCategory.Permissions.displayName}"))
-        assertTrue(out.contains("## ${DoctorCategory.Database.displayName}"))
+        assertTrue(out.contains("## Permissions"))
+        assertTrue(out.contains("## Database"))
     }
 
     @Test fun `empty categories are skipped`() {
         val out = DoctorReport.format(listOf(check("a", DoctorCategory.Network, Severity.OK)))
-        assertTrue(out.contains("## ${DoctorCategory.Network.displayName}"))
-        assertTrue(!out.contains("## ${DoctorCategory.Termux.displayName}"))
+        assertTrue(out.contains("## Network & providers"))
+        assertTrue(!out.contains("## Termux integration"))
     }
 
     @Test fun `each severity gets its mark`() {
@@ -87,8 +87,8 @@ class DoctorReportTest {
                 check("b", DoctorCategory.Permissions, Severity.OK),
             ),
         )
-        val permIdx = out.indexOf("## ${DoctorCategory.Permissions.displayName}")
-        val maintIdx = out.indexOf("## ${DoctorCategory.Maintenance.displayName}")
+        val permIdx = out.indexOf("## ${DoctorCategory.Permissions.reportName}")
+        val maintIdx = out.indexOf("## ${DoctorCategory.Maintenance.reportName}")
         assertTrue(permIdx in 0 until maintIdx)
     }
 

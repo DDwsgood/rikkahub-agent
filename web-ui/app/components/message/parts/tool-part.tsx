@@ -491,10 +491,22 @@ export function ToolPart({
         extra={
           isPending && onToolApproval ? (
             <div className="flex items-center gap-1">
-              <Button onClick={handleDeny} size="icon-xs" type="button" variant="secondary">
+              <Button
+                aria-label={t("tool_part.deny_tool")}
+                onClick={handleDeny}
+                size="icon-xs"
+                type="button"
+                variant="secondary"
+              >
                 <X className="h-3.5 w-3.5" />
               </Button>
-              <Button onClick={handleApprove} size="icon-xs" type="button" variant="secondary">
+              <Button
+                aria-label={t("tool_part.approve_tool")}
+                onClick={handleApprove}
+                size="icon-xs"
+                type="button"
+                variant="secondary"
+              >
                 <Check className="h-3.5 w-3.5" />
               </Button>
             </div>
@@ -560,7 +572,7 @@ export function ToolPart({
                         className="inline-flex items-center gap-1 rounded border border-muted bg-muted/30 px-2 py-1 text-muted-foreground text-xs"
                       >
                         <Video className="h-3 w-3" />
-                        video
+                        {t("tool_part.media_video")}
                       </span>
                     );
                   }
@@ -571,7 +583,7 @@ export function ToolPart({
                         className="inline-flex items-center gap-1 rounded border border-muted bg-muted/30 px-2 py-1 text-muted-foreground text-xs"
                       >
                         <AudioLines className="h-3 w-3" />
-                        audio
+                        {t("tool_part.media_audio")}
                       </span>
                     );
                   }

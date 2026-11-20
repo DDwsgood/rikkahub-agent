@@ -39,9 +39,13 @@ class NotificationConfig {
 object NotificationUtil {
 
     /**
-     * 检查是否有通知权限
+     * 检查是否有通知权限。Android 13 (API 33) 以下不存在 POST_NOTIFICATIONS 运行时权限，
+     * 改为查询系统通知开关状态。
      */
     fun hasNotificationPermission(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }
         return ActivityCompat.checkSelfPermission(
             context,
             Manifest.permission.POST_NOTIFICATIONS

@@ -86,7 +86,12 @@
     "status_disabled": "已关闭",
     "unknown": "未知",
     "empty": "暂无可用搜索服务",
-    "builtin_notice": "当前已启用模型内置搜索，应用搜索服务设置暂不生效。"
+    "builtin_notice": "当前已启用模型内置搜索，应用搜索服务设置暂不生效。",
+    "service_labels": {
+      "zhipu": "智谱",
+      "metaso": "秘塔",
+      "bocha": "博查"
+    }
   },
   "chat": {
     "attachment_image": "图片",
@@ -109,6 +114,11 @@
     "placeholder_not_ready": "请先选择会话",
     "send_hint_enter": "按 Enter 发送，Shift + Enter 换行",
     "send_hint_newline": "按 Shift + Enter 发送，Enter 换行",
-    "long_text_as_file": "长文本已转为文件附件"
+    "long_text_as_file": "长文本已转为文件附件",
+    "attachment_preview_alt": "附件预览",
+    "send": "发送消息",
+    "stop": "停止生成",
+    "add_attachment": "添加附件",
+    "remove_attachment": "移除 {{name}}"
   }
 }

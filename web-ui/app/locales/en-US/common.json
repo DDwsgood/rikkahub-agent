@@ -47,6 +47,8 @@
     "language_label": "Language: {{label}}",
     "language_zh_cn": "Chinese (Simplified)",
     "language_en_us": "English",
+    "clear_web_session": "Clear web session",
+    "web_session_cleared": "Web session cleared",
     "theme_mode": "Color mode",
     "theme_mode_label": "Color mode: {{label}}",
     "theme_color": "Theme color",
@@ -119,5 +121,32 @@
     "unlock": "Unlock",
     "unlocking": "Unlocking...",
     "unlock_failed": "Failed to unlock Web API access."
+  },
+  "a11y": {
+    "close": "Close",
+    "loading": "Loading",
+    "typing": "Typing",
+    "toggle_sidebar": "Toggle sidebar",
+    "sidebar": "Sidebar",
+    "sidebar_description": "Displays the navigation sidebar.",
+    "scroll_to_bottom": "Scroll to bottom",
+    "download_conversation": "Download conversation"
+  },
+  "conversation_empty": {
+    "default_title": "No messages yet",
+    "default_description": "Start a conversation to see messages here"
+  },
+  "display": {
+    "default_assistant": "Default assistant",
+    "unnamed_model": "Unnamed model"
+  },
+  "export": {
+    "role_user": "User",
+    "role_assistant": "Assistant",
+    "role_system": "System",
+    "role_data": "Data",
+    "role_tool": "Tool",
+    "thinking": "Thinking",
+    "image_alt": "image"
   }
 }

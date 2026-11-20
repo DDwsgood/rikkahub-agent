@@ -2,6 +2,7 @@
 
 package me.rerere.rikkahub.ui.pages.setting
 
+import android.content.Context
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +35,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -92,6 +95,7 @@ import me.rerere.hugeicons.stroke.ArrowUp01
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.FileImport
+import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.MessageBlocked
 import me.rerere.hugeicons.stroke.View
@@ -122,24 +126,19 @@ import org.koin.compose.koinInject
 fun SettingMcpPage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val mcpConfigs = settings.mcpServers
-    val creationState = useEditState<McpServerConfig> {
-        vm.updateSettings(
-            settings.copy(
-                mcpServers = mcpConfigs + it
-            )
-        )
+    val creationState = useEditState<McpServerConfig> { created ->
+        vm.updateSettings { latest ->
+            latest.copy(mcpServers = latest.mcpServers + created)
+        }
     }
     val editState = useEditState<McpServerConfig> { newConfig ->
-        vm.updateSettings(
-            settings.copy(
-                mcpServers = mcpConfigs.map {
-                    if (it.id == newConfig.id) {
-                        newConfig
-                    } else {
-                        it
-                    }
+        vm.updateSettings { latest ->
+            latest.copy(
+                mcpServers = latest.mcpServers.map { existing ->
+                    if (existing.id == newConfig.id) newConfig else existing
                 }
-            ))
+            )
+        }
     }
     var showImportDialog by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -209,11 +208,12 @@ fun SettingMcpPage(vm: SettingVM = koinViewModel()) {
                             editState.open(mcpConfig)
                         },
                         onDelete = {
-                            vm.updateSettings(
-                                settings.copy(
-                                    mcpServers = mcpConfigs.filter { it.id != mcpConfig.id }
+                            val targetId = mcpConfig.id
+                            vm.updateSettings { latest ->
+                                latest.copy(
+                                    mcpServers = latest.mcpServers.filter { it.id != targetId }
                                 )
-                            )
+                            }
                         },
                         modifier = Modifier.animateItem()
                     )
@@ -236,14 +236,28 @@ fun SettingMcpPage(vm: SettingVM = koinViewModel()) {
         }
     }
     McpServerConfigModal(creationState)
-    McpServerConfigModal(editState)
+    McpServerConfigModal(
+        state = editState,
+        onDelete = { configToDelete ->
+            val targetId = configToDelete.id
+            vm.updateSettings { latest ->
+                latest.copy(
+                    mcpServers = latest.mcpServers.filter { it.id != targetId }
+                )
+            }
+        },
+    )
     if (showImportDialog) {
         McpImportModal(
             onDismiss = { showImportDialog = false },
             onImport = { newConfigs ->
-                val existingIds = mcpConfigs.map { it.commonOptions.name }.toSet()
-                val toAdd = newConfigs.filter { it.commonOptions.name.isNotBlank() && it.commonOptions.name !in existingIds }
-                vm.updateSettings(settings.copy(mcpServers = mcpConfigs + toAdd))
+                vm.updateSettings { latest ->
+                    val existingNames = latest.mcpServers.map { it.commonOptions.name }.toSet()
+                    val toAdd = newConfigs.filter {
+                        it.commonOptions.name.isNotBlank() && it.commonOptions.name !in existingNames
+                    }
+                    latest.copy(mcpServers = latest.mcpServers + toAdd)
+                }
                 showImportDialog = false
             }
         )
@@ -259,9 +273,42 @@ private fun McpServerItem(
 ) {
     val mcpManager = koinInject<McpManager>()
     val status by mcpManager.getStatus(item).collectAsStateWithLifecycle(McpStatus.Idle)
-    val dismissBoxState = rememberSwipeToDismissBoxState()
-    val scope = rememberCoroutineScope()
     var errorDetail by remember { mutableStateOf<McpStatus.Error?>(null) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text(stringResource(R.string.setting_mcp_delete_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.setting_mcp_delete_body,
+                        item.commonOptions.name.ifBlank { "MCP" },
+                    )
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDelete()
+                    }
+                ) {
+                    Text(
+                        text = stringResource(R.string.delete),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+        )
+    }
 
     errorDetail?.let { error ->
         val context = LocalContext.current
@@ -297,39 +344,13 @@ private fun McpServerItem(
             },
         )
     }
-    SwipeToDismissBox(
-        state = dismissBoxState,
-        backgroundContent = {
-            Row(
-                modifier = Modifier.fillMaxSize(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            ) {
-                FilledTonalIconButton(
-                    onClick = {
-                        scope.launch { dismissBoxState.reset() }
-                    }
-                ) {
-                    Icon(HugeIcons.Cancel01, null)
-                }
-                FilledTonalIconButton(
-                    onClick = {
-                        onDelete()
-                    }
-                ) {
-                    Icon(HugeIcons.Delete01, null)
-                }
-            }
-        },
-        enableDismissFromStartToEnd = false,
-        enableDismissFromEndToStart = true,
-        modifier = modifier
+    Card(
+        onClick = { onEdit(item) },
+        colors = CardDefaults.cardColors(
+            containerColor = CustomColors.listItemColors.containerColor
+        ),
+        modifier = modifier,
     ) {
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = CustomColors.listItemColors.containerColor
-            )
-        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -407,7 +428,7 @@ private fun McpServerItem(
                     if (status == McpStatus.NeedsAuthorization) {
                         val context = LocalContext.current
                         Text(
-                            text = "需要 OAuth 授权",
+                            text = stringResource(R.string.setting_mcp_oauth_required),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -415,40 +436,110 @@ private fun McpServerItem(
                             onClick = { mcpManager.startAuthorization(item, context) },
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                         ) {
-                            Text("OAuth 授权")
+                            Text(stringResource(R.string.setting_mcp_oauth_authorize))
                         }
                     }
                     if (status == McpStatus.Authorizing) {
                         Text(
-                            text = "正在授权，请在浏览器中完成…",
+                            text = stringResource(R.string.setting_mcp_oauth_authorizing),
                             style = MaterialTheme.typography.labelSmall,
                         )
                         TextButton(
                             onClick = { mcpManager.cancelAuthorization(item) },
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                         ) {
-                            Text("取消授权")
+                            Text(stringResource(R.string.setting_mcp_oauth_cancel))
                         }
                     }
                 }
 
-                IconButton(
-                    onClick = {
-                        onEdit(item)
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            imageVector = HugeIcons.MoreVertical,
+                            contentDescription = stringResource(R.string.more_options),
+                        )
                     }
-                ) {
-                    Icon(HugeIcons.Settings03, null)
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.setting_provider_action_configure)) },
+                            leadingIcon = { Icon(HugeIcons.Settings03, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onEdit(item)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = stringResource(R.string.delete),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = HugeIcons.Delete01,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                showDeleteConfirm = true
+                            },
+                        )
+                    }
                 }
             }
         }
-    }
 }
 
 @Composable
-private fun McpServerConfigModal(state: EditState<McpServerConfig>) {
+private fun McpServerConfigModal(
+    state: EditState<McpServerConfig>,
+    onDelete: ((McpServerConfig) -> Unit)? = null,
+) {
     state.EditStateContent { config, updateValue ->
         val pagerState = rememberPagerState { 2 }
         val scope = rememberCoroutineScope()
+        var showDeleteConfirm by remember { mutableStateOf(false) }
+
+        if (showDeleteConfirm && onDelete != null) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirm = false },
+                title = { Text(stringResource(R.string.setting_mcp_delete_title)) },
+                text = {
+                    Text(
+                        stringResource(
+                            R.string.setting_mcp_delete_body,
+                            config.commonOptions.name.ifBlank { "MCP" },
+                        )
+                    )
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirm = false }) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showDeleteConfirm = false
+                            state.dismiss()
+                            onDelete(config)
+                        }
+                    ) {
+                        Text(
+                            text = stringResource(R.string.delete),
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                },
+            )
+        }
         ModalBottomSheet(
             onDismissRequest = {
                 state.dismiss()
@@ -522,8 +613,25 @@ private fun McpServerConfigModal(state: EditState<McpServerConfig>) {
                     }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (onDelete != null) {
+                        TextButton(
+                            onClick = { showDeleteConfirm = true },
+                        ) {
+                            Text(
+                                text = stringResource(R.string.delete),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = { state.dismiss() },
+                    ) {
+                        Text(stringResource(R.string.cancel))
+                    }
                     TextButton(
                         onClick = {
                             if (canSave) state.confirm()
@@ -968,9 +1076,11 @@ private fun StdioConfigure(
                 Text(stringResource(R.string.setting_mcp_page_stdio_args_desc))
             }
         ) {
+            var argsText by remember(config.id) { mutableStateOf(config.args.joinToString("\n")) }
             OutlinedTextField(
-                value = config.args.joinToString("\n"),
+                value = argsText,
                 onValueChange = { text ->
+                    argsText = text
                     val parsed = text.split('\n')
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
@@ -1269,17 +1379,23 @@ private data class McpImportResult(
     val errors: List<String>,
 )
 
-private fun parseMcpServersFromJson(json: String): McpImportResult {
+private fun parseMcpServersFromJson(context: Context, json: String): McpImportResult {
     val root = runCatching { Json.parseToJsonElement(json).jsonObject }.getOrElse {
-        return McpImportResult(emptyList(), listOf("JSON parse failed: ${it.message}"))
+        return McpImportResult(
+            emptyList(),
+            listOf(context.getString(R.string.setting_mcp_page_import_parse_error, it.message ?: "?")),
+        )
     }
     val mcpServers = root["mcpServers"]?.jsonObject
-        ?: return McpImportResult(emptyList(), listOf("missing 'mcpServers' object"))
+        ?: return McpImportResult(
+            emptyList(),
+            listOf(context.getString(R.string.setting_mcp_import_missing_servers)),
+        )
     val configs = mutableListOf<McpServerConfig>()
     val errors = mutableListOf<String>()
     for ((name, element) in mcpServers.entries) {
         val obj = runCatching { element.jsonObject }.getOrElse {
-            errors += "$name: entry is not an object"
+            errors += context.getString(R.string.setting_mcp_import_entry_not_object, name)
             continue
         }
         val type = obj["type"]?.jsonPrimitive?.contentOrNull ?: "streamable_http"
@@ -1292,7 +1408,7 @@ private fun parseMcpServersFromJson(json: String): McpImportResult {
                 // url 只对 HTTP/SSE 传输必填
                 val url = obj["url"]?.jsonPrimitive?.contentOrNull
                 if (url.isNullOrBlank()) {
-                    errors += "$name: $type requires a url"
+                    errors += context.getString(R.string.setting_mcp_import_url_required, name, type)
                     continue
                 }
                 configs += if (type == "sse") {
@@ -1305,8 +1421,12 @@ private fun parseMcpServersFromJson(json: String): McpImportResult {
                 // stdio 不要求 url, 要求 workspace_id + command
                 val workspaceId = obj["workspace_id"]?.jsonPrimitive?.contentOrNull ?: ""
                 val command = obj["command"]?.jsonPrimitive?.contentOrNull ?: ""
-                if (workspaceId.isBlank()) errors += "$name: stdio requires workspace_id"
-                if (command.isBlank()) errors += "$name: stdio requires command"
+                if (workspaceId.isBlank()) {
+                    errors += context.getString(R.string.setting_mcp_import_stdio_workspace_required, name)
+                }
+                if (command.isBlank()) {
+                    errors += context.getString(R.string.setting_mcp_import_stdio_command_required, name)
+                }
                 if (workspaceId.isBlank() || command.isBlank()) continue
                 configs += McpServerConfig.StdioTransportServer(
                     commonOptions = commonOptions,
@@ -1319,7 +1439,7 @@ private fun parseMcpServersFromJson(json: String): McpImportResult {
                     }?.toMap() ?: emptyMap(),
                 )
             }
-            else -> errors += "$name: unsupported transport type '$type'"
+            else -> errors += context.getString(R.string.setting_mcp_import_unsupported_transport, name, type)
         }
     }
     return McpImportResult(configs, errors)
@@ -1333,6 +1453,7 @@ private fun McpImportModal(
     var jsonText by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val noValidConfigMsg = stringResource(R.string.setting_mcp_page_import_no_valid_config)
+    val context = LocalContext.current
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1374,7 +1495,7 @@ private fun McpImportModal(
                 }
                 Button(
                     onClick = {
-                        val result = parseMcpServersFromJson(jsonText.trim())
+                        val result = parseMcpServersFromJson(context, jsonText.trim())
                         when {
                             result.errors.isNotEmpty() -> {
                                 // 逐项错误: 明确提示哪条配置为何无效, 不静默丢弃

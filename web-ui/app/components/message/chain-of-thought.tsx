@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight, ChevronUp } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Card } from "~/components/ui/card";
 import { cn } from "~/lib/utils";
@@ -44,11 +45,12 @@ function ChainOfThought<T>({
   collapsedVisibleCount = 2,
   collapsedAdaptiveWidth = false,
   renderStep,
-  collapseLabel = "Collapse",
+  collapseLabel,
   showMoreLabel,
   className,
   ...props
 }: ChainOfThoughtProps<T>) {
+  const { t } = useTranslation("message");
   const [expanded, setExpanded] = React.useState(false);
   const canCollapse = steps.length > collapsedVisibleCount;
   const visibleSteps = expanded || !canCollapse ? steps : steps.slice(-collapsedVisibleCount);
@@ -72,14 +74,16 @@ function ChainOfThought<T>({
             shouldFillCollapseControlWidth ? "w-full" : "w-fit self-start",
           )}
           onClick={() => setExpanded((prev) => !prev)}
+          aria-expanded={expanded}
         >
           <span className="flex w-6 items-center justify-center">
             {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
           </span>
           <span>
             {expanded
-              ? collapseLabel
-              : (showMoreLabel?.(hiddenCount) ?? `Show ${hiddenCount} more steps`)}
+              ? (collapseLabel ?? t("message_parts.collapse"))
+              : (showMoreLabel?.(hiddenCount) ??
+                t("message_parts.show_more_steps", { count: hiddenCount }))}
           </span>
         </button>
       )}

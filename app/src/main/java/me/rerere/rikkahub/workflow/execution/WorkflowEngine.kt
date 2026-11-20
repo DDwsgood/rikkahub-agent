@@ -2,7 +2,6 @@ package me.rerere.rikkahub.workflow.execution
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -15,6 +14,7 @@ import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.workflow.condition.ConditionEvaluator
 import me.rerere.rikkahub.workflow.condition.ContextProvider
+import me.rerere.rikkahub.workflow.model.TriggerSpec
 import me.rerere.rikkahub.workflow.model.WorkflowAction
 import me.rerere.rikkahub.workflow.model.WorkflowDefinition
 import me.rerere.rikkahub.workflow.model.WorkflowRunStatus
@@ -103,25 +103,54 @@ class WorkflowEngine(
      * variant that fired — used for diagnostics; the workflow's own [WorkflowDefinition.trigger]
      * is the source of truth for its semantics.
      */
-    val triggerCallback = TriggerFireCallback { workflowId, _ -> fire(workflowId) }
+    val triggerCallback: TriggerFireCallback = object : TriggerFireCallback {
+        override suspend fun onFire(workflowId: String, matchSpec: TriggerSpec) {
+            fire(workflowId)
+        }
+
+        override suspend fun onScheduledFire(
+            workflowId: String,
+            matchSpec: TriggerSpec.TimeCron,
+            beforeActions: suspend () -> Unit,
+        ) {
+            fire(workflowId, matchSpec, beforeActions)
+        }
+    }
 
     /**
      * Fire a workflow. Resolves cooldown / daily cap / conditions, then runs the action
      * sequence. Returns the resulting status — useful for `workflow_run` synchronous tool
      * call, ignored by the trigger callback path.
      */
-    suspend fun fire(workflowId: String): FireOutcome = withContext(Dispatchers.IO) {
+    suspend fun fire(workflowId: String): FireOutcome = fire(workflowId, null, null)
+
+    private suspend fun fire(
+        workflowId: String,
+        scheduledTrigger: TriggerSpec.TimeCron?,
+        beforeActions: (suspend () -> Unit)?,
+    ): FireOutcome = withContext(Dispatchers.IO) {
         val lock = lockFor(workflowId)
-        lock.withLock { fireLocked(workflowId) }
+        lock.withLock { fireLocked(workflowId, scheduledTrigger, beforeActions) }
     }
 
-    private suspend fun fireLocked(workflowId: String): FireOutcome {
+    private suspend fun fireLocked(
+        workflowId: String,
+        scheduledTrigger: TriggerSpec.TimeCron?,
+        beforeActions: (suspend () -> Unit)?,
+    ): FireOutcome {
         val firedAtMs = System.currentTimeMillis()
         val started = System.nanoTime()
         val loaded = repository.getById(workflowId)
             ?: return FireOutcome(WorkflowRunStatus.FAILED, "workflow_not_found", "")
         val def = loaded.definition
         val entity = loaded.entity
+        if (scheduledTrigger != null && def.trigger != scheduledTrigger) {
+            return FireOutcome(WorkflowRunStatus.SKIPPED_CONDITIONS, "schedule_changed", "")
+        }
+        // A background fire can arrive before SettingsStore has published its first real value.
+        // A DataStore read error must reach the worker as a retry, not a missing-assistant outcome.
+        val settings = settingsStore.awaitLoadedSettings()
+        check(!settings.init) { "Workflow settings are unavailable" }
 
         // Phase 24 — open the cross-pillar ledger row for this fire. Opened after the
         // workflow loads so a `workflow_not_found` non-fire isn't recorded, but before the
@@ -186,7 +215,6 @@ class WorkflowEngine(
         // workflow predates that fix (legacy null) OR the authoring assistant was deleted,
         // fall back to "any assistant with Workflows toggle on" but log loudly — the user's
         // intent might not match what we run.
-        val settings = settingsStore.settingsFlow.first()
         val authoringAssistant = run {
             val storedId = def.authoringAssistantId
             val byId = if (storedId != null) {
@@ -221,6 +249,7 @@ class WorkflowEngine(
         )
 
         // Execute the action sequence. ActionRunner enforces per-action timeout + HARDLINE.
+        beforeActions?.invoke()
         val result = actionRunner.run(def.actions, tools)
         val status = if (result.success) WorkflowRunStatus.SUCCESS else WorkflowRunStatus.FAILED
         return persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId)

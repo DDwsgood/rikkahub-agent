@@ -108,12 +108,16 @@ fun SettingSearchPage(vm: SettingVM = koinViewModel()) {
             val toIndex = to.index
 
             if (fromIndex >= 0 && toIndex >= 0 && fromIndex < settings.searchServices.size && toIndex < settings.searchServices.size) {
-                val newServices = settings.searchServices.toMutableList().apply {
-                    add(toIndex, removeAt(fromIndex))
+                vm.updateSettings { latest ->
+                    if (fromIndex in latest.searchServices.indices && toIndex in latest.searchServices.indices) {
+                        val newServices = latest.searchServices.toMutableList().apply {
+                            add(toIndex, removeAt(fromIndex))
+                        }
+                        latest.copy(searchServices = newServices)
+                    } else {
+                        latest
+                    }
                 }
-                vm.updateSettings(
-                    settings.copy(searchServices = newServices)
-                )
             }
         }
         val haptic = LocalHapticFeedback.current
@@ -138,12 +142,16 @@ fun SettingSearchPage(vm: SettingVM = koinViewModel()) {
                         },
                         onDelete = {
                             if (settings.searchServices.size > 1) {
-                                val index = settings.searchServices.indexOf(service)
-                                val newServices = settings.searchServices.toMutableList()
-                                newServices.removeAt(index)
-                                vm.updateSettings(
-                                    settings.copy(searchServices = newServices)
-                                )
+                                vm.updateSettings { latest ->
+                                    val idx = latest.searchServices.indexOf(service)
+                                    if (idx >= 0) {
+                                        val newServices = latest.searchServices.toMutableList()
+                                        newServices.removeAt(idx)
+                                        latest.copy(searchServices = newServices)
+                                    } else {
+                                        latest
+                                    }
+                                }
                             }
                         },
                         canDelete = settings.searchServices.size > 1,
@@ -166,14 +174,10 @@ fun SettingSearchPage(vm: SettingVM = koinViewModel()) {
                 CommonOptions(
                     settings = settings,
                     onUpdate = { options ->
-                        vm.updateSettings(
-                            settings.copy(searchCommonOptions = options)
-                        )
+                        vm.updateSettings { it.copy(searchCommonOptions = options) }
                     },
                     onUpdateWebFetchTools = { enabled ->
-                        vm.updateSettings(
-                            settings.copy(enableWebFetchTools = enabled)
-                        )
+                        vm.updateSettings { it.copy(enableWebFetchTools = enabled) }
                     }
                 )
             }
@@ -185,11 +189,11 @@ fun SettingSearchPage(vm: SettingVM = koinViewModel()) {
             onDismiss = { showAddDialog = false },
             onConfirm = { options ->
                 showAddDialog = false
-                vm.updateSettings(
-                    settings.copy(
-                        searchServices = listOf(options) + settings.searchServices
+                vm.updateSettings { latest ->
+                    latest.copy(
+                        searchServices = listOf(options) + latest.searchServices
                     )
-                )
+                }
                 scope.launch {
                     lazyListState.animateScrollToItem(0)
                 }

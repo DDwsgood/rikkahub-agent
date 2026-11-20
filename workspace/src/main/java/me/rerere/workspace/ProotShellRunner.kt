@@ -6,6 +6,13 @@ import java.io.File
 data class WorkspaceBindMount(
     val source: File,
     val target: String,
+    /**
+     * Optional trusted volume root (e.g. `context.filesDir` or external storage root) from which
+     * [WorkspaceManager] walks via FD-relative `O_NOFOLLOW` instead of trusting [source] directly.
+     */
+    val trustedAnchorRoot: File? = null,
+    /** Relative path from [trustedAnchorRoot] to [source]. */
+    val anchorRelativePath: String = "",
 ) {
     init {
         require(target.startsWith("/")) { "Bind mount target must be absolute: $target" }

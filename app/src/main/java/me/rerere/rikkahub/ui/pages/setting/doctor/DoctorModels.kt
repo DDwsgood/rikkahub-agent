@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.ui.pages.setting.doctor
 
 import android.content.Intent
+import androidx.annotation.StringRes
+import me.rerere.rikkahub.R
 
 /**
  * One diagnostic line. The Doctor screen renders these in a flat scrollable list grouped
@@ -29,15 +31,15 @@ data class DoctorCheck(
 
 enum class Severity { OK, INFO, WARN, FAIL }
 
-enum class DoctorCategory(val displayName: String) {
-    Permissions("Permissions"),
-    Services("Background services"),
-    AssistantInfo("Active assistant"),
-    Database("Database"),
-    Network("Network & providers"),
-    Termux("Termux integration"),
-    Maintenance("Maintenance"),
-    Diagnostics("Diagnostics"),
+enum class DoctorCategory(@StringRes val displayNameRes: Int, val reportName: String) {
+    Permissions(R.string.doctor_category_permissions, "Permissions"),
+    Services(R.string.doctor_category_services, "Background services"),
+    AssistantInfo(R.string.doctor_category_assistant, "Active assistant"),
+    Database(R.string.doctor_category_database, "Database"),
+    Network(R.string.doctor_category_network, "Network & providers"),
+    Termux(R.string.doctor_category_termux, "Termux integration"),
+    Maintenance(R.string.doctor_category_maintenance, "Maintenance"),
+    Diagnostics(R.string.doctor_category_diagnostics, "Diagnostics"),
 }
 
 /**

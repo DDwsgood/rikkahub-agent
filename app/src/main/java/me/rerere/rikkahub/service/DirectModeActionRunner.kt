@@ -47,29 +47,43 @@ class DirectModeActionRunner(
     data class SequenceResult(
         val finalOutcome: String,        // success|failed|timed_out
         val errorMessage: String?,
+        val stepSummaries: List<String> = emptyList(),
     )
 
     /**
      * Execute each action sequentially. Aborts on first non-success result.
      */
     suspend fun run(actions: List<Action>, availableTools: List<Tool>): SequenceResult {
+        val summaries = mutableListOf<String>()
         for ((idx, action) in actions.withIndex()) {
             val result = runOne(idx, action, availableTools)
             when (result) {
-                is StepResult.Success        -> continue
-                is StepResult.Failed         -> return SequenceResult("failed", "action $idx: ${result.errorMessage}")
-                is StepResult.TimedOut       -> return SequenceResult("timed_out", "action $idx: ${action.tool} exceeded 60s")
-                is StepResult.HardlineBlocked-> return SequenceResult("failed", "action $idx: hardline:${result.reason}")
+                is StepResult.Success -> {
+                    val text = result.output
+                        .filterIsInstance<UIMessagePart.Text>()
+                        .joinToString(" ") { it.text.trim() }
+                        .trim()
+                        .take(300)
+                    summaries += if (text.isNotEmpty()) "${action.tool}: $text" else "${action.tool}: ok"
+                    continue
+                }
+                is StepResult.Failed ->
+                    return SequenceResult("failed", "action $idx: ${result.errorMessage}", summaries)
+                is StepResult.TimedOut ->
+                    return SequenceResult("timed_out", "action $idx: ${action.tool} exceeded 60s", summaries)
+                is StepResult.HardlineBlocked ->
+                    return SequenceResult("failed", "action $idx: hardline:${result.reason}", summaries)
                 // A direct-mode job validates its tool list at creation time, but the
                 // assistant's enabled-tools set can change afterwards. If a tool the job
                 // references is no longer in `availableTools` when the job fires, surface
                 // it as a NAMED failure ("tool_unavailable: <toolName>") so the failed
                 // run-history row tells the user exactly which tool to re-enable — rather
                 // than the job appearing to fail for an opaque reason.
-                is StepResult.UnknownTool    -> return SequenceResult("failed", "action $idx: tool_unavailable: ${result.toolName}")
+                is StepResult.UnknownTool ->
+                    return SequenceResult("failed", "action $idx: tool_unavailable: ${result.toolName}", summaries)
             }
         }
-        return SequenceResult("success", null)
+        return SequenceResult("success", null, summaries)
     }
 
     private suspend fun runOne(

@@ -4,7 +4,11 @@
     "collapse_thinking": "Collapse thinking",
     "expand_thinking_steps": "Expand {{count}} thinking step(s)",
     "deep_thinking": "Deep Thinking",
-    "thinking_seconds": "Thought for {{seconds}} seconds"
+    "thinking_seconds": "Thought for {{seconds}} seconds",
+    "collapse": "Collapse",
+    "show_more_steps": "Show {{count}} more steps",
+    "thinking": "Thinking",
+    "thinking_in_progress": "Thinking..."
   },
   "chat_message": {
     "copy_image": "Image",
@@ -56,9 +60,16 @@
     "ask_user_title": "Ask User",
     "ask_user_questions_count": "Ask {{count}} questions",
     "ask_user_submit": "Submit",
-    "ask_user_answered": "Answered"
+    "ask_user_answered": "Answered",
+    "media_video": "Video",
+    "media_audio": "Audio",
+    "approve_tool": "Approve tool call",
+    "deny_tool": "Deny tool call"
   },
   "media_part": {
+    "image_load_failed": "Failed to load image: {{url}}",
+    "image_loading": "Loading image...",
+    "image_alt": "Message attachment",
     "video_load_failed": "Failed to load video: {{url}}",
     "open_video_in_new_window": "Open video in new window",
     "audio_load_failed": "Failed to load audio: {{url}}",

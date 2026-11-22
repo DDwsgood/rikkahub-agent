@@ -63,7 +63,10 @@ import me.rerere.rikkahub.utils.sendNotification
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
+import me.rerere.rikkahub.data.ai.approval.ToolReviewAction
+import me.rerere.rikkahub.data.ai.reviewForPermissionMode
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.mcp.buildMcpToolName
 import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
@@ -97,6 +100,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
+import me.rerere.rikkahub.data.preferences.ChatPermissionMode
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
@@ -112,6 +116,26 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+
+/** A one-shot marker for the synchronous in-app composer callback, never for stored messages. */
+internal object ChatComposerSubmission {
+    private val active = ThreadLocal<Boolean>()
+
+    fun dispatch(send: () -> Unit) {
+        active.set(true)
+        try {
+            send()
+        } finally {
+            active.remove()
+        }
+    }
+
+    fun takeUserIntent(content: List<UIMessagePart>): String {
+        if (active.get() != true) return ""
+        active.remove()
+        return content.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+    }
+}
 
 internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
     LocalToolOption.AskUser,
@@ -247,6 +271,7 @@ class ChatService(
     private val filesManager: FilesManager,
     private val skillManager: SkillManager,
     private val toolApprovalPreferences: me.rerere.rikkahub.data.preferences.ToolApprovalPreferences,
+    private val autoApprovalPolicy: me.rerere.rikkahub.data.ai.approval.AutoApprovalPolicy,
     private val workspaceRepository: WorkspaceRepository,
     private val folderRepository: FolderRepository,
 ) {
@@ -523,13 +548,16 @@ class ChatService(
         conversationId: Uuid,
         content: List<UIMessagePart>,
         answer: Boolean = true,
-    ): CompletableDeferred<SendMessageResult> = startMessageTurn(conversationId, content, answer).result
+    ): CompletableDeferred<SendMessageResult> = startMessageTurn(
+        conversationId, content, answer, trustedUserIntent = ChatComposerSubmission.takeUserIntent(content),
+    ).result
 
     /** Lets a scheduled worker stop and join only the generation it started. */
     internal fun startMessageTurn(
         conversationId: Uuid,
         content: List<UIMessagePart>,
         answer: Boolean = true,
+        trustedUserIntent: String = "",
     ): SendMessageTurn {
         val result = CompletableDeferred<SendMessageResult>()
         if (content.isEmptyInputMessage()) {
@@ -589,12 +617,12 @@ class ChatService(
                     // Conservative: any match failure (tool throws, no result) falls back to the
                     // normal LLM path. Headless conversations and non-text messages are skipped.
                     val routedHandled = if (answer)
-                        tryFastPathRoute(conversationId, processedContent, withUser, assistant)
+                        tryFastPathRoute(conversationId, processedContent, withUser, assistant, trustedUserIntent)
                     else false
 
                     // 开始补全 — only if router didn't handle the turn
                     val generationError = if (answer && !routedHandled) {
-                        handleMessageComplete(conversationId)
+                        handleMessageComplete(conversationId, trustedUserIntent = trustedUserIntent)
                     } else null
 
                     _generationDoneFlow.emit(conversationId)
@@ -756,6 +784,7 @@ class ChatService(
         userParts: List<UIMessagePart>,
         afterUserSave: me.rerere.rikkahub.data.model.Conversation,
         assistant: Assistant,
+        trustedUserIntent: String,
     ): Boolean {
         // Headless paths (cron / sub-agent / external-automation / workflow) must always go
         // through the LLM — the fast-path is a per-user-turn optimisation, not a system-flow.
@@ -799,6 +828,19 @@ class ChatService(
             android.util.Log.w("FastPathRouter", "hardline-blocked intent=${match.intent} tool=${match.toolName}: $hardlineReason; falling through to LLM")
             return false
         }
+        val mode = toolApprovalPreferences.currentPermissionMode()
+        val review = reviewForPermissionMode(mode, toolApprovalPreferences::currentPermissionMode) {
+            autoApprovalPolicy.review(
+                toolName = match.toolName,
+                args = match.args,
+                needsApproval = tool.needsApproval(match.args),
+                userIntent = trustedUserIntent,
+            )
+        }
+        if (review?.action == ToolReviewAction.ASK_USER ||
+            (review == null && tool.needsApproval(match.args)) ||
+            toolApprovalPreferences.currentPermissionMode() != mode
+        ) return false
 
         val rendered: String = try {
             val out = tool.execute(match.args)
@@ -814,6 +856,7 @@ class ChatService(
             // Fall back to raw text if formatter throws or produces nothing.
             formatted?.takeIf { it.isNotBlank() } ?: rawText
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             android.util.Log.w("FastPathRouter", "tool ${match.toolName} threw, falling back to LLM", t)
             me.rerere.rikkahub.skills.FastPathRouterLog.record(
                 me.rerere.rikkahub.skills.FastPathRouterLog.Entry(
@@ -1061,7 +1104,8 @@ class ChatService(
 
     private suspend fun handleMessageComplete(
         conversationId: Uuid,
-        messageRange: ClosedRange<Int>? = null
+        messageRange: ClosedRange<Int>? = null,
+        trustedUserIntent: String = "",
     ): Throwable? {
         val settings = settingsStore.awaitLoadedSettings()
         // Resolve the assistant from this conversation's own assistantId — the global
@@ -1106,7 +1150,7 @@ class ChatService(
 
             // memory tool
             if (!model.abilities.contains(ModelAbility.TOOL)) {
-                if (assistant.enableWebSearch || mcpManager.getAllAvailableTools().isNotEmpty()) {
+                if (assistant.enableWebSearch || mcpManager.getAllAvailableTools(assistant.id).isNotEmpty()) {
                     addError(
                         IllegalStateException(context.getString(R.string.tools_warning)),
                         conversationId,
@@ -1169,7 +1213,7 @@ class ChatService(
                 allLocalTools.add(localTools.javascriptTool)
             }
 
-            val availableMcpTools = mcpManager.getAllAvailableTools()
+            val availableMcpTools = mcpManager.getAllAvailableTools(assistant.id)
             val invalidMcpNames = availableMcpTools
                 .map { it.second }
                 .distinct()
@@ -1193,8 +1237,7 @@ class ChatService(
             }
 
             val mcpToolDefinitions = availableMcpTools.map { (serverId, serverName, tool) ->
-                val serverSlug = serverId.toString().take(8).replace("-", "")
-                val mcpToolName = "mcp__${serverSlug}_${serverName}__${tool.name}"
+                val mcpToolName = buildMcpToolName(serverId, serverName, tool.name)
                 // Cap MCP-provided descriptions: servers can ship multi-KB docs that
                 // would dominate search results and the declared schema once discovered.
                 val effectiveDesc = (tool.description?.takeIf { it.isNotBlank() }
@@ -1218,7 +1261,7 @@ class ChatService(
                             .ToolApprovalDefaults.requiresApproval(mcpToolName) ||
                             tool.needsApproval
                     },
-                    execute = { args -> mcpManager.callTool(serverId, tool.name, args.jsonObject) },
+                    execute = { args -> mcpManager.callTool(assistant.id, serverId, tool.name, args.jsonObject) },
                 )
             }
 
@@ -1341,7 +1384,7 @@ class ChatService(
                         me.rerere.rikkahub.data.ai.tools.HeadlessConversations
                             .shouldAutoApprove(conversationId)
                     } else {
-                        toolApprovalPreferences.currentYolo() ||
+                        (baseInvocationCtx.isHeadless && toolApprovalPreferences.currentYolo()) ||
                             me.rerere.rikkahub.data.ai.tools.HeadlessConversations
                                 .shouldAutoApprove(conversationId) ||
                             me.rerere.rikkahub.data.ai.tools.ToolApprovalAllowList
@@ -1349,6 +1392,12 @@ class ChatService(
                             toolApprovalPreferences.current().contains(toolName)
                     }
                 },
+                reviewToolForAutoApproval = autoApprovalPolicy::review,
+                currentPermissionMode = {
+                    if (baseInvocationCtx.isHeadless) null else toolApprovalPreferences.currentPermissionMode()
+                },
+                trustedUserIntent = trustedUserIntent,
+                persistToolState = true,
                 messages = generationMessages,
                 assistant = assistant,
                 conversationSystemPrompt = conversation.customSystemPrompt,
@@ -1395,22 +1444,9 @@ class ChatService(
                             .updateCurrentMessages(chunk.messages)
                         updateConversation(conversationId, updatedConversation)
 
-                        // Persist immediately when a tool transitions to "execution
-                        // started but no output yet" — this writes the executionStartedAt
-                        // breadcrumb to disk so a process kill mid-execute leaves a clear
-                        // signal for the next replay (see GenerationHandler.kt's replay
-                        // safety pass: Approved + executionStartedAt + empty → Denied
-                        // interrupted_unknown_outcome). Without this, the marker stays in
-                        // memory only and replay can't distinguish "freshly approved,
-                        // never tried" from "interrupted mid-execute" → silent re-run.
-                        val needsImmediatePersist = chunk.messages.lastOrNull()?.parts?.any { p ->
-                            p is UIMessagePart.Tool &&
-                                p.executionStartedAt != null &&
-                                p.output.isEmpty() &&
-                                p.approvalState is ToolApprovalState.Approved
-                        } ?: false
-                        if (needsImmediatePersist) {
+                        chunk.toolExecutionPersistenceAck?.let { acknowledgement ->
                             saveConversation(conversationId, updatedConversation)
+                            acknowledgement.complete(Unit)
                         }
 
                         // 如果应用不在前台，发送 Live Update 通知

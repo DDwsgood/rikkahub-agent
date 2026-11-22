@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.subagent
 
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
@@ -13,6 +15,12 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+
+internal fun parseSubAgentTimeoutSeconds(value: JsonElement?): Int? {
+    if (value == null) return SubAgentDefaults.DEFAULT_TIMEOUT_SECONDS
+    if (value !is JsonPrimitive || value.isString) return null
+    return value.intOrNull
+}
 
 private fun errEnv(error: String, detail: String): List<UIMessagePart> {
     val obj = buildJsonObject {
@@ -79,7 +87,12 @@ fun subagentDispatchTool(
                     )
                 })
                 put("run_in_background", buildJsonObject { put("type", "boolean") })
-                put("timeout_seconds", buildJsonObject { put("type", "integer") })
+                put("timeout_seconds", buildJsonObject {
+                    put("type", "integer")
+                    put("minimum", 1)
+                    put("default", SubAgentDefaults.DEFAULT_TIMEOUT_SECONDS)
+                    put("description", "How long to wait for the sub-agent, in seconds.")
+                })
                 put("max_trips", buildJsonObject { put("type", "integer") })
             },
             required = listOf("task"),
@@ -100,6 +113,8 @@ fun subagentDispatchTool(
         val params = args.jsonObject
         val task = params["task"]?.jsonPrimitive?.contentOrNull
             ?: return@Tool errEnv("invalid_task", "task is required")
+        val timeoutSeconds = parseSubAgentTimeoutSeconds(params["timeout_seconds"])
+            ?: return@Tool errEnv("invalid_timeout", "timeout_seconds must be a positive integer representable as Int")
         val request = SubAgentRequest(
             task = task,
             modelId = params["model_id"]?.jsonPrimitive?.contentOrNull,
@@ -107,8 +122,7 @@ fun subagentDispatchTool(
             tools = params["tools"]?.let { runCatching { it.jsonArray }.getOrNull() }
                 ?.mapNotNull { it.jsonPrimitive.contentOrNull },
             runInBackground = params["run_in_background"]?.jsonPrimitive?.booleanOrNull ?: false,
-            timeoutSeconds = params["timeout_seconds"]?.jsonPrimitive?.intOrNull
-                ?: SubAgentDefaults.DEFAULT_TIMEOUT_SECONDS,
+            timeoutSeconds = timeoutSeconds,
             maxTrips = params["max_trips"]?.jsonPrimitive?.intOrNull
                 ?: SubAgentDefaults.DEFAULT_MAX_TRIPS,
             label = params["label"]?.jsonPrimitive?.contentOrNull,

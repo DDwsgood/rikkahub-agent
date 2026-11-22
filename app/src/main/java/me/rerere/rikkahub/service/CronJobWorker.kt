@@ -16,7 +16,6 @@ import androidx.work.WorkerParameters
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
@@ -52,42 +51,36 @@ private const val TAG = "CronJobWorker"
 /** Outer bound on how long after [startedAtMs] a WorkManager replay can plausibly arrive. */
 internal const val REPLAY_WINDOW_MS = 10L * 60_000L
 
-/**
- * Wait for the ChatService generation job on [flow] to terminate (transition to null)
- * within a wall-clock [timeoutMs] cap. Returns `true` on natural completion, `false` if
- * the cap fired first.
- *
- * The `Unit` sentinel is load-bearing: `.first { it == null }` returns the matched value
- * (null), and `withTimeoutOrNull` also returns null on timeout. Without the sentinel the
- * two outcomes are indistinguishable — every successful LLM-mode cron run was
- * misclassified as `timed_out` until this fix. (SubAgentEngine carries the same fix
- * inline; this helper exists so a JVM unit test can pin the contract.)
- *
- * NOTE: the cron path now awaits the [SendMessageResult] handle returned by
- * [ChatService.sendMessage] (see [awaitSendMessageResult]) because the flow-based wait
- * cannot distinguish "finished" from "finished with a swallowed error". This helper is
- * retained (with its test) as the pinned contract for the sentinel pattern.
- */
+/** Wait for the generation flow to go idle within the caller's deadline (external automation). */
 internal suspend fun awaitGenerationTerminal(
     flow: Flow<Job?>,
     timeoutMs: Long,
 ): Boolean {
     val completed: Unit? = withTimeoutOrNull(timeoutMs) {
         flow.first { it == null }
-        Unit
+        Unit // Without this sentinel, both natural completion and timeout return null.
     }
     return completed != null
 }
 
 /**
- * Await the completion handle returned by [ChatService.sendMessage] within a wall-clock
- * [timeoutMs] cap. Returns the [SendMessageResult] on natural completion, or `null` if the
- * cap fired first (the run is then reported as `timed_out`).
+ * Await the actual turn result without a Cron deadline. The generation runs in
+ * ChatService's scope, so a stopped worker must explicitly cancel its own turn.
  */
-internal suspend fun awaitSendMessageResult(
-    handle: CompletableDeferred<SendMessageResult>,
-    timeoutMs: Long,
-): SendMessageResult? = withTimeoutOrNull(timeoutMs) { handle.await() }
+internal suspend fun awaitLlmTurn(turn: SendMessageTurn): SendMessageResult {
+    var finished = false
+    try {
+        val result = turn.result.await()
+        finished = true
+        return result
+    } finally {
+        withContext(NonCancellable) {
+            turn.job?.let { job ->
+                if (finished) job.join() else job.cancelAndJoin()
+            }
+        }
+    }
+}
 
 /**
  * The slot to stamp into the run row. Manual fires (trigger_job_now) happen at nowMs and
@@ -813,25 +806,13 @@ class CronJobWorker(
         conversationRepo.insertConversation(conv)
         chatService.initializeConversation(conv.id, updateGlobalAssistant = false)
         HeadlessConversations.mark(conv.id)
-        var turn: SendMessageTurn? = null
-        var finished = false
         try {
-            // sendMessage now returns a completion handle so the cron path observes
-            // the REAL success/failure — including provider/network/model exceptions that
-            // ChatService catches internally and surfaces via addError. The old
-            // flow-goes-null wait cannot distinguish "finished" from "finished with error".
-            val handle = chatService.startMessageTurn(conv.id, listOf(UIMessagePart.Text(prompt)))
-            turn = handle
-            // Wait for the send to terminate, with a 15-min wall-clock cap.
-            val result = awaitSendMessageResult(
-                handle = handle.result,
-                timeoutMs = 15L * 60_000L,
-            )
-            finished = result != null
-            return when {
-                result == null -> Triple("timed_out", "llm turn exceeded 15min", conv.id)
-                result.success -> Triple("success", null, conv.id)
-                else -> Triple("failed", result.errorMessage ?: "llm send failed", conv.id)
+            val turn = chatService.startMessageTurn(conv.id, listOf(UIMessagePart.Text(prompt)))
+            val result = awaitLlmTurn(turn)
+            return if (result.success) {
+                Triple("success", null, conv.id)
+            } else {
+                Triple("failed", result.errorMessage ?: "llm send failed", conv.id)
             }
         } catch (c: CancellationException) {
             // WorkManager cancellation (deadline, replacement, system preemption) must
@@ -840,12 +821,7 @@ class CronJobWorker(
         } catch (t: Throwable) {
             return Triple("failed", "${t::class.simpleName}: ${t.message.orEmpty()}", conv.id)
         } finally {
-            withContext(NonCancellable) {
-                turn?.job?.let { job ->
-                    if (finished) job.join() else job.cancelAndJoin()
-                }
-                HeadlessConversations.unmark(conv.id)
-            }
+            HeadlessConversations.unmark(conv.id)
         }
     }
 

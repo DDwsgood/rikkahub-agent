@@ -37,6 +37,11 @@ class McpControlValidationTest {
         assertTrue(McpControlValidation.validateName(ok, emptyList()) is McpControlValidation.Result.Ok)
     }
 
+    @Test fun `name that ChatService cannot dispatch is rejected before enabling the server`() {
+        val result = McpControlValidation.validateName("new server", emptyList())
+        assertEquals("invalid_name", (result as McpControlValidation.Result.Reject).error)
+    }
+
     @Test fun `case-insensitive duplicate rejected`() {
         val existing = listOf(mkServer("Fetch"))
         val r = McpControlValidation.validateName("fetch", existing)

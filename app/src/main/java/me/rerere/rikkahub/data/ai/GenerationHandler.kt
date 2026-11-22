@@ -8,14 +8,16 @@ import android.util.Log
 import android.widget.Toast
 import me.rerere.rikkahub.BuildConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.withTimeoutOrNull
 import me.rerere.rikkahub.service.AgentOverlay
 import me.rerere.rikkahub.service.RikkaAccessibilityService
 import kotlinx.datetime.TimeZone
@@ -24,6 +26,7 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -53,7 +56,10 @@ import java.io.File
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
+import me.rerere.rikkahub.data.ai.approval.ToolReviewAction
+import me.rerere.rikkahub.data.ai.approval.ToolReviewResult
 import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
+import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
 import me.rerere.rikkahub.data.datastore.Settings
@@ -61,6 +67,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.preferences.ChatPermissionMode
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
@@ -70,6 +77,10 @@ import kotlin.uuid.Uuid
 private const val TAG = "GenerationHandler"
 private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
 private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
+
+// Search results are bounded by the configured result count; citations and model input need the full JSON.
+internal fun shouldTruncateToolOutput(toolName: String, totalChars: Int, hasShellAccess: Boolean): Boolean =
+    toolName != "search_web" && hasShellAccess && totalChars > MAX_TOOL_OUTPUT_CHARS
 
 /**
  * Replace older tool-result `Image` parts with a small text elision so the same JPEGs
@@ -109,8 +120,49 @@ private fun List<UIMessage>.ageOldToolImages(): List<UIMessage> {
 @Serializable
 sealed interface GenerationChunk {
     data class Messages(
-        val messages: List<UIMessage>
+        val messages: List<UIMessage>,
+        // The collector must acknowledge this snapshot only after it is durable.
+        @kotlinx.serialization.Transient val toolExecutionPersistenceAck: CompletableDeferred<Unit>? = null,
     ) : GenerationChunk
+}
+
+internal suspend fun reviewForPermissionMode(
+    mode: ChatPermissionMode?,
+    currentMode: suspend () -> ChatPermissionMode?,
+    review: suspend () -> ToolReviewResult,
+): ToolReviewResult? = when (mode) {
+    null, ChatPermissionMode.MANUAL -> null
+    ChatPermissionMode.FULL_ACCESS -> ToolReviewResult.allow("full_access")
+    ChatPermissionMode.AUTO_REVIEW -> {
+        val result = review()
+        if (currentMode() != mode) {
+            ToolReviewResult.askUser("permission_mode_changed")
+        } else {
+            result
+        }
+    }
+}
+
+internal suspend fun persistToolExecutionState(
+    messages: List<UIMessage>,
+    emit: suspend (GenerationChunk.Messages) -> Unit,
+) {
+    val acknowledged = CompletableDeferred<Unit>()
+    emit(GenerationChunk.Messages(messages, acknowledged))
+    acknowledged.await()
+}
+
+internal fun UIMessagePart.Tool.awaitApprovalBeforeExecution(): UIMessagePart.Tool = copy(
+    approvalState = ToolApprovalState.Pending,
+    executionStartedAt = null,
+)
+
+private fun List<UIMessage>.withUpdatedTools(tools: List<UIMessagePart.Tool>): List<UIMessage> {
+    val replacements = tools.associateBy { it.toolCallId }
+    val message = last()
+    return dropLast(1) + message.copy(parts = message.parts.map { part ->
+        if (part is UIMessagePart.Tool) replacements[part.toolCallId] ?: part else part
+    })
 }
 
 private const val TAG_GH_LOOP = "GenHandlerLoop"
@@ -125,13 +177,14 @@ private const val TAG_GH_LOOP = "GenHandlerLoop"
  */
 private const val LOOP_GUARD_REPEAT_THRESHOLD = 3
 
-// There is no per-turn wall-clock budget anymore (historically hardcoded here at 10 min,
-// then configurable via a runtime holder / Settings -> Termux; both are gone). A single user
-// turn terminates when the model finishes or one of the bounded guards fires: the per-tool
-// execution timeout (each tool call is hard-capped at
-// ToolRuntimeLimits.perToolExecutionTimeoutMs so a hanging tool can't stall the turn),
-// maxToolSteps (model loop cap), the loop guard (identical-call detection), or user
-// Stop / coroutine cancellation.
+// There is no generation-loop wall-clock budget or shared per-tool execution timeout.
+// Individual tools may enforce operation-specific timeouts. A single user turn terminates
+// when the model finishes or one of the bounded guards fires: maxToolSteps (model loop cap),
+// the loop guard (identical-call detection), or user Stop / coroutine cancellation.
+
+/** A configured value of zero removes the per-turn tool-step limit. */
+internal fun hasToolStepBudgetRemaining(stepIndex: Int, maxSteps: Int): Boolean =
+    maxSteps == 0 || stepIndex < maxSteps
 
 /**
  * Max number of times the loop guard can trip in a single turn before we force-end the
@@ -264,59 +317,6 @@ internal fun resumableToolsIncludingUnexecutedAuto(
         (tool.approvalState is ToolApprovalState.Auto && !tool.isExecuted && tool.executionStartedAt == null)
 }
 
-/** Result of a single tool execution under the per-tool execution timeout. */
-internal sealed interface ToolExecutionOutcome {
-    /** The tool produced output within the timeout. */
-    data class Completed(val output: List<UIMessagePart>) : ToolExecutionOutcome
-
-    /** The tool did not finish within [timeoutMs] and was cancelled. */
-    data class TimedOut(val timeoutMs: Long) : ToolExecutionOutcome
-}
-
-/**
- * Execute a single tool with a hard per-tool execution timeout. If the tool doesn't complete
- * within [timeoutMs] it is cancelled and [ToolExecutionOutcome.TimedOut] is returned, so a
- * hanging tool (e.g. fused location awaiting a fix) can't stall the turn indefinitely. This
- * is a per-tool cap, independent of the (removed) per-turn wall-clock budget: a turn may run
- * many tool calls, each individually bounded by [timeoutMs].
- *
- * The default reads [ToolRuntimeLimits.perToolExecutionTimeoutMs] live so a runtime change
- * takes effect on the next call. Extracted from [GenerationHandler.generateText] so the
- * timeout behavior can be unit-tested without an Android Context.
- */
-internal suspend fun executeToolWithTimeout(
-    toolDef: Tool,
-    args: JsonElement,
-    timeoutMs: Long = ToolRuntimeLimits.perToolExecutionTimeoutMs,
-): ToolExecutionOutcome =
-    when (val result = withTimeoutOrNull(timeoutMs) { toolDef.execute(args) }) {
-        null -> ToolExecutionOutcome.TimedOut(timeoutMs)
-        else -> ToolExecutionOutcome.Completed(result)
-    }
-
-/**
- * Structured "tool_cancelled_timeout" envelope returned to the model when a single tool hits
- * the per-tool execution timeout (same JSON style as the old wall-clock envelope). Built by
- * the caller so the `withTimeoutOrNull` path itself stays free of Android calls and remains
- * JVM-unit-testable.
- */
-internal fun buildToolCancelledTimeoutEnvelope(json: Json, timeoutMs: Long): List<UIMessagePart> =
-    listOf(
-        UIMessagePart.Text(
-            json.encodeToString(
-                buildJsonObject {
-                    put("error", JsonPrimitive("tool_cancelled_timeout"))
-                    put(
-                        "detail",
-                        JsonPrimitive(
-                            "tool execution exceeded the ${timeoutMs / 1000}s single-tool timeout"
-                        )
-                    )
-                }
-            )
-        )
-    )
-
 /**
  * Merge steered user messages into the running turn's working message list. A steered
  * message is appended to the transcript before it is enqueued, so a message enqueued
@@ -359,6 +359,17 @@ class GenerationHandler(
         // closure that reads ToolApprovalAllowList + ToolApprovalPreferences. Default
         // returns false so callers that don't care still get vanilla approval gating.
         isToolAutoApproved: suspend (toolName: String) -> Boolean = { false },
+        // AUTO_REVIEW receives the parsed arguments as well as the tool name. It runs before
+        // the ordinary needsApproval gate so privacy-sensitive, nominally-free tools are seen.
+        reviewToolForAutoApproval: (suspend (
+            toolName: String,
+            args: JsonObject,
+            needsApproval: Boolean,
+            userIntent: String,
+        ) -> ToolReviewResult)? = null,
+        currentPermissionMode: suspend () -> ChatPermissionMode? = { null },
+        trustedUserIntent: String = "",
+        persistToolState: Boolean = false,
         // Optional per-call addendum appended to the system prompt. Used by surfaces that
         // need the model to know runtime context (e.g. "you're talking via Telegram, the
         // chat_id is 12345") without polluting the user message body — without this the
@@ -403,8 +414,10 @@ class GenerationHandler(
         }
 
         var loopGuardTripCount = 0
+        var userIntent = trustedUserIntent
 
-        for (stepIndex in 0 until maxSteps) {
+        var stepIndex = 0
+        while (hasToolStepBudgetRemaining(stepIndex, maxSteps)) {
             // Repeated loop-guard trips mean the model is flailing: it bumps into the
             // guard, picks a different tool, that one also gets guarded, and so on. After
             // N trips we just stop — the model is not going to recover, and every extra
@@ -483,10 +496,17 @@ class GenerationHandler(
                 // follow-up generation instead.)
                 val steered = pendingSteerProvider?.invoke().orEmpty()
                 if (steered.isNotEmpty()) {
+                    // The steering queue carries messages, not authorization evidence.
+                    userIntent = ""
                     messages = mergeSteeredMessages(messages, steered)
                     emit(GenerationChunk.Messages(messages))
                 }
                 try {
+                    val requestModel = if (currentPermissionMode() == ChatPermissionMode.AUTO_REVIEW) {
+                        model.copy(tools = emptySet())
+                    } else {
+                        model
+                    }
                     generateInternal(
                         assistant = assistant,
                         settings = settings,
@@ -513,7 +533,7 @@ class GenerationHandler(
                             )
                         },
                         transformers = inputTransformers,
-                        model = model,
+                        model = requestModel,
                         providerImpl = providerImpl,
                         provider = provider,
                         tools = toolsInternal,
@@ -579,81 +599,7 @@ class GenerationHandler(
                     break
                 }
 
-                // Imperative loop (was .map) so we can call the suspending
-                // [isToolAutoApproved] FRESH per-tool, not from a frozen pre-resolved set.
-                // Without this, a grant landing between the pre-resolve and the .map
-                // (user taps Always-Allow on tool X mid-iteration) gets ignored — X
-                // flips to Pending and a duplicate prompt is emitted even though X is
-                // now persisted-approved.
-                var hasPendingApproval = false
-                val updatedTools = ArrayList<UIMessagePart.Tool>(tools.size)
-                for (tool in tools) {
-                    val toolDef = resolveTool(tool.toolName)
-                    // HARDLINE check: certain command patterns (rm -rf /, mkfs, shutdown,
-                    // fork bomb, …) are blocked unconditionally — even "Always Allow"
-                    // can't override. We check BEFORE the auto-approval lookup so a
-                    // permanently-allowed termux/ssh tool still can't smuggle one of
-                    // these through. Result: tool is marked Denied with the hardline
-                    // reason, the regular Denied branch downstream emits an error
-                    // envelope to the model without executing.
-                    val hardlineReason = me.rerere.rikkahub.data.ai.tools
-                        .HardlineCommandGuard.checkTool(tool.toolName, tool.input)
-                    val transformed = when {
-                        hardlineReason != null && tool.approvalState is ToolApprovalState.Auto -> {
-                            Log.w(TAG, "hardline-blocked ${tool.toolName}: $hardlineReason")
-                            tool.copy(approvalState = ToolApprovalState.Denied(
-                                "blocked by safety floor (hardline): $hardlineReason. " +
-                                    "This command cannot run via the agent under any " +
-                                    "circumstances. If the user genuinely needs it, they " +
-                                    "should run it themselves in a terminal outside the agent."
-                            ))
-                        }
-                        // Tool needs approval and state is Auto:
-                        toolDef?.needsApproval(tool.inputAsJson()) == true &&
-                            tool.approvalState is ToolApprovalState.Auto -> {
-                            // Fresh per-tool auto-approval check (was a frozen pre-
-                            // resolved set). Costs a DataStore.first() per tool but tools
-                            // are typically <5 per turn so the latency is negligible, and
-                            // freshness matters for the YOLO toggle / mid-iteration grants.
-                            if (isToolAutoApproved(tool.toolName)) {
-                                tool  // leave as Auto so the executor runs it without prompting
-                            } else {
-                                hasPendingApproval = true
-                                tool.copy(approvalState = ToolApprovalState.Pending)
-                            }
-                        }
-                        // State is Pending -> keep waiting
-                        tool.approvalState is ToolApprovalState.Pending -> {
-                            hasPendingApproval = true
-                            tool
-                        }
-
-                        else -> tool
-                    }
-                    updatedTools.add(transformed)
-                }
-
-                // If any tools were updated to Pending, update the message and break
-                if (updatedTools != tools) {
-                    val lastMessage = messages.last()
-                    val updatedParts = lastMessage.parts.map { part ->
-                        if (part is UIMessagePart.Tool) {
-                            updatedTools.find { it.toolCallId == part.toolCallId } ?: part
-                        } else {
-                            part
-                        }
-                    }
-                    messages = messages.dropLast(1) + lastMessage.copy(parts = updatedParts)
-                    emit(GenerationChunk.Messages(messages))
-                }
-
-                // If there are pending approvals, break and wait for user
-                if (hasPendingApproval) {
-                    Log.i(TAG, "generateText: waiting for tool approval")
-                    break
-                }
-
-                toolsToProcess = updatedTools
+                toolsToProcess = tools
             } else {
                 // Resuming after user interaction - use the resumable tools, plus any Auto
                 // sibling from the same step that never executed because the step broke early
@@ -662,9 +608,73 @@ class GenerationHandler(
                 Log.i(TAG, "generateText: resuming with ${toolsToProcess.size} resumable tools")
             }
 
+            val callIds = messages.last().getTools().map { it.toolCallId }
+            check(callIds.size == callIds.toSet().size) { "Duplicate tool call IDs in a single tool batch" }
+            val parsedInputs = toolsToProcess.associate { tool ->
+                tool.toolCallId to runCatching {
+                    json.parseToJsonElement(tool.input.ifBlank { "{}" }) as? JsonObject
+                        ?: error("Tool arguments must be a JSON object")
+                }
+            }
+            val approvedModes = mutableMapOf<String, ChatPermissionMode?>()
+            suspend fun authorizeAutoCall(tool: UIMessagePart.Tool, mode: ChatPermissionMode?): UIMessagePart.Tool {
+                if (tool.approvalState !is ToolApprovalState.Auto) return tool
+                val hardlineReason = HardlineCommandGuard.checkTool(tool.toolName, tool.input)
+                if (hardlineReason != null) {
+                    return tool.copy(approvalState = ToolApprovalState.Denied(
+                        "blocked by safety floor (hardline): $hardlineReason"
+                    ))
+                }
+                // Invalid input or a missing tool is handled by the executor without running it.
+                val args = parsedInputs[tool.toolCallId]?.getOrNull() ?: return tool
+                val toolDef = resolveTool(tool.toolName) ?: return tool
+                val needsApproval = toolDef.needsApproval(args)
+                val review = if (tool.toolName != "ask_user" && reviewToolForAutoApproval != null) {
+                    reviewForPermissionMode(mode, currentPermissionMode) {
+                        reviewToolForAutoApproval(tool.toolName, args, needsApproval, userIntent)
+                    }
+                } else {
+                    null
+                }
+                val allowed = if (review != null) {
+                    review.action == ToolReviewAction.ALLOW
+                } else {
+                    !needsApproval || isToolAutoApproved(tool.toolName)
+                }
+                if (!allowed) return tool.awaitApprovalBeforeExecution()
+                approvedModes[tool.toolCallId] = mode
+                return tool
+            }
+
+            val authorizedTools = toolsToProcess.map { tool ->
+                if (tool.approvalState is ToolApprovalState.Auto) {
+                    authorizeAutoCall(tool, currentPermissionMode())
+                } else {
+                    tool
+                }
+            }
+            if (authorizedTools != toolsToProcess) {
+                messages = messages.withUpdatedTools(authorizedTools)
+                emit(GenerationChunk.Messages(messages))
+            }
+            if (messages.last().getTools().any { it.isPending }) break
+
             // Handle tools (execute approved tools, handle denied tools)
             val executedTools = arrayListOf<UIMessagePart.Tool>()
-            toolsToProcess.forEach { tool ->
+            var pendingTool: UIMessagePart.Tool? = null
+            var persistStartRollback = false
+            authorizedTools.forEach { candidate ->
+                if (pendingTool != null) return@forEach
+                val tool = if (approvedModes.containsKey(candidate.toolCallId)) {
+                    val mode = currentPermissionMode()
+                    if (mode != approvedModes[candidate.toolCallId]) authorizeAutoCall(candidate, mode) else candidate
+                } else {
+                    candidate
+                }
+                if (tool.isPending) {
+                    pendingTool = tool
+                    return@forEach
+                }
                 when (tool.approvalState) {
                     is ToolApprovalState.Denied -> {
                         // Tool was denied by user
@@ -798,9 +808,7 @@ class GenerationHandler(
                         // which includes the entire failed input — lands in the LLM-facing
                         // `detail` field, can be thousands of tokens, and the model often
                         // retries the same too-big call.
-                        val parsedArgs = runCatching {
-                            json.parseToJsonElement(tool.input.ifBlank { "{}" })
-                        }
+                        val parsedArgs = parsedInputs.getValue(tool.toolCallId)
                         if (parsedArgs.isFailure) {
                             val cause = parsedArgs.exceptionOrNull()
                             Log.w(TAG, "tool ${tool.toolName} args failed to parse (likely truncated stream)", cause)
@@ -836,48 +844,45 @@ class GenerationHandler(
                             )
                             return@forEach
                         }
+                        val toolDef = resolveTool(tool.toolName)
+                        if (toolDef == null) {
+                            val availableNames = buildSet {
+                                toolsInternal.forEach { add(it.name) }
+                                invocationContext?.resolvableToolsProvider?.invoke()?.forEach { add(it.name) }
+                                invocationContext?.dynamicToolsProvider?.invoke()?.forEach { add(it.name) }
+                            }
+                            Log.w(TAG, "tool ${tool.toolName} not found among ${availableNames.size} available tools")
+                            executedTools += tool.copy(output = listOf(toolNotFoundResult(tool.toolName, availableNames)))
+                            return@forEach
+                        }
                         runCatching {
-                            val toolDef = resolveTool(tool.toolName)
-                                ?: error("Tool ${tool.toolName} not found")
                             val args = parsedArgs.getOrThrow()
                             if (BuildConfig.DEBUG) {
                                 Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: ${redactSecrets(args)}")
                             }
-                            // Mark the tool as "execution started" BEFORE actually running.
-                            // ChatService persists this when it sees the chunk so a process
-                            // kill between mark-and-output leaves a clear breadcrumb on disk:
-                            // on replay we'll see Approved + executionStartedAt + empty output
-                            // and refuse to silently re-run. The mark survives via the
-                            // existing emit-and-persist plumbing — see ChatService chunk
-                            // handler's needsImmediatePersist branch.
+                            // A buffered flow emission is not a disk acknowledgement. Wait for
+                            // the collector to persist both manual and automatic execution marks.
                             val markedTool = tool.copy(executionStartedAt = System.currentTimeMillis())
-                            run {
-                                val lastMsg = messages.lastOrNull()
-                                if (lastMsg != null) {
-                                    val markedParts = lastMsg.parts.map { p ->
-                                        if (p is UIMessagePart.Tool && p.toolCallId == tool.toolCallId) markedTool else p
-                                    }
-                                    messages = messages.dropLast(1) + lastMsg.copy(parts = markedParts)
-                                    emit(GenerationChunk.Messages(messages))
-                                }
+                            messages = messages.withUpdatedTools(executedTools + markedTool)
+                            if (persistToolState) {
+                                persistToolExecutionState(messages) { emit(it) }
+                            } else {
+                                emit(GenerationChunk.Messages(messages))
                             }
-                            // Execute the tool, hard-capped by the per-tool execution timeout
-                            // so a hanging tool (e.g. fused location awaiting a fix) can't
-                            // stall the turn indefinitely. This is per-tool, independent of
-                            // the (removed) per-turn wall-clock budget. The remaining
-                            // termination guarantees are: maxToolSteps (model loop cap), the
-                            // loop guard (identical-call detection), and user Stop /
-                            // coroutine cancellation (still interrupts execution mid-tool).
-                            val result = when (val outcome = executeToolWithTimeout(toolDef, args)) {
-                                is ToolExecutionOutcome.Completed -> outcome.output
-                                is ToolExecutionOutcome.TimedOut -> {
-                                    Log.w(
-                                        TAG,
-                                        "generateText: ${toolDef.name} cancelled — per-tool execution timeout (${outcome.timeoutMs}ms) exceeded"
-                                    )
-                                    buildToolCancelledTimeoutEnvelope(json, outcome.timeoutMs)
-                                }
+                            if (approvedModes.containsKey(tool.toolCallId) &&
+                                currentPermissionMode() != approvedModes[tool.toolCallId]
+                            ) {
+                                // Execution never began. Roll back the durable start mark before
+                                // pausing, so the next approval is not treated as an interrupted run.
+                                pendingTool = markedTool.awaitApprovalBeforeExecution()
+                                persistStartRollback = persistToolState
+                                return@runCatching
                             }
+                            currentCoroutineContext().ensureActive()
+                            // Execute without a generation-loop wall-clock cap. Tools may
+                            // enforce their own operation-specific timeout. User Stop and
+                            // coroutine cancellation still interrupt execution mid-tool.
+                            val result = toolDef.execute(args)
                             // Upstream tool-output truncation: when the workspace shell is
                             // available, oversized text output is spilled to /tool_outputs/
                             // and replaced with a preview + read/grep instructions so the
@@ -885,7 +890,7 @@ class GenerationHandler(
                             // the context window.
                             val hasShellAccess = toolsInternal.any { it.name == "workspace_shell" }
                             executedTools += markedTool.copy(
-                                output = maybeTruncateToolOutput(tool.toolCallId, result, hasShellAccess)
+                                output = maybeTruncateToolOutput(markedTool, result, hasShellAccess)
                             )
                         }.onFailure {
                             // Honour cancellation verbatim: runCatching catches Throwable
@@ -933,30 +938,28 @@ class GenerationHandler(
                 }
             }
 
-            if (executedTools.isEmpty()) {
+            val pausedTool = pendingTool
+            if (executedTools.isEmpty() && pausedTool == null) {
                 // No results to add (all tools were pending)
                 break
             }
 
-            // Update last message with executed tools (NOT create TOOL message)
-            val lastMessage = messages.last()
-            val updatedParts = lastMessage.parts.map { part ->
-                if (part is UIMessagePart.Tool) {
-                    executedTools.find { it.toolCallId == part.toolCallId } ?: part
-                } else part
-            }
-            messages = messages.dropLast(1) + lastMessage.copy(parts = updatedParts)
-            emit(
-                GenerationChunk.Messages(
-                    messages.transforms(
-                        transformers = outputTransformers,
-                        context = context,
-                        model = model,
-                        assistant = assistant,
-                        settings = settings
-                    )
-                )
+            // Keep a paused call out of the execution results and replace its marked snapshot.
+            messages = messages.withUpdatedTools(executedTools + listOfNotNull(pausedTool))
+            val updatedMessages = messages.transforms(
+                transformers = outputTransformers,
+                context = context,
+                model = model,
+                assistant = assistant,
+                settings = settings,
             )
+            if (persistStartRollback) {
+                persistToolExecutionState(updatedMessages) { emit(it) }
+            } else {
+                emit(GenerationChunk.Messages(updatedMessages))
+            }
+            if (pausedTool != null) break
+            stepIndex += 1
         }
 
     }
@@ -1160,16 +1163,17 @@ class GenerationHandler(
     }
 
     private fun maybeTruncateToolOutput(
-        toolCallId: String,
+        tool: UIMessagePart.Tool,
         output: List<UIMessagePart>,
         hasShellAccess: Boolean,
     ): List<UIMessagePart> {
         val textParts = output.filterIsInstance<UIMessagePart.Text>()
-        val nonTextParts = output.filter { it !is UIMessagePart.Text }
         val totalChars = textParts.sumOf { it.text.length }
 
-        if (totalChars <= MAX_TOOL_OUTPUT_CHARS || !hasShellAccess) return output
+        if (!shouldTruncateToolOutput(tool.toolName, totalChars, hasShellAccess)) return output
 
+        val toolCallId = tool.toolCallId
+        val nonTextParts = output.filter { it !is UIMessagePart.Text }
         Log.i(TAG, "maybeTruncateToolOutput: truncating tool $toolCallId output ($totalChars chars)")
 
         val fullText = textParts.joinToString("\n") { it.text }
@@ -1265,3 +1269,9 @@ class GenerationHandler(
         }
     }.flowOn(Dispatchers.IO)
 }
+internal fun toolNotFoundResult(toolName: String, availableNames: Iterable<String>): UIMessagePart.Text =
+    UIMessagePart.Text(buildJsonObject {
+        put("error", JsonPrimitive("tool_not_found"))
+        put("detail", JsonPrimitive("Tool '$toolName' was called but is not among the tools available this turn."))
+        put("tools_available_this_turn", JsonPrimitive(availableNames.joinToString(", ").take(1500)))
+    }.toString())

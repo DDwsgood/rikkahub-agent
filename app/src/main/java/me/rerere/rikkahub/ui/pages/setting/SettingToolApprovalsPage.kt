@@ -40,7 +40,13 @@ import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
+import me.rerere.ai.provider.ModelType
+import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.preferences.ToolApprovalPreferences
+import me.rerere.rikkahub.data.preferences.availableApprovalDecisionModel
+import me.rerere.rikkahub.data.preferences.supportsApprovalReview
+import me.rerere.rikkahub.ui.components.ai.ModelSelector
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -62,6 +68,8 @@ import org.koin.compose.koinInject
 @Composable
 fun SettingToolApprovalsPage() {
     val prefs: ToolApprovalPreferences = koinInject()
+    val settingsStore: SettingsStore = koinInject()
+    val settings by settingsStore.settingsFlow.collectAsStateWithLifecycle()
     val granted by prefs.alwaysAllowFlow.collectAsStateWithLifecycle(initialValue = emptySet())
     val yolo by prefs.globalYoloFlow.collectAsStateWithLifecycle(initialValue = false)
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -168,6 +176,55 @@ fun SettingToolApprovalsPage() {
                             checkedThumbColor = MaterialTheme.colorScheme.error,
                             checkedTrackColor = MaterialTheme.colorScheme.error.copy(alpha = 0.3f),
                         ) else SwitchDefaults.colors(),
+                    )
+                }
+            }
+
+            item {
+                val decisionModel = settings.availableApprovalDecisionModel()
+                val decisionProviders = remember(settings.providers) {
+                    settings.providers.filter { it.enabled }.map { provider ->
+                        provider.copyProvider(models = provider.models.filter { it.supportsApprovalReview() })
+                    }
+                }
+                CardGroup(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                ) {
+                    item(
+                        headlineContent = {
+                            Text(stringResource(R.string.setting_page_tool_approvals_decision_model))
+                        },
+                        supportingContent = {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(stringResource(R.string.setting_page_tool_approvals_decision_model_desc))
+                                ModelSelector(
+                                    modelId = decisionModel?.id,
+                                    providers = decisionProviders,
+                                    type = ModelType.CHAT,
+                                    allowClear = true,
+                                    onSelect = { model ->
+                                        scope.launch {
+                                            settingsStore.update {
+                                                it.copy(approvalDecisionModelId = model.id.takeIf { model.modelId.isNotBlank() })
+                                            }
+                                        }
+                                    },
+                                )
+                                val provider = decisionModel?.findProvider(settings.providers, checkOverwrite = false)
+                                if (provider != null) {
+                                    Text(provider.name, style = MaterialTheme.typography.bodySmall)
+                                } else if (settings.approvalDecisionModelId != null) {
+                                    Text(stringResource(R.string.permission_mode_model_missing))
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            settingsStore.update { it.copy(approvalDecisionModelId = null) }
+                                        }
+                                    }) { Text(stringResource(R.string.common_clear)) }
+                                }
+                            }
+                        },
                     )
                 }
             }

@@ -3,7 +3,6 @@ package me.rerere.rikkahub.service
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -14,8 +13,8 @@ import org.junit.Test
 /**
  * Pins the cron↔ChatService success/failure contract.
  *
- * CronJobWorker now awaits the [SendMessageResult] handle returned by
- * [ChatService.sendMessage] instead of inferring success from the generation flow going
+ * CronJobWorker awaits the [SendMessageResult] handle returned by
+ * [ChatService.startMessageTurn] instead of inferring success from the generation flow going
  * null (which cannot distinguish "finished" from "finished with a swallowed exception").
  *
  * The tests exercise the PRODUCTION helpers ChatService uses — [sendFailureResult] for the
@@ -28,10 +27,10 @@ class CronJobWorkerLlmResultTest {
     @Test
     fun `completed success handle is observed as success`() = runBlocking {
         val handle = CompletableDeferred<SendMessageResult>()
-        val deferred = async { awaitSendMessageResult(handle, timeoutMs = 5_000L) }
+        val deferred = async { awaitLlmTurn(SendMessageTurn(handle, job = null)) }
         handle.complete(SendMessageResult(success = true))
         val result = deferred.await()
-        assertTrue("a naturally-completed send must be observed as success", result!!.success)
+        assertTrue("a naturally-completed send must be observed as success", result.success)
         assertNull("a success has no error message", result.errorMessage)
     }
 
@@ -48,10 +47,10 @@ class CronJobWorkerLlmResultTest {
         // Mirrors exactly what ChatService.sendMessage's catch block does: addError for the
         // UI AND complete the returned handle via the production sendFailureResult mapping.
         val handle = CompletableDeferred<SendMessageResult>()
-        val deferred = async { awaitSendMessageResult(handle, timeoutMs = 5_000L) }
+        val deferred = async { awaitLlmTurn(SendMessageTurn(handle, job = null)) }
         handle.complete(sendFailureResult(RuntimeException("java.net.UnknownHostException: api.example.com")))
         val result = deferred.await()
-        assertEquals("an internally-caught exception must surface as failure", false, result!!.success)
+        assertEquals("an internally-caught exception must surface as failure", false, result.success)
         assertTrue("the error message must reach the cron path", result.errorMessage!!.contains("UnknownHostException"))
         assertTrue("the exception type must be visible", result.errorMessage!!.contains("RuntimeException"))
     }
@@ -61,22 +60,10 @@ class CronJobWorkerLlmResultTest {
         // ChatService treats cancellation as a non-error for the UI but completes the
         // handle with failure so awaiters can observe it instead of hanging forever.
         val handle = CompletableDeferred<SendMessageResult>()
-        val deferred = async { awaitSendMessageResult(handle, timeoutMs = 5_000L) }
+        val deferred = async { awaitLlmTurn(SendMessageTurn(handle, job = null)) }
         handle.complete(SendMessageResult(success = false, errorMessage = "cancelled: replaced by newer turn"))
         val result = deferred.await()
-        assertEquals(false, result!!.success)
-    }
-
-    @Test
-    fun `never-completing handle times out to null`() = runBlocking {
-        val handle = CompletableDeferred<SendMessageResult>()
-        val deferred = async { awaitSendMessageResult(handle, timeoutMs = 100L) }
-        // Keep the handle referenced so the deferred doesn't get finalized early.
-        delay(50L)
-        assertNull(
-            "a send that never terminates must report timed_out (null), not success",
-            deferred.await(),
-        )
+        assertEquals(false, result.success)
     }
 
     // ---------- identity-safe completion guard (production helper) ----------

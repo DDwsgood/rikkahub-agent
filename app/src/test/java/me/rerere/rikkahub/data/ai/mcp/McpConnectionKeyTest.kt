@@ -41,6 +41,21 @@ class McpConnectionKeyTest {
     }
 
     @Test
+    fun `empty and blank header names are ignored without losing valid headers`() {
+        val config = base.copy(
+            commonOptions = base.commonOptions.copy(
+                headers = listOf("" to "empty", " \t" to "blank", "Accept" to "application/json"),
+                oauth = McpOAuthState(enabled = true, accessToken = "oauth-token"),
+            ),
+        )
+
+        assertEquals(
+            listOf("Accept" to "application/json", "Authorization" to "Bearer oauth-token"),
+            config.connectionKey().headers,
+        )
+    }
+
+    @Test
     fun `oauth token affects connection key unless manual authorization header wins`() {
         val oauth = McpOAuthState(enabled = true, accessToken = "oauth-token")
         val withOAuth = base.copy(commonOptions = base.commonOptions.copy(oauth = oauth))

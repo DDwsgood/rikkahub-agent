@@ -1787,7 +1787,6 @@
   <string name="setting_page_scheduled_jobs_exact_permission_grant">Предоставить доступ</string>
   <string name="scheduled_job_execution_notification_title">Выполняется запланированное задание</string>
   <string name="scheduled_job_execution_notification_preparing">Подготовка запланированного задания</string>
-
   <string name="assistant_page_context_message_limit">Лимит контекстных сообщений</string>
   <string name="assistant_page_context_message_limit_desc">Ограничивает количество последних сообщений, отправляемых модели. Когда лимит превышен, контекст сокращается примерно вдвое за один шаг, вместо удаления одного сообщения за каждый оборот, благодаря чему префикс запроса остаётся стабильным, и кэширование промптов продолжает работать на протяжении многих оборотов.</string>
   <string name="assistant_page_context_message_limit_count">Лимит сообщений контекста: %d</string>
@@ -1897,7 +1896,7 @@
   <string name="setting_termux_unit_seconds">секунды</string>
   <string name="setting_termux_unit_steps">шаги</string>
   <string name="setting_termux_max_tool_steps">Шагов инструментов за ход</string>
-  <string name="setting_termux_max_tool_steps_desc">Сколько вызовов инструментов может связать один ответ до принудительного завершения. Увеличьте для длительной установки или сборки. От 1 до 500.</string>
+  <string name="setting_termux_max_tool_steps_desc">Число связанных вызовов инструментов в одном ответе. По умолчанию 500; 0 — без ограничений. Для положительных чисел верхнего предела нет.</string>
   <string name="setting_termux_unit_bytes">байты</string>
   <string name="setting_termux_section_defaults">Значения по умолчанию и лимиты</string>
   <string name="setting_termux_working_dir">Рабочий каталог по умолчанию</string>
@@ -2425,5 +2424,16 @@
   <string name="workspace_file_editor_read_failed">Не удалось прочитать файл</string>
   <string name="workspace_file_editor_save_failed">Не удалось сохранить файл</string>
   <string name="workspace_file_editor_saved">Файл сохранён</string>
+  <string name="permission_mode_manual">Ручное одобрение</string>
+  <string name="permission_mode_auto_review">Одобрение моделью</string>
+  <string name="permission_mode_full_access">Полный доступ</string>
+  <string name="permission_mode_manual_desc">Показывать обычные действия: разрешить, отклонить и всегда разрешать</string>
+  <string name="permission_mode_auto_review_desc">Модель проверяет безопасные или разрешённые пользователем действия</string>
+  <string name="permission_mode_full_access_desc">Автоматически разрешать все инструменты; обязательные блокировки сохраняются</string>
+  <string name="permission_mode_model_missing">Модель не настроена; действия, требующие проверки, будут переданы пользователю</string>
+  <string name="setting_page_tool_approvals_decision_model">Настроить провайдера модели решений</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">Выберите чат-модель и провайдера для проверки действий в режиме одобрения моделью</string>
+  <string name="workspace_detail_shared_dir_approval_note">Запись в /shared по-прежнему требует вашего разрешения.</string>
+  <string name="setting_page_scheduled_jobs_calendar_permission_denied">Для синхронизации напоминаний нужно разрешение на доступ к календарю.</string>
 </resources>
 

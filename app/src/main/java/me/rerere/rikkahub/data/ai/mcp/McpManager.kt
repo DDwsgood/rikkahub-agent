@@ -129,9 +129,10 @@ class McpManager(
 
     fun getStatus(config: McpServerConfig): Flow<McpStatus> = sessionRegistry.getStatus(config.id)
 
-    fun getAllAvailableTools(): List<Triple<Uuid, String, McpTool>> {
+    fun getAllAvailableTools(assistantId: Uuid? = null): List<Triple<Uuid, String, McpTool>> {
         val settings = settingsStore.settingsFlow.value
-        val assistant = settings.getCurrentAssistant()
+        val assistant = if (assistantId == null) settings.getCurrentAssistant()
+        else settings.assistants.find { it.id == assistantId } ?: return emptyList()
         // 只暴露当前真正 Connected 的 server 工具: 断线 / WaitingForWorkspace / rootfs
         // 重装期间, 持久化配置里的旧工具不得再注入模型 (调用会失败或指向已关闭的进程)。
         val connectedServers = sessionRegistry.getConnectedServerIds()
@@ -144,7 +145,17 @@ class McpManager(
             }
     }
 
-    suspend fun callTool(serverId: Uuid, toolName: String, args: JsonObject): List<UIMessagePart> {
+    suspend fun callTool(assistantId: Uuid, serverId: Uuid, toolName: String, args: JsonObject): List<UIMessagePart> {
+        // A declaration can outlive a permission edit while generation/review is suspended.
+        val settings = settingsStore.settingsFlow.value
+        val serverAuthorized = settings.assistants.any { it.id == assistantId && serverId in it.mcpServers }
+        val toolEnabled = settings.mcpServers.any { server ->
+            server.id == serverId && server.commonOptions.enable &&
+                server.commonOptions.tools.any { it.name == toolName && it.enable }
+        }
+        if (!serverAuthorized || !toolEnabled) {
+            return listOf(UIMessagePart.Text("MCP tool is no longer enabled for this assistant."))
+        }
         val result = try {
             sessionRegistry.callTool(serverId, toolName, args)
         } catch (e: CancellationException) {
@@ -193,4 +204,19 @@ class McpManager(
         )
         return UIMessagePart.Image(url = filesManager.getFile(entity).toUri().toString())
     }
+}
+
+/**
+ * Build the model-facing dispatchable name for one MCP tool:
+ * `mcp__<slug>_<serverName>__<toolName>`. Shared by the tool-registration path (ChatService's
+ * inline tool assembly + rerun path) and the mcp_list_tools diagnostic listing
+ * (McpControlTools) so the two can never drift (#88) — a name shown to the model as "this is
+ * what you call" must be byte-identical to the name the dispatch table was actually built
+ * with. Keep the `mcp__` prefix intact: HardlineCommandGuard and ToolApprovalDefaults both
+ * branch on `startsWith("mcp__")`. The slug is the first 8 hex chars of the server id with
+ * dashes stripped, so two identically-named servers never collide. Pure.
+ */
+fun buildMcpToolName(serverId: Uuid, serverName: String, toolName: String): String {
+    val serverSlug = serverId.toString().take(8).replace("-", "")
+    return "mcp__" + serverSlug + "_" + serverName + "__" + toolName
 }

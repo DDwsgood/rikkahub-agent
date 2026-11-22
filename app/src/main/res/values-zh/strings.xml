@@ -1957,7 +1957,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_termux_unit_seconds">秒</string>
   <string name="setting_termux_unit_steps">步</string>
   <string name="setting_termux_max_tool_steps">每轮工具步数</string>
-  <string name="setting_termux_max_tool_steps_desc">一条回复在被强制结束前可串联的工具调用次数。安装或构建这类长任务可调高。范围 1 至 500。</string>
+  <string name="setting_termux_max_tool_steps_desc">一条回复可串联的工具调用次数。默认 500；设为 0 表示不限制，正整数不设上限。</string>
   <string name="setting_termux_unit_bytes">字节</string>
   <string name="setting_termux_section_defaults">默认值与限制</string>
   <string name="setting_termux_working_dir">默认工作目录</string>
@@ -2494,5 +2494,14 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_page_scheduled_jobs_webhook_show_token">显示</string>
   <string name="setting_page_scheduled_jobs_webhook_hide_token">隐藏</string>
   <string name="local_llm_error_delete_file_failed">无法从磁盘删除模型文件“%1$s”，已保留列表项以便重试。</string>
+  <string name="permission_mode_manual">人工审批</string>
+  <string name="permission_mode_auto_review">替我审批</string>
+  <string name="permission_mode_full_access">完全访问</string>
+  <string name="permission_mode_manual_desc">显示正常的批准、拒绝和始终允许操作</string>
+  <string name="permission_mode_auto_review_desc">由决策模型审查安全或用户已授权的操作</string>
+  <string name="permission_mode_full_access_desc">自动批准所有工具；硬性安全拦截仍然生效</string>
+  <string name="permission_mode_model_missing">未配置决策模型；需要审查的操作将转人工审批</string>
+  <string name="setting_page_tool_approvals_decision_model">配置决策模型提供商</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">选择“替我审批”模式下用于审查工具操作的聊天模型及提供商</string>
 </resources>
 

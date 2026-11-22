@@ -1,6 +1,7 @@
 package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -551,6 +552,80 @@ class ResponseAPIMessageTest {
         )
     }
 
+    // ==================== Image lift removal tests (issue #104) ====================
+    // The Responses API allows input_image inline inside function_call_output.output,
+    // which is in-spec, so no extra role:"user" lift item should ever be emitted; that
+    // used to split a batch's function_call/function_call_output pairing.
+
+    @Test
+    fun `parallel tool batch with an early image keeps the image inline with no lift item`() {
+        val assistantMessage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Text("Running three tools"),
+                createExecutedToolWithImage("call_1", "take_screenshot", "{}"),
+                createExecutedTool("call_2", "search_docs", "{}", "Result 2"),
+                createExecutedTool("call_3", "search_wiki", "{}", "Result 3"),
+            )
+        )
+
+        val messages = listOf(UIMessage.user("Do three things"), assistantMessage)
+
+        val result = invokeBuildMessages(messages)
+
+        val output1 = result.first {
+            it.jsonObject["type"]?.jsonPrimitive?.content == "function_call_output" &&
+                it.jsonObject["call_id"]?.jsonPrimitive?.content == "call_1"
+        }.jsonObject
+        val outputContent = output1["output"]!!.jsonArray
+        assertTrue(
+            "function_call_output should carry the image inline",
+            outputContent.any { it.jsonObject["type"]?.jsonPrimitive?.content == "input_image" }
+        )
+
+        // No lifted USER item beyond the original user turn.
+        val userItems = result.filter { it.jsonObject["role"]?.jsonPrimitive?.content == "user" }
+        assertEquals("no lifted user item should be emitted", 1, userItems.size)
+
+        // Responses emits sequential call/output pairs. Check a contiguous slice so
+        // a non-tool item inserted between pairs would fail this assertion.
+        val firstCall = result.indexOfFirst {
+            it.jsonObject["type"]?.jsonPrimitive?.content == "function_call"
+        }
+        assertTrue(firstCall >= 0)
+        val toolItems = result.drop(firstCall).map { it.jsonObject }
+        assertEquals(
+            listOf("call_1", "call_2", "call_3").flatMap { callId ->
+                listOf("function_call" to callId, "function_call_output" to callId)
+            },
+            toolItems.map { it["type"]?.jsonPrimitive?.content to it["call_id"]?.jsonPrimitive?.content },
+        )
+    }
+
+    @Test
+    fun `parallel tool batch with an early image emits no lift for a text-only model`() {
+        val assistantMessage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                createExecutedToolWithImage("call_1", "take_screenshot", "{}"),
+                createExecutedTool("call_2", "search_docs", "{}", "Result 2"),
+            )
+        )
+
+        val messages = listOf(UIMessage.user("Do two things"), assistantMessage)
+
+        val result = invokeBuildMessages(messages, supportInputModalities = listOf(Modality.TEXT))
+
+        val userItems = result.filter { it.jsonObject["role"]?.jsonPrimitive?.content == "user" }
+        assertEquals("no lift item should be emitted for a text-only model", 1, userItems.size)
+
+        val output1 = result.first {
+            it.jsonObject["type"]?.jsonPrimitive?.content == "function_call_output" &&
+                it.jsonObject["call_id"]?.jsonPrimitive?.content == "call_1"
+        }.jsonObject
+        assertEquals(imagePlaceholder, output1["output"]?.jsonPrimitive?.content)
+    }
+
     @Test
     fun `function tools and built-in tools should coexist in the same tools array`() {
         val requestBody = invokeBuildRequestBody(
@@ -580,6 +655,17 @@ class ResponseAPIMessageTest {
         assertEquals(1, tools?.size)
         assertEquals("function", tools!![0].jsonObject["type"]?.jsonPrimitive?.content)
         assertEquals("get_weather", tools[0].jsonObject["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `function tools should disable strict mode so optional fields stay optional`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            params = createToolParams(tools = listOf(createFunctionTool("get_weather")))
+        )
+
+        val tool = requestBody["tools"]!!.jsonArray[0].jsonObject
+        assertEquals(JsonPrimitive(false), tool["strict"])
     }
 
     @Test

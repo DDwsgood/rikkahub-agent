@@ -150,7 +150,7 @@ onSuccess
 3. **Conversation Tools**（`createConversationTools`）— `enableRecentChatsReference = true` 时，查询历史对话
 4. **Workspace Tools**（`createWorkspaceToolsIfReady`）— Workspace Shell 就绪时注入，含 `workspace_shell`
 5. **Skill Tools**（`createSkillTools`）— 助手启用的 Skill 列表
-6. **MCP Tools** — 所有已连接 MCP 服务器的工具，命名格式 `mcp__{serverName}__{toolName}`
+6. **MCP Tools** — 当前会话的助手获准访问、已连接且启用的 MCP 工具，命名格式 `mcp__{serverId前8位}_{serverName}__{toolName}`
 7. **Memory Tools**（`buildMemoryTools`，内置于 GenerationHandler）— `enableMemory = true` 时，支持记忆的增删改
 
 ### 工具审批状态机
@@ -167,6 +167,12 @@ Pending ──── 用户操作 ────► Approved → 执行工具
 审批流程由 `ChatService.handleToolApproval()` 触发，更新状态后重新调用 `handleMessageComplete()`，`GenerationHandler` 检测到
 `canResumeExecution` 的 Tool 后直接跳过本轮生成，进入工具执行阶段。
 
+普通聊天有三种权限模式：**人工审批**沿用工具原有规则和允许名单；**替我审批**可直接放行普通工作区文件操作，其他敏感动作由选定的决策模型审查，模型不可用或无法给出有效结论时转人工；**完全访问**自动放行工具权限审批。静态底线拦截仍优先，`ask_user` 仍等待用户输入。决策模型会收到当前工具参数和本轮输入框发送的文本（可识别的凭据会脱敏）；使用远程提供商时，这些数据会发到该提供商。
+
+执行前，`ChatService` 会持久化工具的执行开始标记并确认保存成功；进程中断后，没有结果的已开始调用不会被自动重跑。
+
+生成循环不再统一限制单工具执行时长；工具自己的操作超时不变。每轮默认允许 500 个工具步骤，设置为 `0` 时不限制步骤；重复调用检测和用户停止仍有效。
+
 ### 工具输出截断
 
 当 Workspace Shell 工具可用且工具输出超过 **32KB** 时，输出被截断：
@@ -174,6 +180,8 @@ Pending ──── 用户操作 ────► Approved → 执行工具
 - 前 4KB 保留在消息中
 - 完整输出写入 `filesDir/tool_outputs/{toolCallId}.txt`
 - 消息中附带 shell 读取指令提示
+
+`search_web` 不参与截断：结果体积由用户设置的结果数决定，且结果列表 UI 与引用跳转依赖完整的 JSON。
 
 ---
 

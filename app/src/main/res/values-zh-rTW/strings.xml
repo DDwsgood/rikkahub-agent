@@ -1785,7 +1785,6 @@
   <string name="setting_page_scheduled_jobs_exact_permission_grant">授予權限</string>
   <string name="scheduled_job_execution_notification_title">排程任務正在執行</string>
   <string name="scheduled_job_execution_notification_preparing">正在準備排程任務</string>
-
   <string name="assistant_page_context_message_limit">上下文訊息限制</string>
   <string name="assistant_page_context_message_limit_desc">限制發送給模型的最近訊息數量。當超出限制時，上下文會一次性修剪到大約一半，而不是每次輪次刪除一條訊息，這樣請求前綴保持穩定，提示詞緩存可以在多次輪次中繼續運作。</string>
   <string name="assistant_page_context_message_limit_count">上下文訊息限制：%d</string>
@@ -1895,7 +1894,7 @@
   <string name="setting_termux_unit_seconds">秒</string>
   <string name="setting_termux_unit_steps">步</string>
   <string name="setting_termux_max_tool_steps">每回合工具步數</string>
-  <string name="setting_termux_max_tool_steps_desc">單一回覆在被強制結束前可串連的工具呼叫次數。安裝或建置這類長任務可調高。範圍 1 至 500。</string>
+  <string name="setting_termux_max_tool_steps_desc">單一回覆可串連的工具呼叫次數。預設 500；設為 0 表示不限制，正整數不設上限。</string>
   <string name="setting_termux_unit_bytes">位元組</string>
   <string name="setting_termux_section_defaults">預設值與限制</string>
   <string name="setting_termux_working_dir">預設工作目錄</string>
@@ -2423,5 +2422,16 @@
   <string name="workspace_file_editor_read_failed">無法讀取檔案</string>
   <string name="workspace_file_editor_save_failed">無法儲存檔案</string>
   <string name="workspace_file_editor_saved">檔案已儲存</string>
+  <string name="permission_mode_manual">人工審批</string>
+  <string name="permission_mode_auto_review">替我審批</string>
+  <string name="permission_mode_full_access">完全存取</string>
+  <string name="permission_mode_manual_desc">顯示正常的批准、拒絕和永遠允許操作</string>
+  <string name="permission_mode_auto_review_desc">由決策模型審查安全或使用者已授權的操作</string>
+  <string name="permission_mode_full_access_desc">自動批准所有工具；硬性安全攔截仍然生效</string>
+  <string name="permission_mode_model_missing">尚未設定決策模型；需要審查的操作將轉人工審批</string>
+  <string name="setting_page_tool_approvals_decision_model">設定決策模型提供商</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">選擇「替我審批」模式下用於審查工具操作的聊天模型及提供商</string>
+  <string name="workspace_detail_shared_dir_approval_note">寫入 /shared 仍會要求你授權。</string>
+  <string name="setting_page_scheduled_jobs_calendar_permission_denied">需要日曆權限才能同步提醒。</string>
 </resources>
 

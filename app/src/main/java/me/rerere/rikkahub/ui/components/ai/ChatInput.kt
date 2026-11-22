@@ -40,7 +40,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.material3.BasicAlertDialog
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +57,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -80,6 +83,7 @@ import dev.chrisbanes.haze.blur.materials.HazeMaterials
 import dev.chrisbanes.haze.hazeEffect
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ModelType
@@ -89,6 +93,7 @@ import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.ArrowUp02
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.FullScreen
+import me.rerere.hugeicons.stroke.Shield01
 import me.rerere.hugeicons.stroke.Zap
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
@@ -98,6 +103,10 @@ import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.QuickMessage
+import me.rerere.rikkahub.data.preferences.ChatPermissionMode
+import me.rerere.rikkahub.data.preferences.ToolApprovalPreferences
+import me.rerere.rikkahub.data.preferences.availableApprovalDecisionModel
+import me.rerere.rikkahub.service.ChatComposerSubmission
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionContext
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionItem
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionList
@@ -159,13 +168,13 @@ fun ChatInput(
     fun sendMessage() {
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
-        if (showStop) onCancelClick() else onSendClick()
+        if (showStop) onCancelClick() else ChatComposerSubmission.dispatch(onSendClick)
     }
 
     fun sendMessageWithoutAnswer() {
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
-        if (showStop) onCancelClick() else onLongSendClick()
+        if (showStop) onCancelClick() else ChatComposerSubmission.dispatch(onLongSendClick)
     }
 
     val asr = LocalASRState.current
@@ -303,6 +312,7 @@ fun ChatInput(
                                 )
                             }
 
+                            PermissionModeSelector(settings = settings)
                         }
 
                         ActionIconButton(
@@ -399,6 +409,122 @@ fun ChatInput(
             }
 
         }
+    }
+}
+
+@Composable
+private fun PermissionModeSelector(settings: Settings) {
+    val prefs: ToolApprovalPreferences = koinInject()
+    val mode by prefs.permissionModeFlow.collectAsState(initial = ChatPermissionMode.MANUAL)
+    val scope = rememberCoroutineScope()
+    val toaster = LocalToaster.current
+    val modelMissingMessage = stringResource(R.string.permission_mode_model_missing)
+    var expanded by remember { mutableStateOf(false) }
+    var confirmFullAccess by remember { mutableStateOf(false) }
+
+    fun selectMode(selected: ChatPermissionMode) {
+        expanded = false
+        if (selected == ChatPermissionMode.FULL_ACCESS) {
+            confirmFullAccess = true
+        } else {
+            scope.launch { prefs.setPermissionMode(selected) }
+            if (selected == ChatPermissionMode.AUTO_REVIEW && settings.availableApprovalDecisionModel() == null) {
+                toaster.show(
+                    message = modelMissingMessage,
+                    type = ToastType.Normal,
+                )
+            }
+        }
+    }
+
+    Box {
+        Surface(
+            onClick = { expanded = true },
+            shape = CircleShape,
+            color = if (mode == ChatPermissionMode.FULL_ACCESS) {
+                MaterialTheme.colorScheme.errorContainer
+            } else {
+                Color.Transparent
+            },
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Shield01,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = stringResource(
+                        when (mode) {
+                            ChatPermissionMode.MANUAL -> R.string.permission_mode_manual
+                            ChatPermissionMode.AUTO_REVIEW -> R.string.permission_mode_auto_review
+                            ChatPermissionMode.FULL_ACCESS -> R.string.permission_mode_full_access
+                        }
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                )
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            ChatPermissionMode.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(
+                                stringResource(
+                                    when (option) {
+                                        ChatPermissionMode.MANUAL -> R.string.permission_mode_manual
+                                        ChatPermissionMode.AUTO_REVIEW -> R.string.permission_mode_auto_review
+                                        ChatPermissionMode.FULL_ACCESS -> R.string.permission_mode_full_access
+                                    }
+                                )
+                            )
+                            Text(
+                                text = stringResource(
+                                    when (option) {
+                                        ChatPermissionMode.MANUAL -> R.string.permission_mode_manual_desc
+                                        ChatPermissionMode.AUTO_REVIEW -> R.string.permission_mode_auto_review_desc
+                                        ChatPermissionMode.FULL_ACCESS -> R.string.permission_mode_full_access_desc
+                                    }
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    onClick = { selectMode(option) },
+                )
+            }
+        }
+    }
+
+    if (confirmFullAccess) {
+        AlertDialog(
+            onDismissRequest = { confirmFullAccess = false },
+            title = { Text(stringResource(R.string.setting_page_tool_approvals_yolo_dialog_title)) },
+            text = { Text(stringResource(R.string.setting_page_tool_approvals_yolo_dialog_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmFullAccess = false
+                    scope.launch { prefs.setPermissionMode(ChatPermissionMode.FULL_ACCESS) }
+                }) {
+                    Text(
+                        stringResource(R.string.setting_page_tool_approvals_yolo_dialog_confirm),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmFullAccess = false }) {
+                    Text(stringResource(R.string.setting_page_tool_approvals_yolo_dialog_cancel))
+                }
+            },
+        )
     }
 }
 

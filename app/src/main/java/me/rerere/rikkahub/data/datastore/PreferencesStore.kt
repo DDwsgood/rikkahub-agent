@@ -138,6 +138,7 @@ class SettingsStore internal constructor(
         val TRANSLATE_MODEL = stringPreferencesKey("translate_model")
         val ENABLE_SUGGESTION = booleanPreferencesKey("enable_suggestion")
         val SUGGESTION_MODEL = stringPreferencesKey("suggestion_model")
+        val APPROVAL_DECISION_MODEL = stringPreferencesKey("approval_decision_model")
         val IMAGE_GENERATION_MODEL = stringPreferencesKey("image_generation_model")
         val TITLE_PROMPT = stringPreferencesKey("title_prompt")
         val TRANSLATION_PROMPT = stringPreferencesKey("translation_prompt")
@@ -231,6 +232,9 @@ class SettingsStore internal constructor(
                     ?: DEFAULT_AUTO_MODEL_ID,
                 enableSuggestion = preferences[ENABLE_SUGGESTION] != false,
                 suggestionModelId = preferences[SUGGESTION_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() },
+                approvalDecisionModelId = preferences[APPROVAL_DECISION_MODEL]?.let {
+                    runCatching { Uuid.parse(it) }.getOrNull()
+                },
                 imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: Uuid.random(),
                 titlePrompt = preferences[TITLE_PROMPT] ?: DEFAULT_TITLE_PROMPT,
                 translatePrompt = preferences[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
@@ -557,6 +561,9 @@ class SettingsStore internal constructor(
         settings.suggestionModelId?.let {
             preferences[SUGGESTION_MODEL] = it.toString()
         } ?: preferences.remove(SUGGESTION_MODEL)
+        settings.approvalDecisionModelId?.let {
+            preferences[APPROVAL_DECISION_MODEL] = it.toString()
+        } ?: preferences.remove(APPROVAL_DECISION_MODEL)
         preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
         preferences[TITLE_PROMPT] = settings.titlePrompt
         preferences[TRANSLATION_PROMPT] = settings.translatePrompt
@@ -752,6 +759,8 @@ data class Settings(
     val enableSuggestion: Boolean = true,
     val suggestionModelId: Uuid? = null,
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
+    /** Model used only by the ordinary-chat "approve for me" permission mode. */
+    val approvalDecisionModelId: Uuid? = null,
     val ocrModelId: Uuid = Uuid.random(),
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
     val compressModelId: Uuid = Uuid.random(),

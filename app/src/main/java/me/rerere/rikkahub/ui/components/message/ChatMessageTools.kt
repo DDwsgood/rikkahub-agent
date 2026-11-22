@@ -52,6 +52,7 @@ import me.rerere.hugeicons.stroke.BubbleChatQuestion
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.ui.components.message.tools.DefaultToolPreview
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIContext
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIRegistry
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
@@ -70,6 +71,13 @@ private fun JsonElement?.getStringContent(key: String): String? =
 
 private const val ASK_USER_TOOL_NAME = "ask_user"
 
+internal fun UIMessagePart.Tool.parseOutputJson(): JsonElement? {
+    if (!isExecuted) return null
+    return runCatching {
+        JsonInstant.parseToJsonElement(output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text })
+    }.getOrNull()
+}
+
 @Composable
 fun ChainOfThoughtScope.ChatMessageToolStep(
     tool: UIMessagePart.Tool,
@@ -84,19 +92,12 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     }
 
     val renderer = remember(tool.toolName) { ToolUIRegistry.resolve(tool.toolName) }
-    val context = remember(tool, loading) {
+    val outputJson = remember(tool) { tool.parseOutputJson() }
+    val context = remember(tool, loading, outputJson) {
         ToolUIContext(
             tool = tool,
             arguments = tool.inputAsJson(),
-            content = if (tool.isExecuted) {
-                runCatching {
-                    JsonInstant.parseToJsonElement(
-                        tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
-                    )
-                }.getOrElse { JsonObject(emptyMap()) }
-            } else {
-                null
-            },
+            content = if (tool.isExecuted) outputJson ?: JsonObject(emptyMap()) else null,
             loading = loading,
         )
     }
@@ -371,10 +372,14 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             ),
             onDismissRequest = { showResult = false },
             content = {
-                renderer.Preview(
-                    context = context,
-                    onDismissRequest = { showResult = false },
-                )
+                if (tool.isExecuted && outputJson == null) {
+                    DefaultToolPreview(context = context)
+                } else {
+                    renderer.Preview(
+                        context = context,
+                        onDismissRequest = { showResult = false },
+                    )
+                }
             },
         )
     }

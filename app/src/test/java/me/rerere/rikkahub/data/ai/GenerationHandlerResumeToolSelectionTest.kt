@@ -12,8 +12,7 @@ import org.junit.Test
  * (canResumeExecution), never the Auto siblings, so the model never learned their results.
  *
  * Driving the full GenerationHandler.generateText resume path needs Android Context + the Koin
- * graph, out of JVM unit test scope (see GenerationHandlerTurnTimeoutTest's note on the same
- * limitation), so this exercises the extracted pure selection function directly.
+ * graph, out of JVM unit test scope, so this exercises the extracted selection function directly.
  */
 class GenerationHandlerResumeToolSelectionTest {
 

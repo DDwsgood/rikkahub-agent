@@ -64,6 +64,12 @@ val appModule = module {
         me.rerere.rikkahub.data.telegram.TelegramInteractiveToolStreamer(get(), get(), get(), get())
     }
     single { me.rerere.rikkahub.data.preferences.ToolApprovalPreferences(get()) }
+    single { me.rerere.rikkahub.data.ai.approval.DecisionModelClient(get(), get()) }
+    single {
+        me.rerere.rikkahub.data.ai.approval.AutoApprovalPolicy(
+            get<me.rerere.rikkahub.data.ai.approval.DecisionModelClient>()::review,
+        )
+    }
     single {
         TelegramBotClient(
             tokenProvider = { runCatching { kotlinx.coroutines.runBlocking { get<TelegramBotPreferences>().current().token } }.getOrDefault("") },
@@ -254,6 +260,7 @@ val appModule = module {
             filesManager = get(),
             skillManager = get(),
             toolApprovalPreferences = get(),
+            autoApprovalPolicy = get(),
             workspaceRepository = get(),
             folderRepository = get()
         )

@@ -64,7 +64,8 @@ class SettingTermuxViewModel(
 
     /** Tool-call iterations allowed in one turn (issue #22). Clamping in [TermuxPreferences]. */
     fun setMaxToolSteps(steps: Long) {
-        viewModelScope.launch { prefs.setMaxToolSteps(steps.toInt()) }
+        val value = steps.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+        viewModelScope.launch { prefs.setMaxToolSteps(value) }
     }
 
     /** [seconds] is the UI display unit for verify timeout. */

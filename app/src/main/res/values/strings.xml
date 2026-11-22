@@ -1632,7 +1632,7 @@
   <string name="setting_termux_unit_seconds">seconds</string>
   <string name="setting_termux_unit_steps">steps</string>
   <string name="setting_termux_max_tool_steps">Tool steps per turn</string>
-  <string name="setting_termux_max_tool_steps_desc">How many tool calls one reply may chain before it is force-ended. Raise this for long install or build tasks. Range 1 to 500.</string>
+  <string name="setting_termux_max_tool_steps_desc">Tool calls one reply may chain. Default 500. Set 0 for unlimited; positive values have no upper limit.</string>
   <string name="setting_termux_unit_bytes">bytes</string>
   <string name="setting_termux_section_defaults">Defaults &amp; limits</string>
   <string name="setting_termux_working_dir">Default working directory</string>
@@ -2492,5 +2492,14 @@
   <string name="setting_page_scheduled_jobs_webhook_show_token">Show</string>
   <string name="setting_page_scheduled_jobs_webhook_hide_token">Hide</string>
   <string name="local_llm_error_delete_file_failed">Could not delete model file \"%1$s\" from disk. Model entry was kept so you can retry.</string>
+  <string name="permission_mode_manual">Manual approval</string>
+  <string name="permission_mode_auto_review">Approve for me</string>
+  <string name="permission_mode_full_access">Full access</string>
+  <string name="permission_mode_manual_desc">Show the usual approve, deny, and always-allow actions</string>
+  <string name="permission_mode_auto_review_desc">Let the decision model review safe and user-authorized actions</string>
+  <string name="permission_mode_full_access_desc">Approve every tool automatically; hard safety blocks still apply</string>
+  <string name="permission_mode_model_missing">No decision model configured; actions needing review will use manual approval</string>
+  <string name="setting_page_tool_approvals_decision_model">Configure decision model provider</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">Choose the chat model and provider used to review tool actions in Approve for me mode</string>
 </resources>
 

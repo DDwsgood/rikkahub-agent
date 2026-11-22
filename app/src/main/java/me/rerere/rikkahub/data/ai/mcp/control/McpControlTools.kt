@@ -25,8 +25,12 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpStatus
 import me.rerere.rikkahub.data.ai.mcp.McpTool
+import me.rerere.rikkahub.data.ai.mcp.buildMcpToolName
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
+import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
+import me.rerere.rikkahub.data.model.Assistant
 import kotlin.uuid.Uuid
 
 /**
@@ -138,6 +142,23 @@ private fun parseHeaders(raw: JsonElement?): List<Pair<String, String>> {
 }
 
 private fun parseUuid(raw: String?): Uuid? = raw?.let { runCatching { Uuid.parse(it.trim()) }.getOrNull() }
+
+private fun Settings.callingAssistantId(callerId: Uuid?): Uuid = callerId ?: getCurrentAssistant().id
+
+private fun Settings.callingAssistantMcpServers(callerId: Uuid?): Set<Uuid> =
+    assistants.find { it.id == callingAssistantId(callerId) }?.mcpServers.orEmpty()
+
+internal fun isEnabledForAssistant(serverId: Uuid, assistantMcpServers: Set<Uuid>): Boolean =
+    serverId in assistantMcpServers
+
+internal fun addServerToCallingAssistant(
+    assistants: List<Assistant>,
+    callingAssistantId: Uuid,
+    newServerId: Uuid,
+): List<Assistant> = assistants.map { assistant ->
+    if (assistant.id == callingAssistantId) assistant.copy(mcpServers = assistant.mcpServers + newServerId)
+    else assistant
+}
 
 /**
  * Render an [InputSchema] as a plain JSON-Schema-shaped object so the LLM can see each
@@ -348,27 +369,32 @@ internal fun classifyMcpError(message: String): Pair<String, String> {
 
 /** ---------- Tool factories ---------- */
 
-fun mcpListTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
+fun mcpListTool(settingsStore: SettingsStore, manager: McpManager, callerId: Uuid?): Tool = Tool(
     name = "mcp_list",
     description = """
         List all configured MCP servers with their connection status and tool counts. Read-only.
         Use this to find out what's already wired up before deciding whether to add a new server,
-        or to confirm a previously-added server is healthy. Headers are redacted in the result.
+        or to confirm a previously-added server is healthy. enabled_for_assistant indicates
+        whether the server is allowed for the calling assistant, even if already connected.
+        Headers are redacted in the result.
     """.trimIndent().replace("\n", " "),
     parameters = { InputSchema.Obj(properties = buildJsonObject {}, required = emptyList()) },
     execute = {
-        val servers = settingsStore.settingsFlow.value.mcpServers
+        val settings = settingsStore.settingsFlow.value
         val statuses = manager.syncingStatus.value
+        val assistantServerIds = settings.callingAssistantMcpServers(callerId)
         val arr = buildJsonArray {
-            servers.forEach { config ->
-                add(serverViewEnvelope(config, statuses[config.id]))
+            settings.mcpServers.forEach { config ->
+                add(serverViewEnvelope(config, statuses[config.id]) {
+                    put("enabled_for_assistant", isEnabledForAssistant(config.id, assistantServerIds))
+                })
             }
         }
         listOf(UIMessagePart.Text(buildJsonObject { put("servers", arr) }.toString()))
     },
 )
 
-fun mcpGetTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
+fun mcpGetTool(settingsStore: SettingsStore, manager: McpManager, callerId: Uuid?): Tool = Tool(
     name = "mcp_get",
     description = """
         Return the full configuration of a single MCP server by id, including its redacted
@@ -390,9 +416,11 @@ fun mcpGetTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
         val rawId = params["id"]?.jsonPrimitive?.contentOrNull
         val serverId = parseUuid(rawId)
             ?: return@Tool errEnv("invalid_id", "id is required and must be a valid UUID; got '$rawId'")
-        val config = settingsStore.settingsFlow.value.mcpServers.firstOrNull { it.id == serverId }
+        val settings = settingsStore.settingsFlow.value
+        val config = settings.mcpServers.firstOrNull { it.id == serverId }
             ?: return@Tool errEnv("unknown_mcp_server_id", "no MCP server registered with id $serverId")
         val status = manager.syncingStatus.value[serverId]
+        val enabledForAssistant = isEnabledForAssistant(serverId, settings.callingAssistantMcpServers(callerId))
         val toolList = buildJsonArray {
             config.commonOptions.tools.forEach { tool ->
                 addJsonObject {
@@ -403,17 +431,20 @@ fun mcpGetTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
                 }
             }
         }
-        listOf(UIMessagePart.Text(serverViewEnvelope(config, status) { put("tools", toolList) }.toString()))
+        listOf(UIMessagePart.Text(serverViewEnvelope(config, status) {
+            put("enabled_for_assistant", enabledForAssistant)
+            put("tools", toolList)
+        }.toString()))
     },
 )
 
-fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
+fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager, callerId: Uuid?): Tool = Tool(
     name = "mcp_add",
     description = """
         Add a new MCP server. Pass transport="sse" or "streamable_http" with an http(s)
         url, or transport="stdio" to run a local server process inside a workspace rootfs
         (pass workspace_id, command, and optional args as a string array, cwd, and env as
-        an object of string-to-string). A unique name (≤60 chars), optional enabled
+        an object of string-to-string). A unique name (≤60 ASCII letters and digits), optional enabled
         (default true), and optional headers as a list of {name, value} pairs (max 32
         entries; sensitive values like Authorization or X-Api-Key are redacted in display
         layers but stored verbatim).
@@ -440,7 +471,7 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
                 })
                 put("name", buildJsonObject {
                     put("type", "string")
-                    put("description", "Human-readable name shown to the user. Must be unique among existing servers (case-insensitive). Max 60 chars.")
+                    put("description", "Name shown to the user. Use up to 60 ASCII letters or digits. Must be unique (case-insensitive).")
                 })
                 put("url", buildJsonObject {
                     put("type", "string")
@@ -558,7 +589,14 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
             cwd = stdio?.cwd ?: "",
             env = stdio?.env ?: emptyMap(),
         )
-        settingsStore.update { old -> old.copy(mcpServers = old.mcpServers + config) }
+        settingsStore.update { old ->
+            old.copy(
+                mcpServers = old.mcpServers + config,
+                // An unbound caller must not grant access to the app's current assistant.
+                assistants = callerId?.let { addServerToCallingAssistant(old.assistants, it, newId) }
+                    ?: old.assistants,
+            )
+        }
         if (enabled) {
             manager.addClient(config)
             awaitTerminal(manager, newId, timeoutSec * 1000L)
@@ -571,7 +609,12 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
         // under the next poll would be a worse UX than leaving a row marked CONNECTING.
         if (finalStatus is McpStatus.Error) {
             manager.removeClient(config)
-            settingsStore.update { s -> s.copy(mcpServers = s.mcpServers.filter { it.id != newId }) }
+            settingsStore.update { settings ->
+                settings.copy(
+                    mcpServers = settings.mcpServers.filter { it.id != newId },
+                    assistants = settings.assistants.map { it.copy(mcpServers = it.mcpServers - newId) },
+                )
+            }
             val (kind, hint) = classifyMcpError(finalStatus.message)
             return@Tool errEnv(
                 kind,
@@ -855,13 +898,14 @@ fun mcpTestTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
     },
 )
 
-fun mcpListToolsTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
+fun mcpListToolsTool(settingsStore: SettingsStore, callerId: Uuid?): Tool = Tool(
     name = "mcp_list_tools",
     description = """
         List the MCP tools exposed by one server (when id is provided), or aggregated across
         all enabled servers (when id is null/absent). Each entry includes server name + id,
-        tool name, description, whether it requires approval, and (when the server supplied
-        one) the tool's input_schema describing its argument shape.
+        tool name, dispatchable_name (the exact name to call), enabled_for_assistant (false
+        means the server must be enabled for this assistant in Settings), description, whether
+        it requires approval, and the tool's input_schema when the server supplies one.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -874,7 +918,8 @@ fun mcpListToolsTool(settingsStore: SettingsStore, manager: McpManager): Tool = 
     execute = { args ->
         val params = args.jsonObject
         val rawId = params["id"]?.jsonPrimitive?.contentOrNull
-        val all = settingsStore.settingsFlow.value.mcpServers
+        val settings = settingsStore.settingsFlow.value
+        val all = settings.mcpServers
         val targets = if (rawId.isNullOrBlank()) {
             all.filter { it.commonOptions.enable }
         } else {
@@ -884,13 +929,17 @@ fun mcpListToolsTool(settingsStore: SettingsStore, manager: McpManager): Tool = 
                 ?: return@Tool errEnv("unknown_mcp_server_id", "no MCP server registered with id $serverId")
             listOf(one)
         }
+        val assistantServerIds = settings.callingAssistantMcpServers(callerId)
         val arr = buildJsonArray {
             for (server in targets) {
+                val enabledForAssistant = isEnabledForAssistant(server.id, assistantServerIds)
                 for (tool in server.commonOptions.tools) {
                     addJsonObject {
                         put("server_id", server.id.toString())
                         put("server_name", server.commonOptions.name)
                         put("tool_name", tool.name)
+                        put("dispatchable_name", buildMcpToolName(server.id, server.commonOptions.name, tool.name))
+                        put("enabled_for_assistant", enabledForAssistant)
                         put("description", tool.description ?: "")
                         put("enabled", tool.enable)
                         put("needs_approval", tool.needsApproval)

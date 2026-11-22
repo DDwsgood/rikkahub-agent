@@ -18,12 +18,10 @@ object TermuxDefaults {
     const val MAX_COMMAND_TIMEOUT_MS     = 600_000L  // 10 min
 
     // --- Per-turn tool-call step cap (app-wide) --------------------------------------------
-    // Default is the 32 that used to be GenerationHandler's hardcoded maxSteps. This is now
-    // the primary hard bound on turn length (the wall-clock budget was removed); combined
-    // with the loop guard it stops a runaway loop from iterating without bound.
-    const val DEFAULT_MAX_TOOL_STEPS = 32
-    const val MIN_MAX_TOOL_STEPS     =  1
-    const val MAX_MAX_TOOL_STEPS     = 500
+    // Zero disables the step cap. Positive values have no configured upper bound; the loop
+    // guard and user Stop remain available to terminate runaway turns.
+    const val DEFAULT_MAX_TOOL_STEPS = 500
+    const val MIN_MAX_TOOL_STEPS     =   0
 
     // --- Verify smoke-test timeout ---------------------------------------------------------
     const val DEFAULT_VERIFY_TIMEOUT_MS =  8_000L   //  8 s
@@ -55,8 +53,7 @@ object TermuxDefaults {
     fun clampCommandTimeoutMs(ms: Long): Long =
         ms.coerceIn(MIN_COMMAND_TIMEOUT_MS, MAX_COMMAND_TIMEOUT_MS)
 
-    fun clampMaxToolSteps(steps: Int): Int =
-        steps.coerceIn(MIN_MAX_TOOL_STEPS, MAX_MAX_TOOL_STEPS)
+    fun clampMaxToolSteps(steps: Int): Int = steps.coerceAtLeast(MIN_MAX_TOOL_STEPS)
 
     fun clampVerifyTimeoutMs(ms: Long): Long =
         ms.coerceIn(MIN_VERIFY_TIMEOUT_MS, MAX_VERIFY_TIMEOUT_MS)

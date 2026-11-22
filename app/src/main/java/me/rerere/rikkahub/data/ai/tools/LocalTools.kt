@@ -923,14 +923,15 @@ class LocalTools(
             tools.add(batchDeleteTool())
         }
         if (options.contains(LocalToolOption.McpControl)) {
-            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpListTool(settingsStore, mcpManager))
-            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpGetTool(settingsStore, mcpManager))
-            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpAddTool(settingsStore, mcpManager))
+            val callerId = invocationContext.callerAssistantId?.let { kotlin.uuid.Uuid.parse(it) }
+            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpListTool(settingsStore, mcpManager, callerId))
+            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpGetTool(settingsStore, mcpManager, callerId))
+            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpAddTool(settingsStore, mcpManager, callerId))
             tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpUpdateTool(settingsStore, mcpManager))
             tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpDeleteTool(settingsStore, mcpManager))
             tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpSetEnabledTool(settingsStore, mcpManager))
             tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpTestTool(settingsStore, mcpManager))
-            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpListToolsTool(settingsStore, mcpManager))
+            tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpListToolsTool(settingsStore, callerId))
             tools.add(me.rerere.rikkahub.data.ai.mcp.control.mcpSetToolApprovalTool(settingsStore))
         }
         if (options.contains(LocalToolOption.ExternalAutomation)) {

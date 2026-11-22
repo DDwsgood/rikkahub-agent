@@ -226,7 +226,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                 UIMessageChoice(
                     message = parseMessage(candidate.jsonObject),
                     index = 0,
-                    finishReason = null,
+                    finishReason = candidate.jsonObject["finishReason"]?.jsonPrimitive?.contentOrNull,
                     delta = null
                 )
             },

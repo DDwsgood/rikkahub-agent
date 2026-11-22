@@ -46,7 +46,6 @@ enum class SubAgentStatus {
 
 object SubAgentDefaults {
     const val DEFAULT_TIMEOUT_SECONDS = 300
-    const val MAX_TIMEOUT_SECONDS = 1800
     const val DEFAULT_MAX_TRIPS = 12
     const val MAX_MAX_TRIPS = 30
     const val MAX_LABEL_LENGTH = 60
@@ -99,12 +98,6 @@ object SubAgentRequestValidator {
             return Result.Reject(
                 "invalid_timeout",
                 "timeout_seconds must be at least 1; got ${request.timeoutSeconds}"
-            )
-        }
-        if (request.timeoutSeconds > SubAgentDefaults.MAX_TIMEOUT_SECONDS) {
-            return Result.Reject(
-                "invalid_timeout",
-                "timeout_seconds exceeds max ${SubAgentDefaults.MAX_TIMEOUT_SECONDS}; got ${request.timeoutSeconds}"
             )
         }
         if (request.maxTrips < 1) {

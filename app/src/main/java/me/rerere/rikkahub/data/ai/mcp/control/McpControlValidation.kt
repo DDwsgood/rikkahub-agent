@@ -22,7 +22,7 @@ object McpControlValidation {
     }
 
     /**
-     * Reject names that are blank, oversize, or duplicate an existing server's name
+     * Reject names that cannot be used for dispatch, are oversize, or duplicate an existing server's name
      * (case-insensitive). When [excludingId] is non-null, that server's own current name
      * is permitted — used by mcp_update so renaming to the same name doesn't false-trip.
      */
@@ -34,6 +34,10 @@ object McpControlValidation {
         val trimmed = candidate.trim()
         if (trimmed.isEmpty()) {
             return Result.Reject("invalid_name", "name is required and may not be blank")
+        }
+        if (!trimmed.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' }) {
+            // ChatService rejects non-alphanumeric server names when building the dispatch table.
+            return Result.Reject("invalid_name", "name may contain only ASCII letters and digits")
         }
         if (trimmed.length > MAX_NAME_LENGTH) {
             return Result.Reject(

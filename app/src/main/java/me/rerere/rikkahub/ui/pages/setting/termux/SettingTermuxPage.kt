@@ -253,6 +253,7 @@ fun SettingTermuxPage(
                         TimeoutInput(
                             currentValue = config.maxToolSteps.toLong(),
                             unitLabel = stringResource(R.string.setting_termux_unit_steps),
+                            maxDigits = 10,
                             onCommit = vm::setMaxToolSteps,
                         )
                     },
@@ -359,13 +360,14 @@ private fun StatusDot(color: StatusColor) {
 private fun TimeoutInput(
     currentValue: Long,
     unitLabel: String,
+    maxDigits: Int = 6,
     onCommit: (Long) -> Unit,
 ) {
     var text by remember(currentValue) { mutableStateOf(currentValue.toString()) }
 
     OutlinedTextField(
         value = text,
-        onValueChange = { new -> text = new.filter { it.isDigit() }.take(6) },
+        onValueChange = { new -> text = new.filter { it.isDigit() }.take(maxDigits) },
         singleLine = true,
         suffix = { Text(unitLabel, style = MaterialTheme.typography.bodySmall) },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

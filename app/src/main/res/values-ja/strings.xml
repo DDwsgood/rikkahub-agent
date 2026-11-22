@@ -1896,7 +1896,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_termux_unit_seconds">秒</string>
   <string name="setting_termux_unit_steps">ステップ</string>
   <string name="setting_termux_max_tool_steps">1 ターンあたりのツールステップ数</string>
-  <string name="setting_termux_max_tool_steps_desc">1 回の応答が強制終了されるまでに連鎖できるツール呼び出しの回数。インストールやビルドなどの長い作業では増やしてください。1〜500。</string>
+  <string name="setting_termux_max_tool_steps_desc">1 回の応答で連鎖できるツール呼び出し数。デフォルトは 500。0 は無制限、正の整数に上限はありません。</string>
   <string name="setting_termux_unit_bytes">バイト</string>
   <string name="setting_termux_section_defaults">既定値と上限</string>
   <string name="setting_termux_working_dir">既定の作業ディレクトリ</string>
@@ -2424,5 +2424,16 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="workspace_file_editor_read_failed">ファイルを読み込めませんでした</string>
   <string name="workspace_file_editor_save_failed">ファイルを保存できませんでした</string>
   <string name="workspace_file_editor_saved">ファイルを保存しました</string>
+  <string name="permission_mode_manual">手動承認</string>
+  <string name="permission_mode_auto_review">自動レビュー</string>
+  <string name="permission_mode_full_access">フルアクセス</string>
+  <string name="permission_mode_manual_desc">通常の承認、拒否、常に許可の操作を表示します</string>
+  <string name="permission_mode_auto_review_desc">安全な操作やユーザーが許可した操作を決定モデルがレビューします</string>
+  <string name="permission_mode_full_access_desc">すべてのツールを自動承認します。強制的な安全ブロックは有効です</string>
+  <string name="permission_mode_model_missing">決定モデル未設定時は、レビューが必要な操作を手動承認に回します</string>
+  <string name="setting_page_tool_approvals_decision_model">決定モデルプロバイダーを設定</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">自動レビューモードでツール操作を審査するチャットモデルとプロバイダーを選択します</string>
+  <string name="workspace_detail_shared_dir_approval_note">/shared への書き込みには引き続き承認が必要です。</string>
+  <string name="setting_page_scheduled_jobs_calendar_permission_denied">リマインダーを同期するにはカレンダー権限が必要です。</string>
 </resources>
 

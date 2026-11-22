@@ -287,6 +287,9 @@ class ResponseAPI(
                                         tool.parameters()
                                     )
                                 )
+                                // Response API 不传 strict 时默认按严格模式处理, 会把 schema 里的可选字段全部变成必填,
+                                // 模型只能给本应省略的字段硬填默认值 (0 / "" / []), 导致工具参数校验失败
+                                put("strict", false)
                             })
                         }
                     }
@@ -454,27 +457,11 @@ class ResponseAPI(
                                 )
                             }
                         })
-                        // Image lift: function_call_output is text-only, so a tool that
-                        // returns UIMessagePart.Image (take_screenshot, take_photo, etc.)
-                        // would otherwise be invisible to vision-capable models. Inject
-                        // those images as a follow-up user content item. Skipped for
-                        // text-only models: the function_call_output above already emits
-                        // the placeholder text for those images, so nothing is lost.
-                        val toolImages = if (Modality.IMAGE in supportInputModalities) {
-                            tool.output.filterIsInstance<UIMessagePart.Image>()
-                        } else {
-                            emptyList()
-                        }
-                        if (toolImages.isNotEmpty()) {
-                            addContentItem(
-                                MessageRole.USER,
-                                buildList {
-                                    add(UIMessagePart.Text("[Tool ${tool.toolName} produced the image(s) below.]"))
-                                    addAll(toolImages)
-                                },
-                                supportInputModalities
-                            )
-                        }
+                        // No image lift here (issue #104): the Responses API allows
+                        // input_image parts inline inside function_call_output.output
+                        // above, which is in-spec, so a tool-returned image is already
+                        // visible to the model without a follow-up user item that would
+                        // otherwise separate one tool call's output from the next.
                     }
                 }
             }
@@ -758,8 +745,8 @@ class ResponseAPI(
     }
 
     fun parseResponseOutput(jsonObject: JsonObject): MessageChunk {
-        println(jsonObject)
         val outputs = jsonObject["output"]?.jsonArray ?: error("output not found")
+        val status = jsonObject["status"]?.jsonPrimitive?.contentOrNull
         val parts = arrayListOf<UIMessagePart>()
 
         outputs.forEach { outputItem ->
@@ -831,7 +818,7 @@ class ResponseAPI(
                         role = MessageRole.ASSISTANT,
                         parts = parts,
                     ),
-                    finishReason = null,
+                    finishReason = status?.takeUnless { it == "completed" }?.let { "incomplete" },
                     delta = null
                 )
             ),

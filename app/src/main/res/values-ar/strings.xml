@@ -1494,5 +1494,32 @@
   <string name="setting_page_scheduled_jobs_exact_permission_title">الجدولة الدقيقة تتطلب إذنًا</string>
   <string name="setting_page_scheduled_jobs_exact_permission_body">امنح إذن الوصول إلى المنبّهات والتذكيرات لكي تعمل المهام في وقتها. بدون ذلك، تعود جميع المهام بأمان إلى التوقيت المرن.</string>
   <string name="setting_page_scheduled_jobs_exact_permission_grant">منح الإذن</string>
+  <string name="permission_calendar_read">قراءة التقويم</string>
+  <string name="permission_calendar_read_desc">قراءة أحداث التقويم للإجابة عن أسئلتك المتعلقة بالجدول</string>
+  <string name="permission_calendar_write">الكتابة في التقويم</string>
+  <string name="permission_calendar_write_desc">إنشاء أحداث التقويم نيابةً عنك</string>
+  <string name="setting_termux_status_permission">إذن RUN_COMMAND</string>
+  <string name="setting_termux_status_permission_granted">مُنح — انقر لإعادة الطلب</string>
+  <string name="setting_termux_toast_permission_granted">تم منح الإذن</string>
+  <string name="setting_termux_status_permission_missing">غير مُنح — انقر للطلب</string>
+  <string name="setting_termux_verify_no_permission">لم يُمنح إذن RUN_COMMAND.</string>
+  <string name="setting_termux_max_tool_steps">خطوات الأدوات لكل دورة</string>
+  <string name="setting_termux_max_tool_steps_desc">عدد استدعاءات الأدوات المتسلسلة في الرد الواحد. الافتراضي 500. اضبط 0 لعدد غير محدود؛ ولا حد أعلى للأعداد الموجبة.</string>
+  <string name="workspace_detail_tool_approval">الموافقة على الأداة</string>
+  <string name="workspace_detail_tool_approval_desc">عند التفعيل، يلزم تأكيد المستخدم قبل أن يستدعي الذكاء الاصطناعي هذه الأداة</string>
+  <string name="assistant_page_local_tools_screen_time_permission_required">يرجى منح إذن الوصول إلى الاستخدام في الإعدادات لاستخدام وقت الشاشة</string>
+  <string name="doctor_category_permissions">الأذونات</string>
+  <string name="doctor_fix_open_app_permissions">فتح أذونات التطبيق</string>
+  <string name="workspace_detail_shared_dir_approval_note">لا تزال الكتابة في /shared تتطلب موافقتك.</string>
+  <string name="setting_page_scheduled_jobs_calendar_permission_denied">يلزم إذن التقويم لمزامنة التذكيرات.</string>
+  <string name="permission_mode_manual">موافقة يدوية</string>
+  <string name="permission_mode_auto_review">الموافقة نيابةً عني</string>
+  <string name="permission_mode_full_access">وصول كامل</string>
+  <string name="permission_mode_manual_desc">إظهار إجراءات الموافقة والرفض والسماح دائمًا المعتادة</string>
+  <string name="permission_mode_auto_review_desc">السماح لنموذج القرار بمراجعة الإجراءات الآمنة أو التي سمح بها المستخدم</string>
+  <string name="permission_mode_full_access_desc">الموافقة تلقائيًا على كل الأدوات؛ مع استمرار قيود السلامة الصارمة</string>
+  <string name="permission_mode_model_missing">لم يُضبط نموذج القرار؛ ستتحول الإجراءات التي تحتاج إلى مراجعة إلى الموافقة اليدوية</string>
+  <string name="setting_page_tool_approvals_decision_model">إعداد موفر نموذج القرار</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">اختر نموذج الدردشة والموفر المستخدمين لمراجعة إجراءات الأدوات في وضع الموافقة نيابةً عني</string>
 </resources>
 

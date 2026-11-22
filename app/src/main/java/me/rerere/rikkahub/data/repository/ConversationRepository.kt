@@ -8,6 +8,7 @@ import androidx.paging.PagingData
 import androidx.paging.PagingSource
 import androidx.paging.map
 import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -26,6 +27,22 @@ import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
 import kotlin.uuid.Uuid
+
+internal inline fun <T> readMessageNodePageOrNull(
+    readPage: () -> List<T>,
+    onUnreadable: (RuntimeException) -> Unit,
+): List<T>? = try {
+    readPage()
+} catch (e: SQLiteBlobTooBigException) {
+    onUnreadable(e)
+    null
+} catch (e: CancellationException) {
+    // CancellationException is an IllegalStateException, not a corrupt cursor to recover from.
+    throw e
+} catch (e: IllegalStateException) {
+    onUnreadable(e)
+    null
+}
 
 class ConversationRepository(
     private val conversationDAO: ConversationDAO,
@@ -506,15 +523,12 @@ class ConversationRepository(
             suspend fun recoverPageRowByRow(offset: Int, pageSize: Int): Int {
                 for (i in 0 until pageSize) {
                     val rowOffset = offset + i
-                    val row = try {
-                        messageNodeDAO.getNodesOfConversationPaged(conversationId, 1, rowOffset)
-                    } catch (e: SQLiteBlobTooBigException) {
-                        Log.e(TAG, "loadMessageNodes: dropping unreadable node (conversationId=$conversationId, position=$rowOffset)", e)
-                        continue
-                    } catch (e: IllegalStateException) {
-                        Log.e(TAG, "loadMessageNodes: dropping unreadable node (conversationId=$conversationId, position=$rowOffset)", e)
-                        continue
-                    }
+                    val row = readMessageNodePageOrNull(
+                        readPage = { messageNodeDAO.getNodesOfConversationPaged(conversationId, 1, rowOffset) },
+                        onUnreadable = {
+                            Log.e(TAG, "loadMessageNodes: dropping unreadable node (conversationId=$conversationId, position=$rowOffset)", it)
+                        },
+                    ) ?: continue
                     if (row.isEmpty()) return i
                     nodes.add(toMessageNode(row.single()))
                 }
@@ -524,15 +538,13 @@ class ConversationRepository(
             var offset = 0
             val pageSize = 64
             while (true) {
-                val page = try {
-                    messageNodeDAO.getNodesOfConversationPaged(conversationId, pageSize, offset)
-                } catch (e: SQLiteBlobTooBigException) {
-                    Log.e(TAG, "loadMessageNodes: page failed to decode (conversationId=$conversationId, offset=$offset, pageSize=$pageSize); retrying row-by-row", e)
-                    val consumed = recoverPageRowByRow(offset, pageSize)
-                    offset += consumed
-                    if (consumed < pageSize) break else continue
-                } catch (e: IllegalStateException) {
-                    Log.e(TAG, "loadMessageNodes: page failed to decode (conversationId=$conversationId, offset=$offset, pageSize=$pageSize); retrying row-by-row", e)
+                val page = readMessageNodePageOrNull(
+                    readPage = { messageNodeDAO.getNodesOfConversationPaged(conversationId, pageSize, offset) },
+                    onUnreadable = {
+                        Log.e(TAG, "loadMessageNodes: page failed to decode (conversationId=$conversationId, offset=$offset, pageSize=$pageSize); retrying row-by-row", it)
+                    },
+                )
+                if (page == null) {
                     val consumed = recoverPageRowByRow(offset, pageSize)
                     offset += consumed
                     if (consumed < pageSize) break else continue

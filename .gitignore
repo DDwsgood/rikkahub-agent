@@ -43,6 +43,7 @@ app/google-services.json
 
 # bun.lock is generated from the tracked pnpm-lock.yaml on clean checkouts
 /web-ui/bun.lock
+/web-ui/public/intelligent-ui/
 
 # root-owned build dirs left by sandboxed builds
 **/build.nobody-stale/

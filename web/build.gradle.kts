@@ -53,7 +53,8 @@ val buildWebUi = tasks.register<Exec>("buildWebUi") {
         webUiDir.file("vite-env.d.ts")
     )
     inputs.dir(webUiDir.dir("app"))
-    inputs.dir(webUiDir.dir("public"))
+    inputs.files(webUiDir.dir("intelligent-ui").asFileTree.matching { exclude("node_modules/**") })
+    inputs.files(webUiDir.dir("public").asFileTree.matching { exclude("intelligent-ui/**") })
     outputs.dir(webStaticResourcesDir)
 }
 

@@ -1,0 +1,13 @@
+{
+  "name": "rikkahub-intelligent-ui",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@openuidev/intelligent-ui-library": "0.0.1",
+    "@openuidev/react-lang": "1.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

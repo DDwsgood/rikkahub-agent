@@ -64,6 +64,7 @@ export function groupMessageParts(parts: UIMessagePart[]): MessagePartBlock[] {
 }
 
 interface MessagePartsProps {
+  intelligentUi?: boolean;
   parts: UIMessagePart[];
   loading?: boolean;
   onToolApproval?: (toolCallId: string, approved: boolean, reason: string, answer?: string) => void | Promise<void>;
@@ -73,12 +74,13 @@ interface MessagePartsProps {
 function renderContentPart(
   part: UIMessagePart,
   t: (key: string, options?: Record<string, unknown>) => string,
+  intelligentUi: boolean,
   loading?: boolean,
   onClickCitation?: (id: string) => void,
 ) {
   switch (part.type) {
     case "text":
-      return <TextPart text={part.text} isAnimating={loading} onClickCitation={onClickCitation} />;
+      return <TextPart text={part.text} intelligentUi={intelligentUi} isAnimating={loading} onClickCitation={onClickCitation} />;
     case "image":
       return <ImagePart url={part.url} />;
     case "video":
@@ -100,6 +102,7 @@ function renderContentPart(
 
 export const MessageParts = React.memo(({
   parts,
+  intelligentUi = false,
   loading = false,
   onToolApproval,
   onClickCitation,
@@ -161,7 +164,7 @@ export const MessageParts = React.memo(({
 
         return (
           <React.Fragment key={`content-${block.index}`}>
-            {renderContentPart(block.part, t, loading, onClickCitation)}
+            {renderContentPart(block.part, t, intelligentUi, loading, onClickCitation)}
           </React.Fragment>
         );
       })}

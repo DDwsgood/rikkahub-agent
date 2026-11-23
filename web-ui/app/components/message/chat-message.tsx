@@ -576,6 +576,7 @@ export const ChatMessage = React.memo(({
             )}
           >
             <MessageParts
+              intelligentUi={message.role === "ASSISTANT"}
               parts={message.parts}
               loading={loading}
               onToolApproval={onToolApproval}

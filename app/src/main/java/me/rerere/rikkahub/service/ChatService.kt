@@ -1356,7 +1356,8 @@ class ChatService(
                 // having to plumb a parameter all the way through sendMessage. Returns null
                 // for in-app conversations that didn't register one.
                 systemAddendum = me.rerere.rikkahub.data.ai.tools
-                    .ConversationSystemAddendum.get(conversationId),
+                    .ConversationSystemAddendum.get(conversationId)
+                    ?: me.rerere.rikkahub.data.ai.IntelligentUi.prompt.takeUnless { baseInvocationCtx.isHeadless },
                 isToolAutoApproved = { toolName ->
                     // YOLO mode ("I AM STUPID" toggle in Settings → Tool approvals): every
                     // tool auto-approves. User opted into this explicitly. HARDLINE still

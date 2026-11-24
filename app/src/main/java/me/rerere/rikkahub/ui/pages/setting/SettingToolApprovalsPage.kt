@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -23,7 +25,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -35,18 +36,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
-import me.rerere.ai.provider.ModelType
-import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.ai.approval.SystemOneConfiguration
 import me.rerere.rikkahub.data.preferences.ToolApprovalPreferences
-import me.rerere.rikkahub.data.preferences.availableApprovalDecisionModel
-import me.rerere.rikkahub.data.preferences.supportsApprovalReview
-import me.rerere.rikkahub.ui.components.ai.ModelSelector
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -68,12 +67,23 @@ import org.koin.compose.koinInject
 @Composable
 fun SettingToolApprovalsPage() {
     val prefs: ToolApprovalPreferences = koinInject()
-    val settingsStore: SettingsStore = koinInject()
-    val settings by settingsStore.settingsFlow.collectAsStateWithLifecycle()
+    val decisionModel by prefs.decisionModelFlow.collectAsStateWithLifecycle(initialValue = null)
     val granted by prefs.alwaysAllowFlow.collectAsStateWithLifecycle(initialValue = emptySet())
     val yolo by prefs.globalYoloFlow.collectAsStateWithLifecycle(initialValue = false)
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val scope = rememberCoroutineScope()
+
+    var editingDecisionModel by remember { mutableStateOf(false) }
+    if (editingDecisionModel) {
+        SystemOneDialog(
+            current = decisionModel,
+            onDismiss = { editingDecisionModel = false },
+            onSave = { config ->
+                editingDecisionModel = false
+                scope.launch { prefs.setDecisionModel(config) }
+            },
+        )
+    }
 
     var pendingYoloEnable by remember { mutableStateOf(false) }
     if (pendingYoloEnable) {
@@ -181,12 +191,6 @@ fun SettingToolApprovalsPage() {
             }
 
             item {
-                val decisionModel = settings.availableApprovalDecisionModel()
-                val decisionProviders = remember(settings.providers) {
-                    settings.providers.filter { it.enabled }.map { provider ->
-                        provider.copyProvider(models = provider.models.filter { it.supportsApprovalReview() })
-                    }
-                }
                 CardGroup(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -199,29 +203,23 @@ fun SettingToolApprovalsPage() {
                         supportingContent = {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(stringResource(R.string.setting_page_tool_approvals_decision_model_desc))
-                                ModelSelector(
-                                    modelId = decisionModel?.id,
-                                    providers = decisionProviders,
-                                    type = ModelType.CHAT,
-                                    allowClear = true,
-                                    onSelect = { model ->
-                                        scope.launch {
-                                            settingsStore.update {
-                                                it.copy(approvalDecisionModelId = model.id.takeIf { model.modelId.isNotBlank() })
-                                            }
-                                        }
-                                    },
-                                )
-                                val provider = decisionModel?.findProvider(settings.providers, checkOverwrite = false)
-                                if (provider != null) {
-                                    Text(provider.name, style = MaterialTheme.typography.bodySmall)
-                                } else if (settings.approvalDecisionModelId != null) {
+                                val config = decisionModel
+                                if (config == null) {
                                     Text(stringResource(R.string.permission_mode_model_missing))
-                                    TextButton(onClick = {
-                                        scope.launch {
-                                            settingsStore.update { it.copy(approvalDecisionModelId = null) }
-                                        }
-                                    }) { Text(stringResource(R.string.common_clear)) }
+                                    Text(stringResource(R.string.setting_page_tool_approvals_systemone_reconfigure))
+                                } else {
+                                    Text(config.model, style = MaterialTheme.typography.bodyMedium)
+                                    Text(config.endpoint.toString(), style = MaterialTheme.typography.bodySmall)
+                                }
+                                Row {
+                                    TextButton(onClick = { editingDecisionModel = true }) {
+                                        Text(stringResource(R.string.setting_page_tool_approvals_decision_model))
+                                    }
+                                    if (config != null) {
+                                        TextButton(onClick = {
+                                            scope.launch { prefs.setDecisionModel(null) }
+                                        }) { Text(stringResource(R.string.common_clear)) }
+                                    }
                                 }
                             }
                         },
@@ -283,4 +281,76 @@ fun SettingToolApprovalsPage() {
             }
         }
     }
+}
+
+@Composable
+private fun SystemOneDialog(
+    current: SystemOneConfiguration?,
+    onDismiss: () -> Unit,
+    onSave: (SystemOneConfiguration) -> Unit,
+) {
+    var endpoint by remember { mutableStateOf(current?.endpoint?.toString() ?: SystemOneConfiguration.DEFAULT_ENDPOINT) }
+    var model by remember { mutableStateOf(current?.model ?: SystemOneConfiguration.DEFAULT_MODEL) }
+    var apiKey by remember { mutableStateOf("") }
+    var invalid by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.setting_page_tool_approvals_decision_model)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = endpoint,
+                    onValueChange = {
+                        endpoint = it
+                        invalid = false
+                    },
+                    label = { Text(stringResource(R.string.setting_page_tool_approvals_systemone_endpoint)) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = {
+                        model = it
+                        invalid = false
+                    },
+                    label = { Text(stringResource(R.string.setting_provider_page_model_id)) },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = {
+                        apiKey = it
+                        invalid = false
+                    },
+                    label = { Text(stringResource(R.string.setting_provider_page_api_key)) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                if (invalid) {
+                    Text(
+                        text = stringResource(R.string.setting_page_tool_approvals_systemone_invalid),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                // A saved key may only be reused for the same endpoint.
+                val key = if (apiKey.isEmpty() && current != null && endpoint.trim() == current.endpoint.toString()) {
+                    current.apiKey
+                } else {
+                    apiKey
+                }
+                val config = SystemOneConfiguration.create(endpoint, model, key)
+                if (config == null) invalid = true else onSave(config)
+            }) { Text(stringResource(R.string.common_save)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
+        },
+    )
 }

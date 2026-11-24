@@ -2501,7 +2501,9 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="permission_mode_auto_review_desc">由决策模型审查安全或用户已授权的操作</string>
   <string name="permission_mode_full_access_desc">自动批准所有工具；硬性安全拦截仍然生效</string>
   <string name="permission_mode_model_missing">未配置决策模型；需要审查的操作将转人工审批</string>
-  <string name="setting_page_tool_approvals_decision_model">配置决策模型提供商</string>
-  <string name="setting_page_tool_approvals_decision_model_desc">选择“替我审批”模式下用于审查工具操作的聊天模型及提供商</string>
+  <string name="setting_page_tool_approvals_decision_model">配置 SystemOne</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">“替我审批”会把脱敏后的工具信息和用户意图发给独立的 SystemOne 决策模型，不使用聊天模型。</string>
+  <string name="setting_page_tool_approvals_systemone_reconfigure">不再沿用之前选择的聊天模型。请配置 SystemOne 端点、模型 ID 和 API 密钥。</string>
+  <string name="setting_page_tool_approvals_systemone_endpoint">SystemOne 端点</string>
+  <string name="setting_page_tool_approvals_systemone_invalid">请输入以 /v1/systemone 结尾的有效 HTTPS 端点、模型 ID 和 API 密钥。只有本机回环地址支持 HTTP。</string>
 </resources>
-

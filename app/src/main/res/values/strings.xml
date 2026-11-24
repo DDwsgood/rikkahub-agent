@@ -2499,7 +2499,9 @@
   <string name="permission_mode_auto_review_desc">Let the decision model review safe and user-authorized actions</string>
   <string name="permission_mode_full_access_desc">Approve every tool automatically; hard safety blocks still apply</string>
   <string name="permission_mode_model_missing">No decision model configured; actions needing review will use manual approval</string>
-  <string name="setting_page_tool_approvals_decision_model">Configure decision model provider</string>
-  <string name="setting_page_tool_approvals_decision_model_desc">Choose the chat model and provider used to review tool actions in Approve for me mode</string>
+  <string name="setting_page_tool_approvals_decision_model">Configure SystemOne</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">Approve for me sends redacted tool details and user intent to a separate SystemOne decision model, not your chat model.</string>
+  <string name="setting_page_tool_approvals_systemone_reconfigure">Previous chat-model selections are not reused. Set a SystemOne endpoint, model ID, and API key.</string>
+  <string name="setting_page_tool_approvals_systemone_endpoint">SystemOne endpoint</string>
+  <string name="setting_page_tool_approvals_systemone_invalid">Enter a valid HTTPS endpoint ending in /v1/systemone, a model ID, and an API key. HTTP is allowed only on loopback.</string>
 </resources>
-

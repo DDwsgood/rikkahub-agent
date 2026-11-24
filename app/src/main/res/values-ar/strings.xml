@@ -1519,7 +1519,6 @@
   <string name="permission_mode_auto_review_desc">السماح لنموذج القرار بمراجعة الإجراءات الآمنة أو التي سمح بها المستخدم</string>
   <string name="permission_mode_full_access_desc">الموافقة تلقائيًا على كل الأدوات؛ مع استمرار قيود السلامة الصارمة</string>
   <string name="permission_mode_model_missing">لم يُضبط نموذج القرار؛ ستتحول الإجراءات التي تحتاج إلى مراجعة إلى الموافقة اليدوية</string>
-  <string name="setting_page_tool_approvals_decision_model">إعداد موفر نموذج القرار</string>
-  <string name="setting_page_tool_approvals_decision_model_desc">اختر نموذج الدردشة والموفر المستخدمين لمراجعة إجراءات الأدوات في وضع الموافقة نيابةً عني</string>
+  <string name="setting_page_tool_approvals_decision_model">إعداد SystemOne</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">يرسل وضع الموافقة نيابةً عني تفاصيل الأدوات بعد حجب البيانات الحساسة ونية المستخدم إلى نموذج القرار SystemOne، لا إلى نموذج الدردشة.</string>
 </resources>
-

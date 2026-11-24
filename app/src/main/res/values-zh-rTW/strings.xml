@@ -2429,9 +2429,11 @@
   <string name="permission_mode_auto_review_desc">由決策模型審查安全或使用者已授權的操作</string>
   <string name="permission_mode_full_access_desc">自動批准所有工具；硬性安全攔截仍然生效</string>
   <string name="permission_mode_model_missing">尚未設定決策模型；需要審查的操作將轉人工審批</string>
-  <string name="setting_page_tool_approvals_decision_model">設定決策模型提供商</string>
-  <string name="setting_page_tool_approvals_decision_model_desc">選擇「替我審批」模式下用於審查工具操作的聊天模型及提供商</string>
+  <string name="setting_page_tool_approvals_decision_model">設定 SystemOne</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">「替我審批」會將遮蔽敏感資料後的工具資訊和使用者意圖傳給獨立的 SystemOne 決策模型，而非聊天模型。</string>
+  <string name="setting_page_tool_approvals_systemone_reconfigure">不再沿用先前選取的聊天模型。請設定 SystemOne 端點、模型 ID 和 API 金鑰。</string>
+  <string name="setting_page_tool_approvals_systemone_endpoint">SystemOne 端點</string>
+  <string name="setting_page_tool_approvals_systemone_invalid">請輸入以 /v1/systemone 結尾的有效 HTTPS 端點、模型 ID 和 API 金鑰。僅限本機回送位址可使用 HTTP。</string>
   <string name="workspace_detail_shared_dir_approval_note">寫入 /shared 仍會要求你授權。</string>
   <string name="setting_page_scheduled_jobs_calendar_permission_denied">需要日曆權限才能同步提醒。</string>
 </resources>
-

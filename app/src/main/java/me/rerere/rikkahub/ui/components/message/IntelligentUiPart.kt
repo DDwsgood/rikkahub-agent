@@ -2,6 +2,9 @@ package me.rerere.rikkahub.ui.components.message
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.content.Context
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
@@ -25,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import me.rerere.rikkahub.data.ai.IntelligentUi
@@ -33,6 +37,31 @@ import java.io.ByteArrayInputStream
 
 private const val PAGE = "https://rikka-ui.invalid/index.html"
 private const val RESOURCE = "/static/intelligent-ui/index.html"
+
+// Chromium may disallow ancestor interception even with no scroll range (e.g. over a chart).
+// Leave taps and horizontal controls alone; release vertical drags to the Compose chat list.
+@SuppressLint("ViewConstructor", "ClickableViewAccessibility")
+private class InlineUiView(context: Context) : WebView(context) {
+    private var downX = 0f
+    private var downY = 0f
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val consumed = super.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                downY = event.y
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dy = kotlin.math.abs(event.y - downY)
+                if (dy > slop && dy > kotlin.math.abs(event.x - downX)) parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return consumed
+    }
+}
 
 @Keep
 private class HeightBridge(private val onStatus: (String, Int) -> Unit) {
@@ -49,7 +78,13 @@ internal fun IntelligentUiPartOrNull(text: String, loading: Boolean): Boolean {
     if (loading && "$marker\r".startsWith(trimmed)) return true
     if (!trimmed.startsWith("$marker\n") && !trimmed.startsWith("$marker\r\n")) return false
 
-    val source = trimmed.substringAfter('\n')
+    InlineUiSurface(trimmed.substringAfter('\n'), loading)
+    return true
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun InlineUiSurface(source: String, loading: Boolean) {
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val lang = LocalConfiguration.current.locales[0].toLanguageTag()
     val sequence = remember { java.util.concurrent.atomic.AtomicInteger() }
@@ -68,23 +103,40 @@ internal fun IntelligentUiPartOrNull(text: String, loading: Boolean): Boolean {
         if (ready && !loading && acknowledged != revision && !failed) { delay(10000); failed = true }
     }
     var height by remember { mutableIntStateOf(36) }
+    var oversized by remember { mutableStateOf(false) }
+    val density = LocalDensity.current.density
+    // Compose dimensions are packed into finite pixel constraints. Split pathological
+    // answers on complete declarations, never turn a height limit into a scroll viewport.
+    if (oversized) {
+        val cut = remember { source.indexOf('\n', source.length / 2).takeIf { it in 1 until source.lastIndex }
+            ?: source.lastIndexOf('\n', source.length / 2).takeIf { it in 1 until source.lastIndex } }
+        if (cut != null && cut < source.length && source[cut] == '\n') {
+            InlineUiSurface(source.substring(0, cut), false)
+            InlineUiSurface(source.substring(cut + 1), loading)
+        } else {
+            source.chunked(2048).forEach { Text(it) }
+        }
+        return
+    }
     if (failed) {
         Text(source)
-        return true
+        return
     }
     AndroidView(
         modifier = Modifier.fillMaxWidth().height(height.dp),
         factory = { context ->
             var created: WebView? = null
-            try { WebView(context).also { created = it }.apply {
+            try { InlineUiView(context).also { created = it }.apply {
                 setBackgroundColor(Color.TRANSPARENT)
+                isVerticalScrollBarEnabled = false
+                overScrollMode = android.view.View.OVER_SCROLL_NEVER
                 settings.javaScriptEnabled = true
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.blockNetworkLoads = true
                 addJavascriptInterface(HeightBridge { type, value -> post {
                     when (type) {
-                        "height" -> height = value.coerceIn(24, 2400)
+                        "height" -> if (value * density > 24000) oversized = true else height = value.coerceAtLeast(24)
                         "final" -> acknowledged = value
                         "partial" -> partial = true
                         "failed" -> failed = true
@@ -132,5 +184,4 @@ internal fun IntelligentUiPartOrNull(text: String, loading: Boolean): Boolean {
     if (partial) TextButton(onClick = { failed = true }) {
         Text(if (lang.startsWith("zh")) "查看完整原文" else "View original text")
     }
-    return true
 }

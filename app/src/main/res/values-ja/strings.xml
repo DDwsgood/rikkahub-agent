@@ -2431,9 +2431,8 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="permission_mode_auto_review_desc">安全な操作やユーザーが許可した操作を決定モデルがレビューします</string>
   <string name="permission_mode_full_access_desc">すべてのツールを自動承認します。強制的な安全ブロックは有効です</string>
   <string name="permission_mode_model_missing">決定モデル未設定時は、レビューが必要な操作を手動承認に回します</string>
-  <string name="setting_page_tool_approvals_decision_model">決定モデルプロバイダーを設定</string>
-  <string name="setting_page_tool_approvals_decision_model_desc">自動レビューモードでツール操作を審査するチャットモデルとプロバイダーを選択します</string>
+  <string name="setting_page_tool_approvals_decision_model">SystemOne を設定</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">自動レビューモードでは、機密情報を伏せたツールの詳細とユーザーの意図を、チャットモデルではなく専用の SystemOne 決定モデルに送信します。</string>
   <string name="workspace_detail_shared_dir_approval_note">/shared への書き込みには引き続き承認が必要です。</string>
   <string name="setting_page_scheduled_jobs_calendar_permission_denied">リマインダーを同期するにはカレンダー権限が必要です。</string>
 </resources>
-

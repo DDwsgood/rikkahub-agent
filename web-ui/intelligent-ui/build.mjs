@@ -24,8 +24,29 @@ const script = result.outputFiles
   .find((f) => f.path.endsWith(".js"))
   .text.replace(/<\/script/gi, "<\\/script");
 const hash = createHash("sha256").update(script).digest("base64");
-const css =
-  "*{box-sizing:border-box}html,body{margin:0;background:transparent;font:16px/1.5 system-ui,sans-serif}#surface{display:flow-root;overflow-wrap:anywhere}section{margin:0 0 12px;max-width:100%;overflow-x:auto}fieldset{margin:0;border:1px solid GrayText;border-radius:12px;padding:10px 14px;min-width:0}legend{font-weight:600}input[type=range]{display:block;width:100%;min-height:40px}output{font-variant-numeric:tabular-nums}pre{white-space:pre-wrap}";
+const css = `
+  * { box-sizing:border-box }
+  html,body { margin:0; overflow:hidden; background:transparent; font:16px/1.5 system-ui,sans-serif }
+  #surface { display:flow-root; overflow-wrap:anywhere }
+  section { margin:0 0 12px; max-width:100%; min-width:0 }
+  #surface .openui-table-container { overflow:visible }
+  #surface table :is(td,th) { white-space:normal; overflow-wrap:anywhere }
+  #surface table { table-layout:auto; max-width:100% }
+  fieldset { margin:0; border:1px solid GrayText; border-radius:12px; padding:10px 14px; min-width:0 }
+  legend { font-weight:600 }
+  input[type=range] { display:block; width:100%; min-height:40px }
+  output { font-variant-numeric:tabular-nums }
+  pre { white-space:pre-wrap }
+  .table-records { display:none }
+  @media(max-width:480px) {
+    #surface table :is(td,th) { padding-inline:6px }
+    .wide-matrix { display:none }
+    .table-records { display:block }
+    .table-records dl { margin:0; padding:8px 0; border-bottom:1px solid GrayText }
+    .table-records dl > div { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); gap:8px }
+    .table-records dd { margin:0 }
+  }
+`;
 await writeFile(
   new URL("index.html", out),
   `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${hash}'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><style>${css}</style></head><body><main id="surface"></main><script>${script}</script></body></html>`,

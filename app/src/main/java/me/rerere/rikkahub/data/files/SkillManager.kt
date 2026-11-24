@@ -295,14 +295,13 @@ class SkillManager(
             val coreVersionFile = targetDir.resolve(".core-bundled-hash")
 
             if (isCoreSkill) {
-                // Core skills (auto_load=true) re-seed whenever the bundled content changes
-                // — typically across an APK upgrade. This keeps SOUL/HEARTBEAT/TOOLS in
-                // sync with the app version while still allowing the user to edit between
-                // upgrades (their edits stick until we ship a new bundled version).
+                // Update stock copies only. Persona edits and user-added files survive upgrades.
                 val bundledHash = computeBundledSkillHash(assetRoot, skillName)
                 val currentHash = if (coreVersionFile.exists()) coreVersionFile.readText().trim() else ""
                 if (bundledHash == currentHash) continue
                 try {
+                    if (targetDir.exists() && targetDir.listFiles()?.isNotEmpty() != false &&
+                        (currentHash.isEmpty() || installedSkillHash(targetDir) != currentHash)) continue
                     if (targetDir.exists()) targetDir.deleteRecursively()
                     copyAssetSkill(assetRoot, skillName, targetDir)
                     sentinel.writeText(System.currentTimeMillis().toString())
@@ -388,6 +387,27 @@ class SkillManager(
         }
         walk("$assetRoot/$skillName")
         return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    // Match computeBundledSkillHash's depth-first ordering and omit our two tracking files.
+    private fun installedSkillHash(root: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        fun walk(dir: File) {
+            val entries = dir.listFiles() ?: throw java.io.IOException("Cannot read skill directory")
+            for (entry in entries.sortedBy { it.name }) {
+                if (dir == root && entry.name in setOf(".seeded", ".core-bundled-hash")) continue
+                if (java.nio.file.Files.isSymbolicLink(entry.toPath())) throw java.io.IOException("Custom skill link")
+                if (entry.isDirectory) walk(entry) else {
+                    digest.update(entry.name.toByteArray())
+                    java.security.DigestInputStream(entry.inputStream(), digest).use { stream ->
+                        val buffer = ByteArray(8192)
+                        while (stream.read(buffer) != -1) { /* hash on read */ }
+                    }
+                }
+            }
+        }
+        walk(root)
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun copyAssetSkill(assetRoot: String, skillName: String, targetDir: File) {
@@ -505,4 +525,3 @@ data class SkillContent(
     val contentMd: String,
     val argsSchema: kotlinx.serialization.json.JsonObject? = null,
 )
-

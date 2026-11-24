@@ -138,7 +138,7 @@ class SettingsStore internal constructor(
         val TRANSLATE_MODEL = stringPreferencesKey("translate_model")
         val ENABLE_SUGGESTION = booleanPreferencesKey("enable_suggestion")
         val SUGGESTION_MODEL = stringPreferencesKey("suggestion_model")
-        val APPROVAL_DECISION_MODEL = stringPreferencesKey("approval_decision_model")
+        val LEGACY_APPROVAL_DECISION_MODEL = stringPreferencesKey("approval_decision_model")
         val IMAGE_GENERATION_MODEL = stringPreferencesKey("image_generation_model")
         val TITLE_PROMPT = stringPreferencesKey("title_prompt")
         val TRANSLATION_PROMPT = stringPreferencesKey("translation_prompt")
@@ -232,9 +232,6 @@ class SettingsStore internal constructor(
                     ?: DEFAULT_AUTO_MODEL_ID,
                 enableSuggestion = preferences[ENABLE_SUGGESTION] != false,
                 suggestionModelId = preferences[SUGGESTION_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() },
-                approvalDecisionModelId = preferences[APPROVAL_DECISION_MODEL]?.let {
-                    runCatching { Uuid.parse(it) }.getOrNull()
-                },
                 imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: Uuid.random(),
                 titlePrompt = preferences[TITLE_PROMPT] ?: DEFAULT_TITLE_PROMPT,
                 translatePrompt = preferences[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
@@ -411,6 +408,9 @@ class SettingsStore internal constructor(
         }
         assistants = assistants.map { assistant ->
             val isDefault = DEFAULT_ASSISTANTS.any { it.id == assistant.id }
+            val assistant = if (assistant.id == DEFAULT_INFO_ASSISTANT_ID && assistant.systemPrompt == LEGACY_INFO_PROMPT) {
+                assistant.copy(systemPrompt = DEFAULT_INFO_PROMPT)
+            } else assistant
             if (isDefault && assistant.enabledSkills.isEmpty()) {
                 assistant.copy(enabledSkills = setOf("agent-core"))
             } else assistant
@@ -561,9 +561,7 @@ class SettingsStore internal constructor(
         settings.suggestionModelId?.let {
             preferences[SUGGESTION_MODEL] = it.toString()
         } ?: preferences.remove(SUGGESTION_MODEL)
-        settings.approvalDecisionModelId?.let {
-            preferences[APPROVAL_DECISION_MODEL] = it.toString()
-        } ?: preferences.remove(APPROVAL_DECISION_MODEL)
+        preferences.remove(LEGACY_APPROVAL_DECISION_MODEL)
         preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
         preferences[TITLE_PROMPT] = settings.titlePrompt
         preferences[TRANSLATION_PROMPT] = settings.translatePrompt
@@ -759,8 +757,6 @@ data class Settings(
     val enableSuggestion: Boolean = true,
     val suggestionModelId: Uuid? = null,
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
-    /** Model used only by the ordinary-chat "approve for me" permission mode. */
-    val approvalDecisionModelId: Uuid? = null,
     val ocrModelId: Uuid = Uuid.random(),
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
     val compressModelId: Uuid = Uuid.random(),
@@ -996,6 +992,26 @@ internal val DEFAULT_ASSISTANT_ID = Uuid.parse("0950e2dc-9bd5-4801-afa3-aa887aa3
  */
 internal val DEFAULT_AUTO_ENABLED_SKILLS = setOf("openclaw-converter")
 
+private val DEFAULT_INFO_ASSISTANT_ID = Uuid.parse("3d47790c-c415-4b90-9388-751128adb0a0")
+private const val DEFAULT_INFO_PROMPT = "You are {{char}}, powered by {{model_name}}, on {{user}}'s Android device. Locale: {{locale}}; time zone: {{timezone}}."
+
+// Upgrade only the exact factory text. User-authored personas are not migrations.
+private val LEGACY_INFO_PROMPT = """
+    You are a helpful assistant, called {{char}}, based on model {{model_name}}.
+
+    ## Info
+    - Date: {{cur_date}}
+    - Locale: {{locale}}
+    - Timezone: {{timezone}}
+    - Device Info: {{device_info}}
+    - System Version: {{system_version}}
+    - User Nickname: {{user}}
+
+    ## Hint
+    - If the user does not specify a language, reply in the user's primary language.
+    - Remember to use Markdown syntax for formatting, and use latex for mathematical expressions.
+""".trimIndent()
+
 internal val DEFAULT_ASSISTANTS = listOf(
     Assistant(
         id = DEFAULT_ASSISTANT_ID,
@@ -1008,23 +1024,9 @@ internal val DEFAULT_ASSISTANTS = listOf(
         enabledSkills = setOf("agent-core") + DEFAULT_AUTO_ENABLED_SKILLS,
     ),
     Assistant(
-        id = Uuid.parse("3d47790c-c415-4b90-9388-751128adb0a0"),
+        id = DEFAULT_INFO_ASSISTANT_ID,
         name = "",
-        systemPrompt = """
-            You are a helpful assistant, called {{char}}, based on model {{model_name}}.
-
-            ## Info
-            - Date: {{cur_date}}
-            - Locale: {{locale}}
-            - Timezone: {{timezone}}
-            - Device Info: {{device_info}}
-            - System Version: {{system_version}}
-            - User Nickname: {{user}}
-
-            ## Hint
-            - If the user does not specify a language, reply in the user's primary language.
-            - Remember to use Markdown syntax for formatting, and use latex for mathematical expressions.
-        """.trimIndent(),
+        systemPrompt = DEFAULT_INFO_PROMPT,
         enabledSkills = setOf("agent-core") + DEFAULT_AUTO_ENABLED_SKILLS,
     ),
 )

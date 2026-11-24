@@ -59,7 +59,14 @@ function Row({ name, args, zh }) {
   } else {
     code = `root = Col([${name}(${args.map((v) => q(v)).join(",")})])`;
   }
-  return <Renderer library={kit} response={code} isStreaming={false} onError={reportErrors} />;
+  const rendered = <Renderer library={kit} response={code} isStreaming={false} onError={reportErrors} />;
+  if (name === 'Table' && args[0].length > 3) {
+    const [headers, records] = args;
+    return <><div className="wide-matrix">{rendered}</div><div className="table-records">
+      {records.map((record,i)=><dl key={i}>{record.map((value,j)=><div key={j}><dt>{headers[j]}</dt><dd>{value}</dd></div>)}</dl>)}
+    </div></>;
+  }
+  return rendered;
 }
 
 let hostPort;

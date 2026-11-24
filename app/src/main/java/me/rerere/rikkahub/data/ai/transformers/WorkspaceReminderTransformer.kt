@@ -82,18 +82,8 @@ private fun buildWorkspacePrompt(
     sharedDirMounted: Boolean = false,
 ): String = buildString {
     appendLine("<workspace>")
-    appendLine("You have access to a persistent Linux workspace named \"${workspace.name}\", running in a sandboxed proot rootfs environment.")
-    appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
-    appendLine("- All paths passed to workspace tools must be absolute and inside the Rootfs (for example `/workspace/notes.md`).")
-    appendLine("- Available tools:")
-    appendLine("  - `workspace_read_file`: read file contents.")
-    appendLine("  - `workspace_write_file` / `workspace_edit_file`: create files, or make precise edits to existing files.")
-    appendLine("  - `workspace_export_to_downloads`: export a `/workspace/...` deliverable directly into the phone's public `Download/RikkaHub/${workspace.name}/` folder (visible in Android Files, Gallery, WeChat, WPS without root or Termux).")
-    appendLine("  - `workspace_shell`: run shell commands (the files area is mounted at /workspace).")
-    appendLine("  - `workspace_run_background`: start a long-running command that persists across tool calls and survives after the call returns (dev servers, long installs, file watchers, batch jobs); returns a task id. The command runs in the FOREGROUND of its own persistent process, so do NOT append `&`.")
-    appendLine("  - `workspace_background_status`: check status and recent output of background tasks (all, or one by task id).")
-    appendLine("  - `workspace_background_kill`: stop a background task by task id.")
-    appendLine("- Delivering files to the user: `/workspace` is app-private storage (fast Linux filesystem). When producing a file the user wants to open or save on their phone, call `workspace_export_to_downloads` (or `share_file` / `open_file`) instead of manually copying via Termux.")
+    appendLine("PRoot workspace: ${workspace.name}. Use absolute rootfs paths; /workspace is persistent and app-private. workspace_shell runs here; workspace_run_background takes a foreground command (no &).")
+    appendLine("Export user-visible files with workspace_export_to_downloads to Download/RikkaHub/${workspace.name}/.")
     val sdcardMode = workspace.sdcardModeEnum()
     when (sdcardMode) {
         me.rerere.workspace.WorkspaceSdcardMode.READ_ONLY ->
@@ -106,10 +96,7 @@ private fun buildWorkspacePrompt(
         val publicPath = me.rerere.rikkahub.data.preferences.WorkspaceSharedDirPreferences.displayPath(workspace.name, workspace.id)
         appendLine("- A user-visible shared folder is mounted at `/shared` (backed by `/sdcard/$publicPath`). Files written to `/shared` appear directly in Android file managers; writing to `/shared` still prompts for user approval.")
     }
-    appendLine("- Prefer `workspace_shell` for tasks that standard Unix tools handle well, and prefer `workspace_edit_file` for targeted edits over rewriting whole files.")
-    appendLine("- To preview web files in the browser, start a static server with `workspace_run_background` (for example `python3 -m http.server 8000`) and then open it, since file:// breaks ES modules and fetch.")
-    appendLine("- The skills directory is mounted at `/skills`. Each skill is a subdirectory `/skills/<skill-name>/` containing a `SKILL.md` (with `name` and `description` frontmatter) plus any supporting files. Read a skill's `SKILL.md` before using it, and follow its instructions.")
-    appendLine("- Files the user uploaded are mounted at `/upload`. Treat `/upload` as READ-ONLY: read uploaded files from `/upload/<file-name>`, but never modify, overwrite, or delete anything there. If you need to change an uploaded file, copy it into `/workspace` first and edit the copy.")
+    appendLine("Skills: /skills/<name>/SKILL.md. /upload is READ-ONLY; edit copies in /workspace.")
     if (!cwd.isNullOrBlank()) {
         appendLine("- Current working directory: `$cwd`. Use this as the default context for file operations and shell commands.")
     }

@@ -64,7 +64,10 @@ val appModule = module {
         me.rerere.rikkahub.data.telegram.TelegramInteractiveToolStreamer(get(), get(), get(), get())
     }
     single { me.rerere.rikkahub.data.preferences.ToolApprovalPreferences(get()) }
-    single { me.rerere.rikkahub.data.ai.approval.DecisionModelClient(get(), get()) }
+    single {
+        val preferences = get<me.rerere.rikkahub.data.preferences.ToolApprovalPreferences>()
+        me.rerere.rikkahub.data.ai.approval.DecisionModelClient(loadConfiguration = preferences::currentDecisionModel)
+    }
     single {
         me.rerere.rikkahub.data.ai.approval.AutoApprovalPolicy(
             get<me.rerere.rikkahub.data.ai.approval.DecisionModelClient>()::review,

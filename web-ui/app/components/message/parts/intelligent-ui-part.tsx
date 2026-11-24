@@ -61,7 +61,7 @@ export function IntelligentUiPart({ source, done }: { source: string; done: bool
           setPartial(true);
           break;
         case "height":
-          if (Number.isFinite(data.height)) setHeight(Math.max(24, Math.min(2400, data.height)));
+          if (Number.isSafeInteger(data.height) && data.height >= 0) setHeight(Math.max(24, data.height));
           break;
         case "failed":
           setFailed(true);

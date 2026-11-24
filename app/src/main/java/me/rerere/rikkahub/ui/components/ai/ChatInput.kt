@@ -105,7 +105,6 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.preferences.ChatPermissionMode
 import me.rerere.rikkahub.data.preferences.ToolApprovalPreferences
-import me.rerere.rikkahub.data.preferences.availableApprovalDecisionModel
 import me.rerere.rikkahub.service.ChatComposerSubmission
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionContext
 import me.rerere.rikkahub.ui.components.ai.completion.ChatCompletionItem
@@ -312,7 +311,7 @@ fun ChatInput(
                                 )
                             }
 
-                            PermissionModeSelector(settings = settings)
+                            PermissionModeSelector()
                         }
 
                         ActionIconButton(
@@ -413,9 +412,10 @@ fun ChatInput(
 }
 
 @Composable
-private fun PermissionModeSelector(settings: Settings) {
+private fun PermissionModeSelector() {
     val prefs: ToolApprovalPreferences = koinInject()
     val mode by prefs.permissionModeFlow.collectAsState(initial = ChatPermissionMode.MANUAL)
+    val decisionModel by prefs.decisionModelFlow.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val modelMissingMessage = stringResource(R.string.permission_mode_model_missing)
@@ -428,7 +428,7 @@ private fun PermissionModeSelector(settings: Settings) {
             confirmFullAccess = true
         } else {
             scope.launch { prefs.setPermissionMode(selected) }
-            if (selected == ChatPermissionMode.AUTO_REVIEW && settings.availableApprovalDecisionModel() == null) {
+            if (selected == ChatPermissionMode.AUTO_REVIEW && decisionModel == null) {
                 toaster.show(
                     message = modelMissingMessage,
                     type = ToastType.Normal,

@@ -2431,9 +2431,8 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="permission_mode_auto_review_desc">안전하거나 사용자가 허용한 작업을 결정 모델이 검토합니다</string>
   <string name="permission_mode_full_access_desc">모든 도구를 자동 승인합니다. 강제 안전 차단은 계속 적용됩니다</string>
   <string name="permission_mode_model_missing">결정 모델이 설정되지 않았습니다. 검토가 필요한 작업은 수동 승인으로 전환됩니다</string>
-  <string name="setting_page_tool_approvals_decision_model">결정 모델 제공자 설정</string>
-  <string name="setting_page_tool_approvals_decision_model_desc">대리 승인 모드에서 도구 작업을 검토할 채팅 모델과 제공자를 선택하세요</string>
+  <string name="setting_page_tool_approvals_decision_model">SystemOne 설정</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">대리 승인 모드는 민감한 정보를 가린 도구 세부 정보와 사용자 의도를 채팅 모델이 아닌 별도의 SystemOne 결정 모델에 보냅니다.</string>
   <string name="workspace_detail_shared_dir_approval_note">/shared에 쓰려면 계속 승인이 필요합니다.</string>
   <string name="setting_page_scheduled_jobs_calendar_permission_denied">알림을 동기화하려면 캘린더 권한이 필요합니다.</string>
 </resources>
-

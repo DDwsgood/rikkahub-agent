@@ -2431,9 +2431,8 @@
   <string name="permission_mode_auto_review_desc">Модель проверяет безопасные или разрешённые пользователем действия</string>
   <string name="permission_mode_full_access_desc">Автоматически разрешать все инструменты; обязательные блокировки сохраняются</string>
   <string name="permission_mode_model_missing">Модель не настроена; действия, требующие проверки, будут переданы пользователю</string>
-  <string name="setting_page_tool_approvals_decision_model">Настроить провайдера модели решений</string>
-  <string name="setting_page_tool_approvals_decision_model_desc">Выберите чат-модель и провайдера для проверки действий в режиме одобрения моделью</string>
+  <string name="setting_page_tool_approvals_decision_model">Настроить SystemOne</string>
+  <string name="setting_page_tool_approvals_decision_model_desc">В режиме одобрения моделью сведения о действиях инструментов и намерение пользователя передаются отдельной модели решений SystemOne, а не чат-модели. Конфиденциальные данные маскируются.</string>
   <string name="workspace_detail_shared_dir_approval_note">Запись в /shared по-прежнему требует вашего разрешения.</string>
   <string name="setting_page_scheduled_jobs_calendar_permission_denied">Для синхронизации напоминаний нужно разрешение на доступ к календарю.</string>
 </resources>
-

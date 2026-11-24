@@ -9,12 +9,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import me.rerere.ai.provider.Modality
-import me.rerere.ai.provider.Model
-import me.rerere.ai.provider.ModelType
-import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.datastore.findModelById
-import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.ai.approval.SystemOneConfiguration
 
 private val Context.toolApprovalDataStore by preferencesDataStore(name = "tool_approval")
 
@@ -30,14 +25,6 @@ enum class ChatPermissionMode {
         }
     }
 }
-
-internal fun Model.supportsApprovalReview(): Boolean =
-    type == ModelType.CHAT && Modality.TEXT in inputModalities && Modality.TEXT in outputModalities
-
-internal fun Settings.availableApprovalDecisionModel(): Model? =
-    findModelById(approvalDecisionModelId)?.takeIf {
-        it.supportsApprovalReview() && it.findProvider(providers, checkOverwrite = false)?.enabled == true
-    }
 
 /**
  * Persistent tool-approval prefs. Two pieces:
@@ -61,6 +48,34 @@ class ToolApprovalPreferences(private val context: Context) {
     private val K_ALWAYS_ALLOW = stringSetPreferencesKey("always_allow_tool_names")
     private val K_GLOBAL_YOLO = booleanPreferencesKey("global_auto_approve_yolo")
     private val K_PERMISSION_MODE = stringPreferencesKey("chat_permission_mode")
+    private val K_SYSTEMONE_ENDPOINT = stringPreferencesKey("systemone_endpoint")
+    private val K_SYSTEMONE_MODEL = stringPreferencesKey("systemone_model")
+    private val K_SYSTEMONE_API_KEY = stringPreferencesKey("systemone_api_key")
+
+    // The old chat-model UUID and chat-provider credentials are never read for SystemOne review.
+    internal val decisionModelFlow: Flow<SystemOneConfiguration?> = store.data.map {
+        SystemOneConfiguration.create(
+            endpoint = it[K_SYSTEMONE_ENDPOINT].orEmpty(),
+            model = it[K_SYSTEMONE_MODEL].orEmpty(),
+            apiKey = it[K_SYSTEMONE_API_KEY].orEmpty(),
+        )
+    }
+
+    internal suspend fun currentDecisionModel(): SystemOneConfiguration? = decisionModelFlow.first()
+
+    internal suspend fun setDecisionModel(config: SystemOneConfiguration?) {
+        store.edit {
+            if (config == null) {
+                it.remove(K_SYSTEMONE_ENDPOINT)
+                it.remove(K_SYSTEMONE_MODEL)
+                it.remove(K_SYSTEMONE_API_KEY)
+            } else {
+                it[K_SYSTEMONE_ENDPOINT] = config.endpoint.toString()
+                it[K_SYSTEMONE_MODEL] = config.model
+                it[K_SYSTEMONE_API_KEY] = config.apiKey
+            }
+        }
+    }
 
     val alwaysAllowFlow: Flow<Set<String>> = store.data.map {
         it[K_ALWAYS_ALLOW].orEmpty()

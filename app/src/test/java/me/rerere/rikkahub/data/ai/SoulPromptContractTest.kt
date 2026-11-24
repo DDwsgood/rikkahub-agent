@@ -71,6 +71,6 @@ class SoulPromptContractTest {
     @Test
     fun `stays within the resident-token budget guard`() {
         val words = soul.split(Regex("\\s+")).count { it.isNotBlank() }
-        assertTrue("SOUL is $words words; keep it lean in 250..800", words in 250..800)
+        assertTrue("SOUL is $words words; keep only the resident identity and boundaries", words <= 120)
     }
 }

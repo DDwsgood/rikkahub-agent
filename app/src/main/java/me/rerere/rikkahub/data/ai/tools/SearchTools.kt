@@ -3,14 +3,23 @@ package me.rerere.rikkahub.data.ai.tools
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.ui.components.richtext.MediaQueryResolver
+import me.rerere.rikkahub.ui.components.richtext.RichContentParser
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.toLocalString
+import me.rerere.search.SearchCommonOptions
 import me.rerere.search.SearchService
 import me.rerere.search.SearchServiceOptions
 import java.time.LocalDate
@@ -61,6 +70,119 @@ fun createSearchTools(settings: Settings): Set<Tool> {
                         }
                     listOf(UIMessagePart.Text(results.toString()))
                 }
+            )
+        )
+
+        add(
+            Tool(
+                name = "search_media",
+                description = """
+                    Search verified real images (book covers, scenery, products) or YouTube/Bilibili videos.
+                    Returns real URLs and thumbnails for <media-card>, <gallery>, and <video-card>.
+                    Never fabricate image or video URLs.
+                """.trimIndent(),
+                parameters = {
+                    InputSchema.Obj(
+                        properties = buildJsonObject {
+                            put("query", buildJsonObject {
+                                put("type", "string")
+                                put("description", "Focused search keywords (English for books/western topics, native keywords for landmarks)")
+                            })
+                            put("kind", buildJsonObject {
+                                put("type", "string")
+                                put("description", "Media type: image or video")
+                                put("enum", buildJsonArray {
+                                    add(JsonPrimitive("image"))
+                                    add(JsonPrimitive("video"))
+                                })
+                            })
+                        },
+                        required = listOf("query", "kind"),
+                    )
+                },
+                execute = { input ->
+                    val query = input.jsonObject["query"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                    val kind = input.jsonObject["kind"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: "image"
+                    val options = settings.searchServices.getOrElse(
+                        index = settings.searchServiceSelected,
+                        defaultValue = { SearchServiceOptions.DEFAULT },
+                    )
+                    val service = SearchService.getService(options)
+                    val items = mutableListOf<JsonObject>()
+                    val seen = mutableSetOf<String>()
+
+                    if (kind == "video") {
+                        val searchQuery = if (query.contains("youtube", true) || query.contains("bilibili", true)) {
+                            query
+                        } else {
+                            "$query youtube OR bilibili"
+                        }
+                        val res = runCatching {
+                            service.search(
+                                params = buildJsonObject { put("query", JsonPrimitive(searchQuery)) },
+                                commonOptions = SearchCommonOptions(resultSize = 6),
+                                serviceOptions = options,
+                            ).getOrNull()
+                        }.getOrNull()
+                        res?.items?.forEachIndexed { idx, item ->
+                            val url = RichContentParser.normalizeExternalUrl(item.url)
+                            val lower = url.lowercase()
+                            val isVideo = lower.contains("youtube.com/watch") ||
+                                lower.contains("youtu.be/") ||
+                                lower.contains("bilibili.com/video/")
+                            if (isVideo && seen.add(url)) {
+                                val rawThumb = res.images.getOrNull(idx)
+                                val thumb = RichContentParser.resolveVideoThumb(url, rawThumb)
+                                val source = when {
+                                    lower.contains("bilibili.com") -> "Bilibili"
+                                    lower.contains("youtu") -> "YouTube"
+                                    else -> RichContentParser.extractDomain(url)
+                                }
+                                items.add(buildJsonObject {
+                                    put("title", JsonPrimitive(item.title))
+                                    put("url", JsonPrimitive(url))
+                                    put("source", JsonPrimitive(source))
+                                    if (thumb.isNotEmpty()) put("thumb", JsonPrimitive(thumb))
+                                })
+                            }
+                        }
+                    } else {
+                        // 1. Keyless high-res covers / encyclopedia photos (Open Library + Wikipedia)
+                        val keyless = runCatching { MediaQueryResolver.fetchKeylessImage(query) }.getOrNull()
+                        if (!keyless.isNullOrEmpty() && seen.add(keyless)) {
+                            items.add(buildJsonObject {
+                                put("url", JsonPrimitive(keyless))
+                                put("title", JsonPrimitive(query))
+                                put("source", JsonPrimitive(RichContentParser.extractDomain(keyless)))
+                            })
+                        }
+                        // 2. Configured SearchService images (Exa / Tavily / etc.)
+                        val res = runCatching {
+                            service.search(
+                                params = buildJsonObject { put("query", JsonPrimitive(query)) },
+                                commonOptions = SearchCommonOptions(resultSize = 6),
+                                serviceOptions = options,
+                            ).getOrNull()
+                        }.getOrNull()
+                        res?.images?.forEach { rawImg ->
+                            val img = RichContentParser.normalizeExternalUrl(rawImg)
+                            if (img.isNotEmpty() && !img.endsWith(".svg", true) && seen.add(img)) {
+                                items.add(buildJsonObject {
+                                    put("url", JsonPrimitive(img))
+                                    put("title", JsonPrimitive(query))
+                                    put("source", JsonPrimitive(RichContentParser.extractDomain(img)))
+                                })
+                            }
+                        }
+                    }
+
+                    val payload = buildJsonObject {
+                        put("kind", JsonPrimitive(kind))
+                        put("query", JsonPrimitive(query))
+                        put("items", JsonArray(items.take(6)))
+                    }
+                    listOf(UIMessagePart.Text(payload.toString()))
+                },
             )
         )
 

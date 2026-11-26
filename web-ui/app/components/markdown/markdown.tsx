@@ -11,6 +11,7 @@ import { getCodePreviewLanguage } from "~/components/workbench/code-preview-lang
 import { useOptionalWorkbench } from "~/components/workbench/workbench-context";
 import { useSettingsStore } from "~/stores";
 import { CodeBlock } from "./code-block";
+import { IntelligentUiPart } from "~/components/message/parts/intelligent-ui-part";
 import "katex/dist/katex.min.css";
 // mhchem 扩展: 支持 \ce{} 等化学公式语法
 import "katex/dist/contrib/mhchem.mjs";
@@ -127,6 +128,9 @@ export default function Markdown({
 
             if (match || isBlock) {
               const language = match?.[1] || "";
+              if (language.toLowerCase() === "rikka-ui") {
+                return <IntelligentUiPart source={code} done={!isAnimating} />;
+              }
               return (
                 <CodeBlock
                   language={language}
@@ -150,6 +154,16 @@ export default function Markdown({
               </code>
             );
           },
+          ...({
+            badge: ({ tone, children }: { tone?: string; children?: React.ReactNode }) => {
+              const normalized = String(tone || "muted").toLowerCase();
+              const cls = ["ok", "warn", "err", "info", "muted"].includes(normalized)
+                ? normalized
+                : "muted";
+              return <span className={`rikka-badge rikka-badge-${cls}`}>{children}</span>;
+            },
+            citation: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+          } as Record<string, React.ComponentType<any>>),
           a: ({ href, children, ...props }) => {
             const childText = getNodeText(children).trim();
 

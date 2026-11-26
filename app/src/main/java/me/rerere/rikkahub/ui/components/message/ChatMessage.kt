@@ -81,6 +81,8 @@ import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
+import me.rerere.rikkahub.ui.components.richtext.RichContentParser
+import me.rerere.rikkahub.ui.components.richtext.RichMarkdownContent
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.richtext.buildMarkdownPreviewHtml
 import me.rerere.rikkahub.ui.components.webview.WebViewContentCache
@@ -403,6 +405,27 @@ private fun MessagePartsBlock(
                                     }
                                 }
                             } else {
+                                val processedText = part.text.replaceRegexes(
+                                    assistant = assistant,
+                                    scope = AssistantAffectScope.ASSISTANT,
+                                    visual = true,
+                                )
+                                val allowMediaNet = assistant?.enableWebSearch == true
+                                val renderMd: @Composable (String) -> Unit = { md ->
+                                    if (loading) {
+                                        MarkdownBlock(
+                                            content = md,
+                                            onClickCitation = handleClickCitation,
+                                        )
+                                    } else {
+                                        SelectionContainer {
+                                            MarkdownBlock(
+                                                content = md,
+                                                onClickCitation = handleClickCitation,
+                                            )
+                                        }
+                                    }
+                                }
                                 if (settings.displaySetting.showAssistantBubble) {
                                     Surface(
                                         modifier = Modifier.animateContentSize(),
@@ -410,42 +433,39 @@ private fun MessagePartsBlock(
                                         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = settings.displaySetting.bubbleOpacity),
                                     ) {
                                         Column(modifier = Modifier.padding(8.dp)) {
-                                            MarkdownBlock(
-                                                content = part.text.replaceRegexes(
-                                                    assistant = assistant,
-                                                    scope = AssistantAffectScope.ASSISTANT,
-                                                    visual = true,
-                                                ),
+                                            RichMarkdownContent(
+                                                content = processedText,
+                                                loading = loading,
+                                                allowMediaQueryNetwork = allowMediaNet,
                                                 onClickCitation = handleClickCitation,
+                                                renderMarkdown = renderMd,
                                             )
                                         }
                                     }
                                 } else {
-                                    MarkdownBlock(
-                                        content = part.text.replaceRegexes(
-                                            assistant = assistant,
-                                            scope = AssistantAffectScope.ASSISTANT,
-                                            visual = true,
-                                        ),
+                                    RichMarkdownContent(
+                                        content = processedText,
+                                        loading = loading,
+                                        allowMediaQueryNetwork = allowMediaNet,
                                         onClickCitation = handleClickCitation,
-                                        modifier = Modifier
-                                            .animateContentSize()
+                                        modifier = Modifier.animateContentSize(),
+                                        renderMarkdown = renderMd,
                                     )
                                 }
                             }
                         }
 
-                        // 流式生成期间不启用 SelectionContainer：Markdown 在不断重渲染，
-                        // 内部可选择的 Text 会频繁注册/注销，与 Compose 选择工具栏在绘制阶段
-                        // 对 selectable 列表的排序产生并发修改，导致 ConcurrentModificationException。
-                        // 生成结束后内容稳定，再启用文本选择。
-                        if (!renderedAsWebviewCard && !(role == MessageRole.ASSISTANT && IntelligentUiPartOrNull(part.text, loading))) {
-                            if (loading) {
-                                textContent()
-                            } else {
-                                SelectionContainer {
+                        if (!renderedAsWebviewCard) {
+                            if (role == MessageRole.USER) {
+                                if (loading) {
                                     textContent()
+                                } else {
+                                    SelectionContainer {
+                                        textContent()
+                                    }
                                 }
+                            } else {
+                                textContent()
                             }
                         }
                     }

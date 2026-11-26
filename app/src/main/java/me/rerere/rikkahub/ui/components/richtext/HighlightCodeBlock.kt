@@ -77,6 +77,8 @@ import me.rerere.rikkahub.ui.context.Navigator
 import me.rerere.rikkahub.ui.modifier.onClick
 import me.rerere.rikkahub.ui.theme.AtomOneDarkPalette
 import me.rerere.rikkahub.ui.theme.AtomOneLightPalette
+import androidx.compose.ui.platform.LocalConfiguration
+import me.rerere.rikkahub.ui.components.message.RikkaWidgetCard
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import me.rerere.rikkahub.ui.theme.LocalDarkMode
 import me.rerere.rikkahub.utils.toDp
@@ -106,9 +108,11 @@ fun HighlightCodeBlock(
     val context = LocalContext.current
     val settings = LocalSettings.current
     val normalizedLanguage = remember(language) { language.lowercase() }
-    val canInlinePreview = completeCodeBlock && normalizedLanguage in PREVIEWABLE_LANGUAGES
+    val isInteractiveHtml = normalizedLanguage == "html"
+    val isRikkaUi = normalizedLanguage == "rikka-ui"
+    val canInlinePreview = completeCodeBlock && (normalizedLanguage in PREVIEWABLE_LANGUAGES || isRikkaUi)
     var previewMode by remember(canInlinePreview, code, normalizedLanguage) {
-        mutableStateOf(canInlinePreview)
+        mutableStateOf(canInlinePreview && normalizedLanguage != "html")
     }
 
     var isExpanded by remember(settings.displaySetting.codeBlockAutoCollapse) {
@@ -164,6 +168,14 @@ fun HighlightCodeBlock(
             modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp)
         ) {
             when {
+                isRikkaUi || (isInteractiveHtml && canInlinePreview && previewMode) -> {
+                    RikkaWidgetCard(
+                        html = code,
+                        complete = completeCodeBlock,
+                        showFullscreenButton = false,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 canInlinePreview && previewMode -> {
                     CodeBlockPreview(
                         code = code,
@@ -437,7 +449,35 @@ private fun HighlightCodeActions(
             )
 
             val normalizedLanguage = language.lowercase()
-            if (canInlinePreview) {
+            if (canInlinePreview && normalizedLanguage == "html") {
+                val zh = LocalConfiguration.current.locales[0].toLanguageTag().startsWith("zh", ignoreCase = true)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(
+                            if (previewMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                        )
+                        .border(
+                            1.dp,
+                            if (previewMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                            else MaterialTheme.colorScheme.outlineVariant,
+                            RoundedCornerShape(999.dp),
+                        )
+                        .onClick { onTogglePreviewMode() }
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                ) {
+                    Text(
+                        text = if (previewMode) {
+                            if (zh) "查看源码" else "Code"
+                        } else {
+                            if (zh) "渲染交互卡片" else "Interactive Card"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (previewMode) MaterialTheme.colorScheme.primary else iconTint,
+                    )
+                }
+            } else if (canInlinePreview) {
                 Icon(
                     imageVector = if (previewMode) HugeIcons.Code else HugeIcons.View,
                     contentDescription = if (previewMode) "Code" else stringResource(id = R.string.code_block_preview),

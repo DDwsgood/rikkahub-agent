@@ -13,6 +13,7 @@ import {
 } from "shiki";
 
 import { getCodePreviewLanguage } from "~/components/workbench/code-preview-language";
+import { IntelligentUiPart } from "~/components/message/parts/intelligent-ui-part";
 import { Button } from "~/components/ui/button";
 import {
   Select,
@@ -689,7 +690,11 @@ export function CodeBlock({
   wrapLines = false,
   ...props
 }: CodeBlockProps) {
+  const { i18n } = useTranslation("markdown");
+  const zh = String(i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith("zh");
   const displayLanguage = language || "text";
+  const isHtmlBlock = displayLanguage.toLowerCase() === "html";
+  const [inlineCardMode, setInlineCardMode] = React.useState(false);
   const previewLanguage = React.useMemo(() => getCodePreviewLanguage(language), [language]);
   const canPreview = Boolean(onPreview && previewLanguage);
   const shikiLanguage = React.useMemo(() => resolveShikiLanguage(language), [language]);
@@ -706,12 +711,38 @@ export function CodeBlock({
             <CodeBlockLanguage>{displayLanguage}</CodeBlockLanguage>
           </CodeBlockTitle>
           <CodeBlockActions>
+            {isHtmlBlock && (
+              <Button
+                className={cn(
+                  "code-block-copy h-6 rounded-full px-2 text-[11px]",
+                  inlineCardMode && "bg-primary/20 text-primary",
+                )}
+                onClick={() => setInlineCardMode((prev) => !prev)}
+                size="xs"
+                type="button"
+                variant="ghost"
+              >
+                {inlineCardMode
+                  ? zh
+                    ? "查看源码"
+                    : "Code"
+                  : zh
+                    ? "渲染交互卡片"
+                    : "Interactive Card"}
+              </Button>
+            )}
             {canPreview && onPreview && <CodeBlockPreviewButton onPreview={onPreview} />}
             <CodeBlockDownloadButton />
             <CodeBlockCopyButton />
           </CodeBlockActions>
         </CodeBlockHeader>
-        <CodeBlockContent code={code} language={shikiLanguage} showLineNumbers={showLineNumbers} wrapLines={wrapLines} />
+        {isHtmlBlock && inlineCardMode ? (
+          <div className="p-2">
+            <IntelligentUiPart source={code} done={true} />
+          </div>
+        ) : (
+          <CodeBlockContent code={code} language={shikiLanguage} showLineNumbers={showLineNumbers} wrapLines={wrapLines} />
+        )}
       </CodeBlockContainer>
     </CodeBlockContext.Provider>
   );

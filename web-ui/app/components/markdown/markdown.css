@@ -228,5 +228,44 @@
 
 /* Citation Badge */
 .markdown .citation-badge {
-  @apply inline-flex items-center justify-center rounded-full bg-primary/15 px-1.5 py-1 text-[10px] leading-none font-mono text-primary no-underline cursor-pointer hover:bg-primary/25 transition-colors;
+  @apply inline-flex items-center justify-center rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10.5px] leading-none font-mono text-foreground/85 no-underline cursor-pointer backdrop-blur-md hover:bg-primary/20 hover:text-primary transition-colors;
+}
+
+/* Glassmorphic Layer 1 Rich Cards & Semantic Badges */
+.rikka-glass-card {
+  @apply rounded-2xl border border-border/70 bg-card/65 backdrop-blur-xl shadow-sm;
+}
+.dark .rikka-glass-card {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.13);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.rikka-source-pill {
+  @apply inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/50 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground no-underline backdrop-blur-md hover:text-foreground transition-colors;
+}
+.rikka-badge {
+  @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11.5px] font-medium leading-snug align-baseline max-w-full whitespace-normal break-words border;
+}
+.rikka-badge-ok {
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(52, 211, 153, 0.32);
+}
+.rikka-badge-warn {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(251, 191, 36, 0.32);
+}
+.rikka-badge-err {
+  color: #fb7185;
+  background: rgba(244, 63, 94, 0.16);
+  border-color: rgba(251, 113, 133, 0.32);
+}
+.rikka-badge-info {
+  color: #60a5fa;
+  background: rgba(59, 130, 246, 0.16);
+  border-color: rgba(96, 165, 250, 0.32);
+}
+.rikka-badge-muted {
+  @apply text-muted-foreground bg-muted/50 border-border/70;
 }

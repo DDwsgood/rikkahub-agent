@@ -1,5 +1,5 @@
 import Markdown from "~/components/markdown/markdown";
-import { IntelligentUiPart } from "./intelligent-ui-part";
+import { RichContentPart } from "./rich-content-part";
 
 interface TextPartProps {
   intelligentUi?: boolean;
@@ -11,10 +11,7 @@ interface TextPartProps {
 export function TextPart({ text, intelligentUi, isAnimating, onClickCitation }: TextPartProps) {
   if (!text) return null;
   if (intelligentUi) {
-    const content = text.trimStart();
-    const marker = /^RIKKA_UI_V1\r?\n/.exec(content);
-    if (marker) return <IntelligentUiPart source={content.slice(marker[0].length)} done={!isAnimating} />;
-    if (isAnimating && "RIKKA_UI_V1\r".startsWith(content)) return null;
+    return <RichContentPart text={text} isAnimating={isAnimating} onClickCitation={onClickCitation} />;
   }
   return (
     <div data-part="text">

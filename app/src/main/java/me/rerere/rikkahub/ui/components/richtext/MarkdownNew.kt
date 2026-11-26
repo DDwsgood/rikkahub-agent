@@ -2,6 +2,7 @@ package me.rerere.rikkahub.ui.components.richtext
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -839,7 +840,7 @@ private fun AnnotatedString.Builder.appendHtmlInlineNode(
     onClickCitation: (String) -> Unit,
 ) {
     when (node) {
-        is TextNode -> append(node.text())
+        is TextNode -> appendStatusTintedText(node.text(), colorScheme)
         is Element -> appendHtmlInlineElement(
             element = node,
             colorScheme = colorScheme,
@@ -928,8 +929,8 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
                             "citation:$id",
                             InlineTextContent(
                                 placeholder = Placeholder(
-                                    width = (domain.length * 7).sp,
-                                    height = 1.em,
+                                    width = ((domain.length * 6.5) + 16.0).coerceAtLeast(38.0).sp,
+                                    height = 1.25.em,
                                     placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
                                 ),
                                 children = {
@@ -937,19 +938,22 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
                                         modifier = Modifier
                                             .clickable { onClickCitation(id.trim()) }
                                             .fillMaxSize()
+                                            .padding(horizontal = 1.dp, vertical = 1.dp)
                                             .clip(CircleShape)
-                                            .background(colorScheme.tertiaryContainer.copy(0.2f)),
+                                            .background(colorScheme.onSurface.copy(alpha = 0.09f))
+                                            .border(0.75.dp, colorScheme.onSurface.copy(alpha = 0.16f), CircleShape),
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         Text(
                                             text = domain,
-                                            modifier = Modifier.wrapContentSize(),
+                                            modifier = Modifier.padding(horizontal = 5.dp),
+                                            maxLines = 1,
                                             style = TextStyle(
                                                 fontSize = 10.sp,
-                                                lineHeight = 10.sp,
+                                                lineHeight = 11.sp,
                                                 fontFamily = JetbrainsMono,
-                                                color = colorScheme.onTertiaryContainer,
-                                                fontWeight = FontWeight.Thin,
+                                                color = colorScheme.onSurfaceVariant,
+                                                fontWeight = FontWeight.Medium,
                                             ),
                                         )
                                     }
@@ -1022,10 +1026,130 @@ private fun AnnotatedString.Builder.appendHtmlInlineElement(
             }
         }
 
+        "badge" -> {
+            val badgeText = element.text().trim()
+            if (badgeText.isNotEmpty()) {
+                val tone = element.attr("tone").lowercase()
+                val (fg, bg, border) = badgeToneColors(tone, colorScheme)
+                if (badgeText.length <= 10) {
+                    val key = "badge:$tone:$badgeText"
+                    val charUnits = badgeText.sumOf { ch -> if (ch.code > 127) 1.05 else 0.62 }
+                    val widthSp = ((charUnits * 11.5) + 16.0).coerceAtLeast(30.0).sp
+                    inlineContents.putIfAbsent(
+                        key,
+                        InlineTextContent(
+                            placeholder = Placeholder(
+                                width = widthSp,
+                                height = 1.35.em,
+                                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                            ),
+                            children = {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 1.dp, vertical = 1.dp)
+                                        .clip(CircleShape)
+                                        .background(bg)
+                                        .border(0.75.dp, border, CircleShape),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = badgeText,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        style = TextStyle(
+                                            fontSize = 11.sp,
+                                            lineHeight = 12.sp,
+                                            color = fg,
+                                            fontWeight = FontWeight.Medium,
+                                        ),
+                                    )
+                                }
+                            },
+                        ),
+                    )
+                    appendInlineContent(key, "[$badgeText]")
+                } else {
+                    withStyle(
+                        SpanStyle(
+                            color = fg,
+                            background = bg,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    ) {
+                        append(" $badgeText ")
+                    }
+                }
+            }
+        }
+
+        "citation" -> appendElementChildren()
+
         "br" -> append("\n")
 
         else -> appendElementChildren()
     }
+}
+
+private fun AnnotatedString.Builder.appendStatusTintedText(
+    text: String,
+    colorScheme: androidx.compose.material3.ColorScheme,
+) {
+    if (text.isEmpty()) return
+    val hasGlyph = text.any { it == '✓' || it == '✔' || it == '⚠' || it == '×' || it == '✗' }
+    if (!hasGlyph) {
+        append(text)
+        return
+    }
+    var i = 0
+    while (i < text.length) {
+        val ch = text[i]
+        val glyphColor = when (ch) {
+            '✓', '✔' -> Color(0xFF34D399)
+            '⚠' -> Color(0xFFFBBF24)
+            '×', '✗' -> Color(0xFFFB7185)
+            else -> null
+        }
+        if (glyphColor != null) {
+            withStyle(SpanStyle(color = glyphColor, fontWeight = FontWeight.Bold)) {
+                append(ch)
+            }
+        } else {
+            append(ch)
+        }
+        i++
+    }
+}
+
+private fun badgeToneColors(
+    tone: String,
+    colorScheme: androidx.compose.material3.ColorScheme,
+): Triple<Color, Color, Color> = when (tone) {
+    "ok", "success", "green" -> Triple(
+        Color(0xFF34D399),
+        Color(0xFF10B981).copy(alpha = 0.17f),
+        Color(0xFF34D399).copy(alpha = 0.34f),
+    )
+    "warn", "warning", "amber", "yellow" -> Triple(
+        Color(0xFFFBBF24),
+        Color(0xFFF59E0B).copy(alpha = 0.17f),
+        Color(0xFFFBBF24).copy(alpha = 0.34f),
+    )
+    "err", "error", "danger", "red" -> Triple(
+        Color(0xFFFB7185),
+        Color(0xFFF43F5E).copy(alpha = 0.17f),
+        Color(0xFFFB7185).copy(alpha = 0.34f),
+    )
+    "info", "blue", "accent" -> Triple(
+        Color(0xFF60A5FA),
+        Color(0xFF3B82F6).copy(alpha = 0.17f),
+        Color(0xFF60A5FA).copy(alpha = 0.34f),
+    )
+    else -> Triple(
+        colorScheme.onSurfaceVariant,
+        colorScheme.onSurface.copy(alpha = 0.08f),
+        colorScheme.onSurface.copy(alpha = 0.16f),
+    )
 }
 
 private fun SpanStyle.asTextStyle(): TextStyle {

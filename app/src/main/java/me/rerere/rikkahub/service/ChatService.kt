@@ -31,7 +31,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
@@ -67,6 +70,7 @@ import me.rerere.rikkahub.data.ai.approval.ToolReviewAction
 import me.rerere.rikkahub.data.ai.reviewForPermissionMode
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.mcp.buildMcpToolName
+import me.rerere.rikkahub.data.ai.tools.DEFAULT_INITIAL_EXPOSED_TOOLS
 import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
@@ -107,6 +111,7 @@ import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.applyPlaceholders
 import me.rerere.workspace.WorkspaceShellStatus
 import java.time.Instant
@@ -139,7 +144,7 @@ internal object ChatComposerSubmission {
 
 internal val DIRECT_LOCAL_TOOL_OPTIONS = setOf(
     LocalToolOption.AskUser,
-    LocalToolOption.Files,
+    LocalToolOption.Termux,
 )
 
 /**
@@ -198,7 +203,8 @@ internal fun selectDirectLocalToolNames(
     enabledOptions: Set<LocalToolOption>,
     directOptionToolNames: Set<String>,
     availableToolNames: Set<String>,
-): Set<String> = directOptionToolNames.intersect(availableToolNames)
+    initialExposedToolNames: Set<String> = DEFAULT_INITIAL_EXPOSED_TOOLS,
+): Set<String> = availableToolNames.intersect(initialExposedToolNames)
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -225,7 +231,7 @@ enum class ChatErrorSolution {
 
 /**
  * The tools the assistant may actually use for one generation, keyed by name: every
- * enabled local tool (with essentials injected) plus the currently available MCP tools.
+ * enabled local tool (with essentials injected), workspace tools, and currently available MCP tools.
  *
  * This map is the single source of truth for the dynamic tools provider. It derives only
  * from the assistant's configuration and MCP availability — never from message history —
@@ -236,7 +242,8 @@ enum class ChatErrorSolution {
 internal fun buildDiscoverableToolMap(
     localTools: List<Tool>,
     mcpTools: List<Tool>,
-): Map<String, Tool> = (localTools + mcpTools).associateBy { it.name }
+    workspaceTools: List<Tool> = emptyList(),
+): Map<String, Tool> = (localTools + workspaceTools + mcpTools).associateBy { it.name }
 
 private val inputTransformers by lazy {
     listOf(
@@ -281,6 +288,7 @@ class ChatService(
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
     private val _sessionsVersion = MutableStateFlow(0L)
+    private val prefixCache = me.rerere.rikkahub.data.ai.ConversationPrefixCache()
 
     /**
      * Per-conversation mutex serialising state-mutating operations: handleToolApproval,
@@ -1181,13 +1189,17 @@ class ChatService(
             }
 
             // discoveredToolNames 是会话内存态，空闲 5s 后随 session 一起被回收（进程
-            // 重启同理）。这里从本轮要发送的消息历史重建：历史中出现过的工具调用名
-            // 重新并入声明集，模型才能持续看到并主动调用这些工具——历史在声明就在，
-            // 不需要额外持久化。
+            // 重启同理）。这里从本轮要发送的消息历史按时间顺序重建：既包含调用过的工具名，
+            // 也包含 search_tools 返回结果中发现过的工具名，保持确定性追加顺序以维持前缀缓存。
             generationMessages.forEach { msg ->
                 msg.parts.forEach { part ->
                     if (part is UIMessagePart.Tool) {
                         session.discoveredToolNames.add(part.toolName)
+                        if (part.toolName == "search_tools" && part.isExecuted) {
+                            extractDiscoveredToolNamesFromSearchResult(part).forEach { discovered ->
+                                session.discoveredToolNames.add(discovered)
+                            }
+                        }
                     }
                 }
             }
@@ -1200,6 +1212,9 @@ class ChatService(
                     .isHeadless(conversationId),
                 modelCanSeeImages = Modality.IMAGE in model.inputModalities,
             )
+            val effectiveInitialTools = me.rerere.rikkahub.data.ai.tools
+                .effectiveInitialExposedTools(settings.initialExposedTools)
+
             val allLocalTools = localTools.getTools(assistant.localTools, baseInvocationCtx).toMutableList()
 
             // Ensure essential tools are always available, even if the assistant doesn't have them
@@ -1211,6 +1226,42 @@ class ChatService(
             }
             if (allLocalTools.none { it.name == "eval_javascript" }) {
                 allLocalTools.add(localTools.javascriptTool)
+            }
+            if ("termux_run_command" in effectiveInitialTools &&
+                allLocalTools.none { it.name == "termux_run_command" } &&
+                localTools.isEmbeddedTermuxInstalled()
+            ) {
+                val termuxTool = localTools.embeddedTermuxTool
+                allLocalTools.add(termuxTool)
+                ToolRegistry.register(
+                    ToolRegistry.ToolEntry(
+                        name = termuxTool.name,
+                        description = termuxTool.description,
+                        category = "shell",
+                        schema = runCatching { termuxTool.parameters() }.getOrNull(),
+                        needsApproval = me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults
+                            .requiresApproval(termuxTool.name),
+                        source = ToolRegistry.ToolSource.LOCAL,
+                    )
+                )
+            }
+
+            val workspaceTools = createWorkspaceToolsIfReady(
+                assistant.workspaceId?.toString(),
+                conversation.workspaceCwd,
+            )
+            workspaceTools.forEach { wsTool ->
+                ToolRegistry.register(
+                    ToolRegistry.ToolEntry(
+                        name = wsTool.name,
+                        description = wsTool.description,
+                        category = "workspace",
+                        schema = runCatching { wsTool.parameters() }.getOrNull(),
+                        needsApproval = me.rerere.rikkahub.data.ai.tools.WorkspaceToolDefaultApprovals[wsTool.name]
+                            ?: false,
+                        source = ToolRegistry.ToolSource.WORKSPACE,
+                    )
+                )
             }
 
             val availableMcpTools = mcpManager.getAllAvailableTools(assistant.id)
@@ -1265,15 +1316,11 @@ class ChatService(
                 )
             }
 
-            // Only core tools are declared up front; every other enabled tool is
-            // exposed lazily. A non-core tool joins the declared set once the model
-            // discovers it via search_tools (recorded on the ConversationSession) or
-            // executes it (e.g. from conversation history) — the execute wrapper below
-            // marks that. Execution is never gated: GenerationHandler's
-            // resolvableToolsProvider fallback resolves every enabled tool whether or
-            // not it was declared in the request.
+            // Only configured initial tools are declared up front; every other enabled tool
+            // (including sdcard_*, workspace background/export, device tools, and MCP tools)
+            // is exposed lazily via search_tools or execution.
             val discoveredToolNames = session.discoveredToolNames
-            val discoverableTools = buildDiscoverableToolMap(allLocalTools, mcpToolDefinitions)
+            val discoverableTools = buildDiscoverableToolMap(allLocalTools, mcpToolDefinitions, workspaceTools)
                 .mapValues { (_, tool) ->
                     tool.copy(execute = { input ->
                         discoveredToolNames.add(tool.name)
@@ -1282,18 +1329,61 @@ class ChatService(
                 }
             val invocationCtx = baseInvocationCtx.copy(
                 dynamicToolsProvider = {
-                    discoverableTools.values.filter { it.name in discoveredToolNames }
+                    val orderedNames = synchronized(discoveredToolNames) { discoveredToolNames.toList() }
+                    orderedNames.mapNotNull { discoverableTools[it] }
                 },
                 resolvableToolsProvider = {
                     discoverableTools.values.toList()
                 },
             )
 
-            // Static tools injected up front (search_tools meta-tool + web search + direct
-            // core tools + essentials + workspace + skills). Non-core local tools and MCP
-            // tools join the request only after the model discovers them via search_tools
-            // or executes them — resolvableToolsProvider keeps every enabled tool callable
-            // regardless. Overlapping names are deduplicated by GenerationHandler.
+            // Snapshot & pin volatile-across-turns inputs (date, battery, memory, recent chats)
+            // so consecutive turns in the same conversation preserve a byte-identical prefix.
+            val workspaceEntity = assistant.workspaceId?.toString()?.let { workspaceRepository.getById(it) }
+            val workspaceSdcardMode = workspaceEntity?.let { workspaceRepository.effectiveSdcardMode(it).name }
+            val sharedDirMounted = workspaceEntity != null && workspaceRepository.isSharedDirMounted(workspaceEntity.id)
+            val effectiveSystemPrompt =
+                if (assistant.allowConversationSystemPrompt && !conversation.customSystemPrompt.isNullOrBlank()) {
+                    conversation.customSystemPrompt
+                } else {
+                    assistant.systemPrompt
+                }
+            val initialNames = effectiveInitialTools + ESSENTIAL_TOOL_NAMES
+            val initialToolNamesSnapshot = buildList {
+                allLocalTools.filter { it.name in initialNames }.forEach { add(it.name) }
+                workspaceTools.filter { it.name in initialNames }.forEach { add(it.name) }
+            }
+            val prefixConfigKey = me.rerere.rikkahub.data.ai.ConversationPrefixCache.PrefixConfigKey(
+                modelId = model.modelId,
+                reasoningLevel = assistant.reasoningLevel,
+                assistantId = assistant.id,
+                effectiveSystemPrompt = effectiveSystemPrompt,
+                enableWebSearch = assistant.enableWebSearch,
+                enableMemory = assistant.enableMemory,
+                enableRecentChatsReference = assistant.enableRecentChatsReference,
+                workspaceId = workspaceEntity?.id,
+                workspaceSdcardMode = workspaceSdcardMode,
+                workspaceShellStatus = workspaceEntity?.shellStatus,
+                sharedDirMounted = sharedDirMounted,
+                workspaceCwd = conversation.workspaceCwd,
+                initialToolNames = initialToolNamesSnapshot,
+                enabledSkillsSorted = assistant.enabledSkills.sorted(),
+                localeTag = Locale.getDefault().toLanguageTag(),
+            )
+            val isFreshTurn = generationMessages.none { it.role == MessageRole.ASSISTANT }
+            val prefixSnapshot = prefixCache.getOrCreate(
+                conversationId = conversationId,
+                configKey = prefixConfigKey,
+                isFreshTurn = isFreshTurn,
+                batteryProvider = {
+                    val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE)
+                        as? android.os.BatteryManager
+                    bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+                },
+            )
+
+            // Static tools injected up front (search_tools meta-tool + web search + initial
+            // exposed local/workspace tools + essentials + skills).
             val tools = buildList {
                 // Always inject the search_tools meta-tool first.
                 add(
@@ -1303,35 +1393,14 @@ class ChatService(
                     )
                 )
 
-                // Search tools (web search) - conditionally injected.
+                // Search tools (web search) - conditionally injected with pinned date.
                 if (assistant.enableWebSearch) {
-                    addAll(createSearchTools(settings))
+                    addAll(createSearchTools(settings, today = prefixSnapshot.pinnedDate))
                 }
 
-                // Direct local tools - basic file/web/user interaction plus command execution.
-                val directOptionToolNames = localTools.getTools(
-                    assistant.localTools.filter { it in DIRECT_LOCAL_TOOL_OPTIONS },
-                    baseInvocationCtx,
-                ).mapTo(mutableSetOf()) { it.name }
-                val coreToolNames = selectDirectLocalToolNames(
-                    enabledOptions = assistant.localTools.toSet(),
-                    directOptionToolNames = directOptionToolNames,
-                    availableToolNames = discoverableTools.keys,
-                )
-                addAll(allLocalTools.filter { it.name in coreToolNames })
-
-                // Essential tools — always injected regardless of assistant configuration
-                // so sub-agents (which inherit the parent's tool set) don't resort to
-                // bash workarounds for basic needs like getting the current time.
-                addAll(allLocalTools.filter { it.name in ESSENTIAL_TOOL_NAMES })
-
-                // Workspace tools - conditionally injected.
-                addAll(
-                    createWorkspaceToolsIfReady(
-                        assistant.workspaceId?.toString(),
-                        conversation.workspaceCwd,
-                    )
-                )
+                // Initial exposed local & workspace tools (configurable in Settings).
+                addAll(allLocalTools.filter { it.name in initialNames })
+                addAll(workspaceTools.filter { it.name in initialNames })
 
                 // Skill tools - conditionally injected.
                 if (assistant.enabledSkills.isNotEmpty()) {
@@ -1407,6 +1476,7 @@ class ChatService(
                 conversationModeInjectionIds = conversation.modeInjectionIds,
                 conversationLorebookIds = conversation.lorebookIds,
                 workspaceCwd = conversation.workspaceCwd,
+                prefixSnapshot = prefixSnapshot,
                 memories = if (assistant.useGlobalMemory) {
                     memoryRepository.getGlobalMemories()
                 } else {
@@ -2325,6 +2395,23 @@ class ChatService(
 
             val updatedConversation = currentConversation.copy(messageNodes = updatedNodes)
             saveConversation(conversationId, updatedConversation)
+        }
+    }
+}
+
+internal fun extractDiscoveredToolNamesFromSearchResult(part: UIMessagePart.Tool): List<String> {
+    if (part.output.isEmpty()) return emptyList()
+    return buildList {
+        part.output.filterIsInstance<UIMessagePart.Text>().forEach { textPart ->
+            val root = runCatching { JsonInstant.parseToJsonElement(textPart.text).jsonObject }
+                .getOrNull() ?: return@forEach
+            val toolsArray = root["tools"]?.runCatching { jsonArray }?.getOrNull() ?: return@forEach
+            toolsArray.forEach { element ->
+                val name = element.runCatching { jsonObject["name"]?.jsonPrimitive?.contentOrNull }
+                    .getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                if (name != null) add(name)
+            }
         }
     }
 }

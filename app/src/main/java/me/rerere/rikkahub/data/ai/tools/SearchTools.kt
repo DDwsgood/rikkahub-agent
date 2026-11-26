@@ -25,14 +25,17 @@ import me.rerere.search.SearchServiceOptions
 import java.time.LocalDate
 import kotlin.uuid.Uuid
 
-fun createSearchTools(settings: Settings): Set<Tool> {
+fun createSearchTools(
+    settings: Settings,
+    today: LocalDate = LocalDate.now(),
+): Set<Tool> {
     return buildSet {
         add(
             Tool(
                 name = "search_web",
                 description = """
                     Search the web for up-to-date or specific information. Use focused
-                    keywords; run multiple searches if needed. Today is ${LocalDate.now().toLocalString(true)}.
+                    keywords; run multiple searches if needed. Today is ${today.toLocalString(true)}.
                     Response: items[].id/title/url/text, images[] (may be empty).
                     Citations: append `[citation,domain](id)` after sentences that use
                     results; omit if none cited. Images: embed 2-4 relevant images[]

@@ -367,13 +367,13 @@ object ToolNameTranscoder {
         // duplicates (bash/shell/ssh/notify/send_message-in-prose) were dropped because
         // they collide with ordinary words.
         "Bash" to "termux_run_command",
-        "Read" to "read_file",
+        "Read" to "sdcard_read_file",
         "Write" to "write_text_file",
         "Edit" to "write_text_file",
-        "Glob" to "find_files",
-        "Grep" to "find_files",
-        "ListDir" to "list_files",
-        "list_dir" to "list_files",
+        "Glob" to "sdcard_find_files",
+        "Grep" to "sdcard_find_files",
+        "ListDir" to "sdcard_list_files",
+        "list_dir" to "sdcard_list_files",
         "Task" to "subagent_dispatch",
         "TodoWrite" to "telegram_send_message",
         "WebFetch" to "ssh_exec",          // closest analogue if user has an SSH proxy

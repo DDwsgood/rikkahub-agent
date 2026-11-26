@@ -33,17 +33,19 @@ class ChatServiceTest {
 
     @Test
     fun `all usable tools are available without any search_tools call`() {
-        val localTools = listOf(tool("send_sms"), tool("read_file"))
+        val localTools = listOf(tool("send_sms"), tool("sdcard_read_file"))
         val mcpTools = listOf(tool("mcp__abc123_git__list_repos"))
-        val discoverable = buildDiscoverableToolMap(localTools, mcpTools)
+        val wsTools = listOf(tool("workspace_run_background"))
+        val discoverable = buildDiscoverableToolMap(localTools, mcpTools, wsTools)
 
         // None of these were surfaced by search_tools: availability must not depend on
-        // discovery — every enabled local tool and MCP tool is always declarable/resolvable.
+        // discovery — every enabled local tool, workspace tool, and MCP tool is always declarable/resolvable.
         assertEquals(
-            setOf("send_sms", "read_file", "mcp__abc123_git__list_repos"),
+            setOf("send_sms", "sdcard_read_file", "workspace_run_background", "mcp__abc123_git__list_repos"),
             discoverable.keys,
         )
         assertNotNull(discoverable["send_sms"])
+        assertNotNull(discoverable["workspace_run_background"])
         assertNotNull(discoverable["mcp__abc123_git__list_repos"])
     }
 
@@ -64,7 +66,7 @@ class ChatServiceTest {
 
     @Test
     fun `disabled and nonexistent tools are excluded`() {
-        val discoverable = buildDiscoverableToolMap(listOf(tool("read_file")), emptyList())
+        val discoverable = buildDiscoverableToolMap(listOf(tool("sdcard_read_file")), emptyList())
 
         assertFalse("send_sms" in discoverable) // disabled for this assistant
         assertFalse("nonexistent_tool" in discoverable) // never existed

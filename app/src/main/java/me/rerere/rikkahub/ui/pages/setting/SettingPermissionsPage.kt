@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
@@ -48,9 +49,10 @@ import me.rerere.rikkahub.ui.theme.CustomColors
 @Composable
 fun SettingPermissionsPage() {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
-    var rows by remember { mutableStateOf(PermissionInventory.build(context)) }
+    var rows by remember(configuration) { mutableStateOf(PermissionInventory.build(context)) }
 
     val refreshNow = {
         rows = PermissionInventory.build(context)

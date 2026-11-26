@@ -813,6 +813,7 @@ data class Settings(
      * USE_FULL_SCREEN_INTENT permission (declared; install-time grant).
      */
     val scheduledJobWakeOnLockScreen: Boolean = false,
+    val initialExposedTools: Set<String>? = null,
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
 ) {

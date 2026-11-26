@@ -100,21 +100,21 @@ object ToolApprovalDefaults {
         "notification_reply",       // fires a notification's direct-reply RemoteInput action
 
         // File manager — all ops are side-effecting or read PII from arbitrary paths
-        "list_files",
-        "read_file",
-        "write_binary_file",
-        "delete_file",
-        "move_file",
-        "copy_file",
-        "create_directory",
-        "file_info",
-        "find_files",
+        "sdcard_list_files",
+        "sdcard_read_file",
+        "sdcard_write_binary_file",
+        "sdcard_delete_file",
+        "sdcard_move_file",
+        "sdcard_copy_file",
+        "sdcard_create_directory",
+        "sdcard_file_info",
+        "sdcard_find_files",
         // Batch file ops (item 5.5) — list-or-glob copy / move / delete. Side-effecting
         // over potentially many paths in one call, so each gets the same approval gate as
         // the single-path file tools.
-        "batch_copy",
-        "batch_move",
-        "batch_delete",
+        "sdcard_batch_copy",
+        "sdcard_batch_move",
+        "sdcard_batch_delete",
 
         // Telegram outbound — the bot can DM other chats / change its own config
         "telegram_send_message",

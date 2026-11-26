@@ -212,6 +212,7 @@ fun WorkspaceDetailPage(id: String) {
             when (page) {
                 0 -> WorkspaceBasicPage(
                     workspace = state.workspace,
+                    effectiveSdcardMode = state.effectiveSdcardMode,
                     sharedDirEnabled = sharedDirEnabled,
                     installProgress = installProgress,
                     onInstallRootfs = { showInstallDialog = true },
@@ -365,6 +366,7 @@ fun WorkspaceDetailPage(id: String) {
 @Composable
 private fun WorkspaceBasicPage(
     workspace: WorkspaceEntity?,
+    effectiveSdcardMode: WorkspaceSdcardMode,
     sharedDirEnabled: Boolean,
     installProgress: RootfsInstallProgress?,
     onInstallRootfs: () -> Unit,
@@ -457,6 +459,7 @@ private fun WorkspaceBasicPage(
         item {
             WorkspaceSdcardCard(
                 workspace = workspace,
+                effectiveMode = effectiveSdcardMode,
                 onModeChange = onSdcardModeChange,
             )
         }
@@ -514,13 +517,6 @@ private fun WorkspaceToolApprovalCard(
                             text = label,
                             style = MaterialTheme.typography.bodyMedium,
                         )
-                        Text(
-                            text = toolName,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
                     }
                     Switch(
                         checked = resolveWorkspaceToolApproval(toolName, overrides),
@@ -572,10 +568,11 @@ private fun rememberAllFilesAccessGranted(): Boolean {
 @Composable
 private fun WorkspaceSdcardCard(
     workspace: WorkspaceEntity?,
+    effectiveMode: WorkspaceSdcardMode,
     onModeChange: (WorkspaceSdcardMode) -> Unit,
 ) {
     val context = LocalContext.current
-    val selectedMode = workspace?.sdcardModeEnum() ?: WorkspaceSdcardMode.NONE
+    val selectedMode = effectiveMode
     val allFilesGranted = rememberAllFilesAccessGranted()
     val needsAllFilesGrant = selectedMode != WorkspaceSdcardMode.NONE && !allFilesGranted
     val options = listOf(

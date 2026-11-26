@@ -87,6 +87,11 @@ class WorkspaceRepository(
         require(!isNameTaken(finalName, excludeId = null)) {
             "Workspace name already exists: $finalName"
         }
+        val initialSdcardMode = if (context != null && PermissionHelper.hasAllFilesAccess(context)) {
+            WorkspaceSdcardMode.READ_WRITE.name
+        } else {
+            WorkspaceSdcardMode.NONE.name
+        }
         val workspace = WorkspaceEntity(
             id = id,
             name = finalName,
@@ -94,6 +99,7 @@ class WorkspaceRepository(
             createdAt = now,
             updatedAt = now,
             lastAccessAt = null,
+            sdcardMode = initialSdcardMode,
         )
         manager.ensureWorkspace(workspace.root)
         dao.upsert(workspace)
@@ -133,9 +139,11 @@ class WorkspaceRepository(
     /** 设置工作区的共享存储挂载模式 (NONE / READ_ONLY / READ_WRITE)。 */
     suspend fun setSdcardMode(id: String, mode: WorkspaceSdcardMode): Boolean = mountLockFor(id).withLock {
         val workspace = dao.getById(id) ?: return@withLock false
-        val changed = workspace.sdcardModeEnum() != mode
+        val previousEffective = effectiveSdcardMode(workspace)
+        val changed = workspace.sdcardModeEnum() != mode || previousEffective != mode
         withContext(NonCancellable) {
-            if (changed) {
+            sharedDirPreferences?.markSdcardModeExplicit(id)
+            if (workspace.sdcardModeEnum() != mode) {
                 dao.updateSdcardMode(id, mode.name, System.currentTimeMillis())
             }
             // A committed restriction and teardown form one operation under the mount lock.
@@ -151,9 +159,24 @@ class WorkspaceRepository(
     internal suspend fun startTerminalWithMountPolicy(id: String, start: () -> Boolean): Boolean =
         mountLockFor(id).withLock { start() }
 
-    /** 当前工作区的共享存储挂载模式 (workspace 不存在时按 NONE 处理)。 */
-    suspend fun sdcardMode(id: String): WorkspaceSdcardMode =
-        dao.getById(id)?.sdcardModeEnum() ?: WorkspaceSdcardMode.NONE
+    /**
+     * Resolves the effective sdcard mount mode for [workspace]:
+     * - When All-Files Access (`MANAGE_EXTERNAL_STORAGE`) is NOT granted, always `NONE`.
+     * - If the user explicitly picked a mode via [setSdcardMode], honor it.
+     * - Otherwise, default to `READ_WRITE` when All-Files Access is granted.
+     */
+    suspend fun effectiveSdcardMode(workspace: WorkspaceEntity): WorkspaceSdcardMode {
+        val ctx = context ?: return workspace.sdcardModeEnum()
+        if (!PermissionHelper.hasAllFilesAccess(ctx)) return WorkspaceSdcardMode.NONE
+        val explicit = sharedDirPreferences?.isSdcardModeExplicit(workspace.id) == true
+        return if (explicit) workspace.sdcardModeEnum() else WorkspaceSdcardMode.READ_WRITE
+    }
+
+    /** 当前工作区的有效共享存储挂载模式 (workspace 不存在时按 NONE 处理)。 */
+    suspend fun sdcardMode(id: String): WorkspaceSdcardMode {
+        val workspace = dao.getById(id) ?: return WorkspaceSdcardMode.NONE
+        return effectiveSdcardMode(workspace)
+    }
 
     fun sharedDirEnabledFlow(id: String): Flow<Boolean> =
         sharedDirPreferences?.isEnabledFlow(id) ?: flowOf(false)
@@ -177,7 +200,9 @@ class WorkspaceRepository(
         val ctx = context ?: return@withLock
         if (PermissionHelper.hasAllFilesAccess(ctx)) return@withLock
         val workspace = dao.getById(id) ?: return@withLock
-        if (isSharedDirEnabled(id) || workspace.sdcardModeEnum() != WorkspaceSdcardMode.NONE) {
+        val mayHaveSdcardMount = workspace.sdcardModeEnum() != WorkspaceSdcardMode.NONE ||
+            sharedDirPreferences?.isSdcardModeExplicit(id) != true
+        if (isSharedDirEnabled(id) || mayHaveSdcardMount) {
             teardownProcessesForWorkspaceLocked(id, workspace.root)
         }
     }
@@ -193,7 +218,9 @@ class WorkspaceRepository(
         val workspaces = runCatching { dao.getAll() }.getOrDefault(emptyList())
         for (workspace in workspaces) {
             mountLockFor(workspace.id).withLock {
-                if (isSharedDirEnabled(workspace.id) || workspace.sdcardModeEnum() != WorkspaceSdcardMode.NONE) {
+                val mayHaveSdcardMount = workspace.sdcardModeEnum() != WorkspaceSdcardMode.NONE ||
+                    sharedDirPreferences?.isSdcardModeExplicit(workspace.id) != true
+                if (isSharedDirEnabled(workspace.id) || mayHaveSdcardMount) {
                     teardownProcessesForWorkspaceLocked(workspace.id, workspace.root)
                 }
             }
@@ -256,7 +283,7 @@ class WorkspaceRepository(
         val generation = me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceTerminalRegistry.currentGeneration(id)
         val workspace = dao.getById(id) ?: return@withLock TerminalMountSnapshot(generation, emptyList())
         val extra = extraBindMountsFor(workspace)
-        val terminalSdcardMode = effectiveProotSdcardMode(workspace.sdcardModeEnum())
+        val terminalSdcardMode = effectiveProotSdcardMode(effectiveSdcardMode(workspace))
         TerminalMountSnapshot(
             generation = generation,
             bindMounts = manager.effectiveBindMounts(terminalSdcardMode, extra),
@@ -299,7 +326,7 @@ class WorkspaceRepository(
      */
     suspend fun requireRootfsWritable(id: String, path: String) {
         val workspace = dao.getById(id) ?: return
-        val mode = workspace.sdcardModeEnum()
+        val mode = effectiveSdcardMode(workspace)
         if (mode != WorkspaceSdcardMode.READ_ONLY) return
         val normalized = runCatching { WorkspacePublicExport.normalizeRootfsPath(path) }
             .getOrElse { path.trim().trimEnd('/').ifBlank { "/" } }
@@ -327,7 +354,7 @@ class WorkspaceRepository(
         val normalized = WorkspacePublicExport.normalizeRootfsPath(path)
         mountLockFor(id).withLock {
             val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-            val mode = workspace.sdcardModeEnum()
+            val mode = effectiveSdcardMode(workspace)
             val extra = extraBindMountsFor(workspace)
             requireRootfsWritableForPolicy(
                 mode = mode,
@@ -479,7 +506,7 @@ class WorkspaceRepository(
             val workspace = dao.getById(id) ?: error("Workspace not found: $id")
             val extra = extraBindMountsFor(workspace)
             manager.ensureWorkspace(workspace.root)
-            manager.rootfsFileSize(workspace.root, normalized, workspace.sdcardModeEnum(), extra)
+            manager.rootfsFileSize(workspace.root, normalized, effectiveSdcardMode(workspace), extra)
         }
     }
 
@@ -494,7 +521,7 @@ class WorkspaceRepository(
             val workspace = dao.getById(id) ?: error("Workspace not found: $id")
             val extra = extraBindMountsFor(workspace)
             manager.ensureWorkspace(workspace.root)
-            manager.exportRootfsFile(workspace.root, normalized, outputStream, workspace.sdcardModeEnum(), extra)
+            manager.exportRootfsFile(workspace.root, normalized, outputStream, effectiveSdcardMode(workspace), extra)
         }
     }
 
@@ -587,7 +614,7 @@ class WorkspaceRepository(
                 withContext(NonCancellable + Dispatchers.IO) {
                     mountLockFor(id).withLock {
                         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-                        val effectiveSdcardMode = effectiveProotSdcardMode(workspace.sdcardModeEnum())
+                        val effectiveSdcardMode = effectiveProotSdcardMode(effectiveSdcardMode(workspace))
                         val extra = extraBindMountsFor(workspace)
                         manager.ensureWorkspace(workspace.root)
                         tracked = manager.startTrackedForegroundCommand(
@@ -642,7 +669,7 @@ class WorkspaceRepository(
         return withContext(NonCancellable + Dispatchers.IO) {
             mountLockFor(id).withLock {
                 val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-                val effectiveSdcardMode = effectiveProotSdcardMode(workspace.sdcardModeEnum())
+                val effectiveSdcardMode = effectiveProotSdcardMode(effectiveSdcardMode(workspace))
                 val extra = extraBindMountsFor(workspace)
                 manager.ensureWorkspace(workspace.root)
                 manager.startBackground(workspace.root, command, cwd, effectiveSdcardMode, extra)

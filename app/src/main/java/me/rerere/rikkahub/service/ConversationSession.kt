@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.model.Conversation
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
@@ -52,10 +53,10 @@ class ConversationSession(
 
     /**
      * Non-core tools this conversation has already discovered (via search_tools hits)
-     * or executed. ChatService declares only these dynamic tools in each request so
-     * the first prompt stays small; execution itself is not gated by membership here.
+     * or executed. Backed by a synchronized LinkedHashSet so declaration order stays
+     * strictly append-only across turns (preserving provider prompt cache prefixes).
      */
-    val discoveredToolNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    val discoveredToolNames: MutableSet<String> = Collections.synchronizedSet(LinkedHashSet())
 
     /**
      * Steer queue: user messages sent while a generation is in flight. The sender

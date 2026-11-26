@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +43,8 @@ import me.rerere.rikkahub.ui.components.richtext.DiffRemovedColor
 import me.rerere.rikkahub.ui.components.richtext.DiffView
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.parseDiffStats
+import me.rerere.rikkahub.ui.components.ui.acrylicDividerColor
+import me.rerere.rikkahub.ui.components.ui.acrylicSubSurfaceTint
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.generateUnifiedDiff
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
@@ -126,7 +129,7 @@ object EditFileToolUI : ToolUIRenderer {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    text = context.arguments.getStringContent("path") ?: toolName,
+                    text = context.arguments.getStringContent("path") ?: toolDisplayName(toolName),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -242,7 +245,8 @@ private fun FileContentSummary(text: String, path: String?, loading: Boolean) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.small)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .background(acrylicSubSurfaceTint())
+            .border(0.5.dp, acrylicDividerColor(), MaterialTheme.shapes.small)
             .padding(horizontal = 8.dp, vertical = 6.dp)
             .shimmer(isLoading = loading),
     ) {
@@ -296,9 +300,12 @@ object ShellToolUI : ToolUIRenderer {
 
     @Composable
     override fun title(context: ToolUIContext): String {
-        val command = context.arguments.getStringContent("command") ?: return stringResource(R.string.tool_ui_shell_default)
-        val preview = command.replace("\n", " ").trim()
-        val truncated = if (preview.length > TITLE_MAX_CHARS) preview.take(TITLE_MAX_CHARS) + "…" else preview
+        val command = context.arguments.getStringContent("command")
+            ?.replace("\n", " ")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return stringResource(R.string.tool_ui_shell_default)
+        val truncated = if (command.length > TITLE_MAX_CHARS) command.take(TITLE_MAX_CHARS) + "…" else command
         return stringResource(R.string.tool_ui_shell, truncated)
     }
 
@@ -320,7 +327,8 @@ object ShellToolUI : ToolUIRenderer {
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(MaterialTheme.shapes.small)
-                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                        .background(acrylicSubSurfaceTint())
+                        .border(0.5.dp, acrylicDividerColor(), MaterialTheme.shapes.small)
                         .padding(horizontal = 8.dp, vertical = 6.dp)
                         .shimmer(isLoading = context.loading),
                 ) {

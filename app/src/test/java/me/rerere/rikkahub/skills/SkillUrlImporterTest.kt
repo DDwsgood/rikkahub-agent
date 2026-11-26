@@ -174,7 +174,7 @@ class SkillUrlImporterTest {
         val written = saver.tmpDir.resolve("verbatim-skill/SKILL.md").readText()
         assertTrue("prose must be preserved, got: $written",
             written.contains("First Read the docs, then Edit the file, then run Bash."))
-        assertFalse(written.contains("read_file"))
+        assertFalse(written.contains("sdcard_read_file"))
         assertFalse(written.contains("write_text_file"))
     }
 
@@ -213,7 +213,7 @@ class ToolNameTranscoderTest {
         val input = "First call `Bash` to install. Then `Read` the config. Then `Notify` the user."
         val out = ToolNameTranscoder.transcode(input)
         assertTrue(out.contains("termux_run_command"))
-        assertTrue(out.contains("read_file"))
+        assertTrue(out.contains("sdcard_read_file"))
         assertTrue(out.contains("post_notification"))
         assertFalse(out.contains("`Bash`"))
     }
@@ -221,7 +221,7 @@ class ToolNameTranscoderTest {
     @Test fun `tool names mapped inside fenced code blocks`() {
         val input = "```\nRead the file then Edit it with Write.\n```"
         val out = ToolNameTranscoder.transcode(input)
-        assertTrue(out.contains("read_file"))
+        assertTrue(out.contains("sdcard_read_file"))
         assertTrue(out.contains("write_text_file"))
         assertFalse(out.contains("Read "))
     }
@@ -240,7 +240,7 @@ class ToolNameTranscoderTest {
         val out = ToolNameTranscoder.transcode(input)
         // Prose "Read the docs" preserved; only the `Read` span is mapped.
         assertTrue(out.startsWith("Read the docs"))
-        assertTrue(out.contains("read_file"))
+        assertTrue(out.contains("sdcard_read_file"))
         assertFalse(out.contains("`Read`"))
     }
 

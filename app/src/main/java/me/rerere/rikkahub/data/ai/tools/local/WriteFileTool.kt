@@ -126,12 +126,12 @@ fun writeTextFileTool(context: Context): Tool = Tool(
         }
 
         // Don't auto-create deep dir trees the user didn't ask for. If the immediate
-        // parent doesn't exist, return a structured error pointing at create_directory.
+        // parent doesn't exist, return a structured error pointing at sdcard_create_directory.
         val parent = file.parentFile
         if (parent != null && !parent.exists()) {
             return@Tool errEnvelope(
                 "parent_missing",
-                "parent directory '${parent.path}' does not exist. Call create_directory first."
+                "parent directory '${parent.path}' does not exist. Call sdcard_create_directory first."
             )
         }
 

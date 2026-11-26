@@ -343,9 +343,7 @@ private fun MessagePartsBlock(
                         steps = block.steps,
                         collapsedAdaptiveWidth = isReasoningOnlyBlock,
                         forceExpanded = hasPendingApproval,
-                        cardColors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = settings.displaySetting.bubbleOpacity),
-                        ),
+                        useAcrylic = true,
                     ) { step ->
                         when (step) {
                             is ThinkingStep.ReasoningStep -> {
@@ -448,7 +446,6 @@ private fun MessagePartsBlock(
                                         loading = loading,
                                         allowMediaQueryNetwork = allowMediaNet,
                                         onClickCitation = handleClickCitation,
-                                        modifier = Modifier.animateContentSize(),
                                         renderMarkdown = renderMd,
                                     )
                                 }

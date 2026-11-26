@@ -29,6 +29,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
+import me.rerere.rikkahub.ui.components.ui.acrylicDividerColor
+import me.rerere.rikkahub.ui.components.ui.acrylicHeaderTint
+import me.rerere.rikkahub.ui.components.ui.acrylicSubSurfaceTint
+import me.rerere.rikkahub.ui.components.ui.acrylicSurface
 import me.rerere.rikkahub.ui.context.LocalSettings
 import kotlin.math.max
 
@@ -44,25 +48,27 @@ fun DataTable(
     rows: List<List<@Composable () -> Unit>>,
     modifier: Modifier = Modifier,
     cellPadding: Dp = 4.dp,
-    cellBorder: BorderStroke? = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-    headerBackground: Color = MaterialTheme.colorScheme.surfaceVariant,
+    cellBorder: BorderStroke? = BorderStroke(0.5.dp, acrylicDividerColor()),
+    headerBackground: Color = acrylicHeaderTint(),
     zebraStriping: Boolean = false,
     columnMinWidths: List<Dp> = emptyList(),
     columnMaxWidths: List<Dp> = emptyList(),
     cellAlignment: Alignment = Alignment.CenterStart,
-    outerBorder: BorderStroke? = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    shape: Shape = MaterialTheme.shapes.small,
+    outerBorder: BorderStroke? = BorderStroke(1.dp, acrylicDividerColor()),
+    shape: Shape = MaterialTheme.shapes.medium,
     stretchToFillWidth: Boolean = true,
 ) {
     val hScroll = rememberScrollState()
-    val surfaceContainer = MaterialTheme.colorScheme.surfaceContainer
+    val surfaceContainer = acrylicSubSurfaceTint()
 
     BoxWithConstraints(
-        modifier = modifier
-            .clip(shape)
-            .then(
-                if (outerBorder != null) Modifier.border(outerBorder, shape) else Modifier
-            )
+        modifier = modifier.then(
+            if (outerBorder != null) {
+                Modifier.acrylicSurface(shape = shape, highOpacity = true)
+            } else {
+                Modifier.clip(shape)
+            }
+        )
     ) {
         // 捕获滚动视口的可用宽度，用于在内容较窄时把列宽拉伸铺满
         val viewportMaxWidth = constraints.maxWidth

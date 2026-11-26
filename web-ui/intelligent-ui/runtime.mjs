@@ -49,6 +49,7 @@ html,body{
   max-width:100%;
   min-width:0;
 }
+html[data-host="android"] .w-card{-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none}
 .w-subcard{
   background:var(--surface-2);
   border:1px solid var(--border);
@@ -295,6 +296,7 @@ export const WIDGET_JS = `
     var done = Boolean(data.done);
     var dark = data.dark !== false;
     var zh = String(data.lang || "").toLowerCase().startsWith("zh");
+    if (data.host) document.documentElement.dataset.host = String(data.host);
     document.documentElement.lang = zh ? "zh" : "en";
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     document.documentElement.style.colorScheme = dark ? "dark" : "light";

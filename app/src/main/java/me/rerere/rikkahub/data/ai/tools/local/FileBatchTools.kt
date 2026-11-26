@@ -95,7 +95,7 @@ private fun batchErr(detail: String) =
 // ---------- batch_copy ----------
 
 fun batchCopyTool(): Tool = Tool(
-    name = "batch_copy",
+    name = "sdcard_batch_copy",
     description = """
         Copy many files into dst_dir in one call. Provide either paths (explicit list)
         or root + pattern (glob). overwrite defaults false. Unsafe paths are refused.
@@ -154,7 +154,7 @@ fun batchCopyTool(): Tool = Tool(
 // ---------- batch_move ----------
 
 fun batchMoveTool(): Tool = Tool(
-    name = "batch_move",
+    name = "sdcard_batch_move",
     description = """
         Move many files into dst_dir in one call. Provide either paths (explicit list)
         or root + pattern (glob). overwrite defaults false. Unsafe paths are refused.
@@ -258,7 +258,7 @@ fun batchMoveTool(): Tool = Tool(
 // ---------- batch_delete ----------
 
 fun batchDeleteTool(): Tool = Tool(
-    name = "batch_delete",
+    name = "sdcard_batch_delete",
     description = """
         Delete many files or directories in one call. Provide either paths (explicit
         list) or root + pattern (glob). Non-empty directories need recursive=true.

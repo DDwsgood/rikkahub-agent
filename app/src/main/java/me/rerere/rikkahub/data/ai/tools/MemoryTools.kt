@@ -21,7 +21,8 @@ fun buildMemoryTools(
     json: Json,
     onCreation: suspend (String) -> AssistantMemory,
     onUpdate: suspend (Int, String) -> AssistantMemory,
-    onDelete: suspend (Int) -> Unit
+    onDelete: suspend (Int) -> Unit,
+    today: LocalDate = LocalDate.now(),
 ): List<Tool> = listOf(
     Tool(
         name = "memory_tool",
@@ -30,7 +31,7 @@ fun buildMemoryTools(
             'edit' (+id+content), 'delete' (+id). Memories reappear in the <memories> tag
             later; merge similar ones instead of duplicating. Never store sensitive data
             (ethnicity, religion, health, politics, sex life, criminal record) and don't
-            reveal memory contents unless the user asks. Today is ${LocalDate.now().toLocalString(true)}.
+            reveal memory contents unless the user asks. Today is ${today.toLocalString(true)}.
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(

@@ -388,6 +388,12 @@ class LocalTools(
         me.rerere.rikkahub.data.ai.tools.local.EmbeddedRunnerHolder.setRunner(embeddedTermuxRunner)
     }
 
+    fun isEmbeddedTermuxInstalled(): Boolean = embeddedTermuxRunner.isInstalled()
+
+    val embeddedTermuxTool by lazy {
+        me.rerere.rikkahub.data.ai.tools.local.termuxRunCommandTool(context, embeddedTermuxRunner)
+    }
+
     val javascriptTool by lazy {
         Tool(
             name = "eval_javascript",
@@ -1136,11 +1142,8 @@ internal fun categorizeTool(name: String): String = when {
         "show_toast", "post_notification", "share", "share_file", "set_torch", "vibrate",
         "get_brightness", "set_brightness", "get_volume", "set_volume"
     ) -> "device"
-    name in setOf(
-        "list_files", "read_file", "write_text_file", "write_binary_file",
-        "delete_file", "move_file", "copy_file", "create_directory", "file_info",
-        "find_files", "show_image", "open_file", "batch_copy", "batch_move", "batch_delete"
-    ) -> "file"
+    name.startsWith("sdcard_") -> "file"
+    name in setOf("write_text_file", "show_image", "open_file") -> "file"
     name in setOf(
         "schedule_job", "list_jobs", "delete_job", "pause_job", "resume_job",
         "trigger_job_now", "get_job_history"

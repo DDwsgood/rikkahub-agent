@@ -24,7 +24,7 @@ fun createSkillTools(
      */
     skillManager: SkillManager? = null,
 ): List<Tool> {
-    val available = allSkills.filter { it.name in enabledSkills }
+    val available = allSkills.filter { it.name in enabledSkills }.sortedBy { it.name }
     if (available.isEmpty()) return emptyList()
 
     return listOfNotNull(

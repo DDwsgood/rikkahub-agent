@@ -42,11 +42,36 @@ class WorkspaceSharedDirPreferences(private val context: Context) {
 
     suspend fun removeWorkspace(workspaceId: String) {
         setEnabled(workspaceId, false)
+        clearSdcardModeExplicit(workspaceId)
+    }
+
+    suspend fun isSdcardModeExplicit(workspaceId: String): Boolean =
+        context.workspaceSharedDirDataStore.data.map { prefs ->
+            workspaceId in (prefs[EXPLICIT_SDCARD_IDS_KEY] ?: emptySet())
+        }.first()
+
+    suspend fun markSdcardModeExplicit(workspaceId: String) {
+        context.workspaceSharedDirDataStore.edit { prefs ->
+            val current = (prefs[EXPLICIT_SDCARD_IDS_KEY] ?: emptySet()).toMutableSet()
+            current.add(workspaceId)
+            prefs[EXPLICIT_SDCARD_IDS_KEY] = current
+        }
+    }
+
+    suspend fun clearSdcardModeExplicit(workspaceId: String) {
+        context.workspaceSharedDirDataStore.edit { prefs ->
+            val current = (prefs[EXPLICIT_SDCARD_IDS_KEY] ?: emptySet()).toMutableSet()
+            if (current.remove(workspaceId)) {
+                if (current.isEmpty()) prefs.remove(EXPLICIT_SDCARD_IDS_KEY)
+                else prefs[EXPLICIT_SDCARD_IDS_KEY] = current
+            }
+        }
     }
 
     companion object {
         const val MOUNT_TARGET = "/shared"
         private val ENABLED_IDS_KEY = stringSetPreferencesKey("shared_dir_enabled_ids")
+        private val EXPLICIT_SDCARD_IDS_KEY = stringSetPreferencesKey("explicit_sdcard_mode_ids")
 
         /**
          * Resolves the dedicated, workspace-isolated public output folder on shared storage:

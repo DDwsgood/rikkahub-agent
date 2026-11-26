@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -63,6 +64,8 @@ import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Calendar03
 import me.rerere.hugeicons.stroke.CalendarAdd01
 import me.rerere.hugeicons.stroke.SmartPhone01
+import me.rerere.rikkahub.ui.components.ui.acrylicDividerColor
+import me.rerere.rikkahub.ui.components.ui.acrylicSubSurfaceTint
 import me.rerere.hugeicons.stroke.Time02
 import me.rerere.hugeicons.stroke.VolumeHigh
 import me.rerere.rikkahub.R
@@ -105,7 +108,7 @@ object MemoryToolUI : ToolUIRenderer {
         ACTION_CREATE -> stringResource(R.string.chat_message_tool_create_memory)
         ACTION_EDIT -> stringResource(R.string.chat_message_tool_edit_memory)
         ACTION_DELETE -> stringResource(R.string.chat_message_tool_delete_memory)
-        else -> stringResource(R.string.chat_message_tool_call_generic, toolName)
+        else -> toolDisplayName(toolName)
     }
 
     override fun hasSummary(context: ToolUIContext): Boolean =
@@ -282,7 +285,7 @@ object ClipboardToolUI : ToolUIRenderer {
         when (context.arguments.getStringContent("action")) {
             ACTION_READ -> stringResource(R.string.chat_message_tool_clipboard_read)
             ACTION_WRITE -> stringResource(R.string.chat_message_tool_clipboard_write)
-            else -> stringResource(R.string.chat_message_tool_call_generic, toolName)
+            else -> toolDisplayName(toolName)
         }
 }
 
@@ -347,7 +350,8 @@ object UseSkillToolUI : ToolUIRenderer {
 
     @Composable
     override fun title(context: ToolUIContext): String {
-        val skillName = context.arguments.getStringContent("name") ?: ""
+        val skillName = context.arguments.getStringContent("name").orEmpty()
+        if (skillName.isBlank()) return toolDisplayName(toolName)
         val path = context.arguments.getStringContent("path")
         return if (path != null) "Skill: $skillName / $path" else "Skill: $skillName"
     }
@@ -696,8 +700,9 @@ private fun SearchWebPreview(
             item {
                 Card(
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
+                        containerColor = acrylicSubSurfaceTint(),
+                    ),
+                    border = BorderStroke(0.5.dp, acrylicDividerColor()),
                 ) {
                     MarkdownBlock(
                         content = answer,
@@ -741,8 +746,9 @@ private fun SearchWebPreview(
                 Card(
                     onClick = { context.openUrl(url) },
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                    )
+                        containerColor = acrylicSubSurfaceTint(),
+                    ),
+                    border = BorderStroke(0.5.dp, acrylicDividerColor()),
                 ) {
                     Row(
                         modifier = Modifier

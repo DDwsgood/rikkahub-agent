@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.permissions
 
 import android.Manifest
 import android.app.AlarmManager
+import android.app.AppOpsManager
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
@@ -12,20 +13,19 @@ import android.content.pm.PermissionInfo
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.os.Process
 import android.provider.Settings
+import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
+import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.tools.local.PermissionHelper
 import me.rerere.rikkahub.service.RikkaAccessibilityService
 import me.rerere.rikkahub.service.RikkaNotificationListenerService
 
 /**
  * Auto-discovered inventory of every permission this app requires, grouped by how the
  * user grants it. Reads <uses-permission> entries at runtime via PackageManager so
- * future-added perms appear automatically — only the friendly-label lookup is hand-curated;
- * any unmapped perm falls back to humanizing the constant name.
- *
- * On top of <uses-permission>, two virtual rows surface service bindings the user must enable
- * via dedicated Android UIs (AccessibilityService, NotificationListenerService) — these are
- * not real permissions but behave the same from the user's standpoint.
+ * future-added perms appear automatically with localized labels/descriptions.
  */
 object PermissionInventory {
 
@@ -87,15 +87,13 @@ object PermissionInventory {
         val pm = context.packageManager
         val pkgUri: Uri = ("package:" + context.packageName).toUri()
 
-        // Special-access permissions — each has its own canWrite / canDrawOverlays / etc check
-        // and a deep-link Intent.
         when (perm) {
             Manifest.permission.SYSTEM_ALERT_WINDOW -> {
                 val granted = Settings.canDrawOverlays(context)
                 return Row(
                     id = perm,
-                    label = "Display over other apps",
-                    description = "Lets RikkaHub draw the \"agent is working\" overlay while automation is in progress.",
+                    label = context.getString(R.string.perm_overlay_label),
+                    description = context.getString(R.string.perm_overlay_desc),
                     status = if (granted) Status.GRANTED else Status.DENIED,
                     group = Group.SpecialAccess,
                     grant = GrantAction.SystemSettings(
@@ -107,8 +105,8 @@ object PermissionInventory {
                 val granted = Settings.System.canWrite(context)
                 return Row(
                     id = perm,
-                    label = "Modify system settings",
-                    description = "Lets the agent change brightness via set_brightness.",
+                    label = context.getString(R.string.perm_write_settings_label),
+                    description = context.getString(R.string.perm_write_settings_desc),
                     status = if (granted) Status.GRANTED else Status.DENIED,
                     group = Group.SpecialAccess,
                     grant = GrantAction.SystemSettings(
@@ -121,8 +119,8 @@ object PermissionInventory {
                 val granted = nm?.isNotificationPolicyAccessGranted == true
                 return Row(
                     id = perm,
-                    label = "Do Not Disturb access",
-                    description = "Lets the agent change ringer mode and per-stream volume.",
+                    label = context.getString(R.string.perm_dnd_label),
+                    description = context.getString(R.string.perm_dnd_desc),
                     status = if (granted) Status.GRANTED else Status.DENIED,
                     group = Group.SpecialAccess,
                     grant = GrantAction.SystemSettings(
@@ -135,25 +133,24 @@ object PermissionInventory {
                 val granted = pwm?.isIgnoringBatteryOptimizations(context.packageName) == true
                 return Row(
                     id = perm,
-                    label = "Ignore battery optimizations",
-                    description = "Keeps the Telegram bot foreground service responsive when the screen is off.",
+                    label = context.getString(R.string.perm_battery_opt_label),
+                    description = context.getString(R.string.perm_battery_opt_desc),
                     status = if (granted) Status.GRANTED else Status.DENIED,
                     group = Group.SpecialAccess,
-                    // ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS pops a system dialog asking
-                    // for the exemption directly — better UX than the long settings list.
                     grant = GrantAction.SystemSettings(
                         Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri)
                     ),
                 )
             }
             Manifest.permission.SCHEDULE_EXACT_ALARM -> {
+                val label = context.getString(R.string.perm_exact_alarm_label)
                 return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     val alarmManager = context.getSystemService(AlarmManager::class.java)
                     val granted = alarmManager?.canScheduleExactAlarms() == true
                     Row(
                         id = perm,
-                        label = "Alarms & reminders",
-                        description = "Allows opt-in scheduled jobs to wake near an exact user-requested time.",
+                        label = label,
+                        description = context.getString(R.string.perm_exact_alarm_desc),
                         status = if (granted) Status.GRANTED else Status.DENIED,
                         group = Group.SpecialAccess,
                         grant = GrantAction.SystemSettings(
@@ -161,67 +158,78 @@ object PermissionInventory {
                         ),
                     )
                 } else {
-                    autoRow(perm, "Alarms & reminders")
+                    autoRow(context, perm, label)
                 }
             }
+            Manifest.permission.MANAGE_EXTERNAL_STORAGE -> {
+                val granted = PermissionHelper.hasAllFilesAccess(context)
+                return Row(
+                    id = perm,
+                    label = context.getString(R.string.perm_all_files_label),
+                    description = context.getString(R.string.perm_all_files_desc),
+                    status = if (granted) Status.GRANTED else Status.DENIED,
+                    group = Group.SpecialAccess,
+                    grant = GrantAction.SystemSettings(PermissionHelper.allFilesAccessIntent(context)),
+                )
+            }
+            Manifest.permission.PACKAGE_USAGE_STATS -> {
+                val granted = hasUsageStatsAccess(context)
+                return Row(
+                    id = perm,
+                    label = context.getString(R.string.perm_usage_stats_label),
+                    description = context.getString(R.string.perm_usage_stats_desc),
+                    status = if (granted) Status.GRANTED else Status.DENIED,
+                    group = Group.SpecialAccess,
+                    grant = GrantAction.SystemSettings(
+                        Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    ),
+                )
+            }
             Manifest.permission.POST_NOTIFICATIONS -> {
+                val label = context.getString(R.string.perm_post_notifications_label)
                 return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     val granted = ContextCompat.checkSelfPermission(context, perm) ==
                         PackageManager.PERMISSION_GRANTED
                     Row(
                         id = perm,
-                        label = "Post notifications",
-                        description = "Required so the bot foreground service and TTS / progress notifications can show.",
+                        label = label,
+                        description = context.getString(R.string.perm_post_notifications_desc),
                         status = if (granted) Status.GRANTED else Status.DENIED,
                         group = Group.Runtime,
                         grant = GrantAction.Runtime(perm),
                     )
                 } else {
-                    autoRow(perm, "Post notifications")
+                    autoRow(context, perm, label)
                 }
             }
         }
 
-        // Generic classification: ask PackageManager about the protection level. Dangerous =>
-        // runtime grant. Anything else (normal, signature, signatureOrSystem) is auto-granted
-        // at install time and only listed for transparency.
         val info: PermissionInfo? = try {
             pm.getPermissionInfo(perm, 0)
         } catch (_: PackageManager.NameNotFoundException) {
             null
         }
 
-        // Special handling for the Termux RUN_COMMAND custom permission. The embedded
-        // terminal environment does not need this - it is kept only for backward
-        // compatibility with users who still have a standalone Termux installation.
-        // Group it with Services & Integrations rather than Runtime so it is visually
-        // separated from the app's own dangerous permissions.
         if (perm == "com.termux.permission.RUN_COMMAND") {
             val granted = ContextCompat.checkSelfPermission(context, perm) ==
                 PackageManager.PERMISSION_GRANTED
             return Row(
                 id = perm,
-                label = labelOrHumanize(perm),
-                description = describeRuntime(perm),
+                label = labelOrHumanize(context, perm, info, pm),
+                description = describeRuntime(context, perm),
                 status = if (granted) Status.GRANTED else Status.DENIED,
                 group = Group.ServicesAndIntegrations,
-                // No actionable grant flow from within the app: granting this custom
-                // permission requires the external Termux app to be installed and
-                // co-signed. Show None so the user is not sent to a dead-end dialog.
                 grant = GrantAction.None,
             )
         }
 
         if (info == null) {
-            // Unknown to this device - typically a custom perm declared by an app that isn't
-            // installed (e.g. com.termux.permission.RUN_COMMAND when Termux isn't installed).
-            // Best we can do is check checkSelfPermission and offer no grant flow.
             val granted = ContextCompat.checkSelfPermission(context, perm) ==
                 PackageManager.PERMISSION_GRANTED
             return Row(
                 id = perm,
-                label = humanize(perm),
-                description = "Custom permission. Owner app may not be installed yet.",
+                label = labelOrHumanize(context, perm, null, pm),
+                description = context.getString(R.string.perm_desc_custom_uninstalled),
                 status = if (granted) Status.GRANTED else Status.DENIED,
                 group = Group.Runtime,
                 grant = GrantAction.Runtime(perm),
@@ -236,21 +244,32 @@ object PermissionInventory {
         return if (isDangerous) {
             Row(
                 id = perm,
-                label = labelOrHumanize(perm),
-                description = describeRuntime(perm),
+                label = labelOrHumanize(context, perm, info, pm),
+                description = describeRuntime(context, perm),
                 status = if (granted) Status.GRANTED else Status.DENIED,
                 group = Group.Runtime,
                 grant = GrantAction.Runtime(perm),
             )
         } else {
-            autoRow(perm, labelOrHumanize(perm))
+            autoRow(context, perm, labelOrHumanize(context, perm, info, pm))
         }
     }
 
-    private fun autoRow(perm: String, label: String) = Row(
+    private fun hasUsageStatsAccess(context: Context): Boolean {
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager ?: return false
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+        } else {
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+        }
+        return mode == AppOpsManager.MODE_ALLOWED
+    }
+
+    private fun autoRow(context: Context, perm: String, label: String) = Row(
         id = perm,
         label = label,
-        description = "Auto-granted at install (no user action needed).",
+        description = context.getString(R.string.perm_desc_auto_granted),
         status = Status.AUTO_GRANTED,
         group = Group.AutoGranted,
         grant = GrantAction.None,
@@ -264,8 +283,8 @@ object PermissionInventory {
         ) ?: "").split(":").any { it.equals(component, ignoreCase = true) }
         return Row(
             id = "rikkahub.SERVICE_ACCESSIBILITY",
-            label = "Screen automation (Accessibility)",
-            description = "Required for tap, swipe, click_node, screenshot, read_window_tree, set_text and other UI-driving tools.",
+            label = context.getString(R.string.perm_service_accessibility_label),
+            description = context.getString(R.string.perm_service_accessibility_desc),
             status = if (enabled) Status.GRANTED else Status.DENIED,
             group = Group.ServicesAndIntegrations,
             grant = GrantAction.SystemSettings(
@@ -282,8 +301,8 @@ object PermissionInventory {
         ) ?: "").split(":").any { it.equals(component, ignoreCase = true) }
         return Row(
             id = "rikkahub.SERVICE_NOTIFICATION_LISTENER",
-            label = "Notification access",
-            description = "Lets the agent read incoming notifications and auto-forward whitelisted apps to Telegram.",
+            label = context.getString(R.string.perm_service_notification_listener_label),
+            description = context.getString(R.string.perm_service_notification_listener_desc),
             status = if (enabled) Status.GRANTED else Status.DENIED,
             group = Group.ServicesAndIntegrations,
             grant = GrantAction.SystemSettings(
@@ -293,39 +312,81 @@ object PermissionInventory {
         )
     }
 
-    // -- Friendly labels for every dangerous permission we currently request ------------------
-
-    private val LABELS = mapOf(
-        Manifest.permission.CAMERA to "Camera",
-        Manifest.permission.RECORD_AUDIO to "Microphone",
-        Manifest.permission.READ_PHONE_STATE to "Phone state",
-        Manifest.permission.ACCESS_FINE_LOCATION to "Precise location",
-        Manifest.permission.ACCESS_COARSE_LOCATION to "Approximate location",
-        Manifest.permission.READ_CONTACTS to "Contacts",
-        Manifest.permission.READ_CALL_LOG to "Call log",
-        Manifest.permission.READ_SMS to "SMS",
-        Manifest.permission.SEND_SMS to "Send SMS",
-        Manifest.permission.POST_NOTIFICATIONS to "Post notifications",
-        "com.termux.permission.RUN_COMMAND" to "Termux terminal (external, legacy)",
+    private val LABEL_RES: Map<String, Int> = mapOf(
+        Manifest.permission.CAMERA to R.string.perm_camera_label,
+        Manifest.permission.RECORD_AUDIO to R.string.perm_record_audio_label,
+        Manifest.permission.READ_PHONE_STATE to R.string.perm_phone_state_label,
+        Manifest.permission.ACCESS_FINE_LOCATION to R.string.perm_fine_location_label,
+        Manifest.permission.ACCESS_COARSE_LOCATION to R.string.perm_coarse_location_label,
+        Manifest.permission.ACCESS_BACKGROUND_LOCATION to R.string.perm_bg_location_label,
+        Manifest.permission.READ_CONTACTS to R.string.perm_read_contacts_label,
+        Manifest.permission.READ_CALL_LOG to R.string.perm_read_call_log_label,
+        Manifest.permission.READ_SMS to R.string.perm_read_sms_label,
+        Manifest.permission.SEND_SMS to R.string.perm_send_sms_label,
+        Manifest.permission.READ_CALENDAR to R.string.perm_read_calendar_label,
+        Manifest.permission.WRITE_CALENDAR to R.string.perm_write_calendar_label,
+        Manifest.permission.BLUETOOTH_CONNECT to R.string.perm_bluetooth_connect_label,
+        Manifest.permission.POST_NOTIFICATIONS to R.string.perm_post_notifications_label,
+        "android.permission.ACCESS_LOCAL_NETWORK" to R.string.perm_local_network_label,
+        "com.termux.permission.RUN_COMMAND" to R.string.perm_termux_legacy_label,
+        "dev.patrickgold.florisboard.permission.AGENT_KEYBOARD_API" to R.string.perm_agent_keyboard_label,
+        Manifest.permission.INTERNET to R.string.perm_internet_label,
+        Manifest.permission.ACCESS_NETWORK_STATE to R.string.perm_network_state_label,
+        Manifest.permission.ACCESS_WIFI_STATE to R.string.perm_wifi_state_label,
+        Manifest.permission.CHANGE_WIFI_MULTICAST_STATE to R.string.perm_wifi_multicast_label,
+        Manifest.permission.FOREGROUND_SERVICE to R.string.perm_fg_service_label,
+        Manifest.permission.FOREGROUND_SERVICE_SPECIAL_USE to R.string.perm_fg_service_special_label,
+        Manifest.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK to R.string.perm_fg_service_media_label,
+        Manifest.permission.VIBRATE to R.string.perm_vibrate_label,
+        Manifest.permission.USE_BIOMETRIC to R.string.perm_biometric_label,
+        Manifest.permission.RECEIVE_BOOT_COMPLETED to R.string.perm_boot_completed_label,
+        Manifest.permission.WAKE_LOCK to R.string.perm_wake_lock_label,
+        Manifest.permission.USE_FULL_SCREEN_INTENT to R.string.perm_full_screen_intent_label,
+        Manifest.permission.QUERY_ALL_PACKAGES to R.string.perm_query_packages_label,
+        Manifest.permission.SET_WALLPAPER to R.string.perm_set_wallpaper_label,
+        Manifest.permission.NFC to R.string.perm_nfc_label,
+        "android.permission.POST_PROMOTED_NOTIFICATIONS" to R.string.perm_promoted_notifications_label,
+        Manifest.permission.WRITE_EXTERNAL_STORAGE to R.string.perm_write_external_storage_label,
     )
 
-    private val DESCRIPTIONS = mapOf(
-        Manifest.permission.CAMERA to "Used by take_photo to capture a still image.",
-        Manifest.permission.RECORD_AUDIO to "Used by record_audio and speech_to_text.",
-        Manifest.permission.READ_PHONE_STATE to "Used by get_telephony_info (SIM operator, signal).",
-        Manifest.permission.ACCESS_FINE_LOCATION to "Used by get_location and get_wifi_info.",
-        Manifest.permission.ACCESS_COARSE_LOCATION to "Approximate location fallback for get_location.",
-        Manifest.permission.READ_CONTACTS to "Used by search_contacts and list_contacts.",
-        Manifest.permission.READ_CALL_LOG to "Used by list_call_log.",
-        Manifest.permission.READ_SMS to "Used by list_sms_inbox and search_sms.",
-        Manifest.permission.SEND_SMS to "Used by send_sms to send text messages programmatically.",
-        Manifest.permission.POST_NOTIFICATIONS to "Required so the bot foreground service and TTS / progress notifications can show.",
-        "com.termux.permission.RUN_COMMAND" to "Backward-compatible permission for the external Termux app. The embedded terminal environment does not require this - it runs in-process with the app's own permissions. Only needed if the user still has a standalone Termux installation and prefers the legacy RUN_COMMAND path.",
+    private val DESC_RES: Map<String, Int> = mapOf(
+        Manifest.permission.CAMERA to R.string.perm_camera_desc,
+        Manifest.permission.RECORD_AUDIO to R.string.perm_record_audio_desc,
+        Manifest.permission.READ_PHONE_STATE to R.string.perm_phone_state_desc,
+        Manifest.permission.ACCESS_FINE_LOCATION to R.string.perm_fine_location_desc,
+        Manifest.permission.ACCESS_COARSE_LOCATION to R.string.perm_coarse_location_desc,
+        Manifest.permission.ACCESS_BACKGROUND_LOCATION to R.string.perm_bg_location_desc,
+        Manifest.permission.READ_CONTACTS to R.string.perm_read_contacts_desc,
+        Manifest.permission.READ_CALL_LOG to R.string.perm_read_call_log_desc,
+        Manifest.permission.READ_SMS to R.string.perm_read_sms_desc,
+        Manifest.permission.SEND_SMS to R.string.perm_send_sms_desc,
+        Manifest.permission.READ_CALENDAR to R.string.perm_read_calendar_desc,
+        Manifest.permission.WRITE_CALENDAR to R.string.perm_write_calendar_desc,
+        Manifest.permission.BLUETOOTH_CONNECT to R.string.perm_bluetooth_connect_desc,
+        Manifest.permission.POST_NOTIFICATIONS to R.string.perm_post_notifications_desc,
+        "android.permission.ACCESS_LOCAL_NETWORK" to R.string.perm_local_network_desc,
+        "com.termux.permission.RUN_COMMAND" to R.string.perm_termux_legacy_desc,
+        "dev.patrickgold.florisboard.permission.AGENT_KEYBOARD_API" to R.string.perm_agent_keyboard_desc,
     )
 
-    private fun labelOrHumanize(perm: String) = LABELS[perm] ?: humanize(perm)
-    private fun describeRuntime(perm: String) =
-        DESCRIPTIONS[perm] ?: "Runtime permission required by one or more enabled tools."
+    private fun labelOrHumanize(
+        context: Context,
+        perm: String,
+        info: PermissionInfo?,
+        pm: PackageManager,
+    ): String {
+        LABEL_RES[perm]?.let { @StringRes val resId = it; return context.getString(resId) }
+        val systemLabel = info?.loadLabel(pm)?.toString()?.trim()
+        if (!systemLabel.isNullOrEmpty() && !systemLabel.equals(perm, ignoreCase = true) && !systemLabel.startsWith("android.permission.")) {
+            return systemLabel.replaceFirstChar { it.uppercase() }
+        }
+        return humanize(perm)
+    }
+
+    private fun describeRuntime(context: Context, perm: String): String {
+        DESC_RES[perm]?.let { @StringRes val resId = it; return context.getString(resId) }
+        return context.getString(R.string.perm_desc_runtime_generic)
+    }
 
     private fun humanize(perm: String): String {
         val tail = perm.substringAfterLast('.')

@@ -3,7 +3,9 @@ package me.rerere.rikkahub.ui.components.message
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
+import android.util.LruCache
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewConfiguration
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
@@ -34,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
@@ -51,6 +54,26 @@ import java.io.ByteArrayInputStream
 
 private const val PAGE = "https://rikka-ui.invalid/index.html"
 private const val RESOURCE = "/static/intelligent-ui/index.html"
+private const val MAX_SOFTWARE_LAYER_PX = 2400f
+
+private object WidgetHeightCache {
+    private val heights = object : LruCache<Int, Int>(64) {}
+
+    @Synchronized
+    fun get(key: Int): Int? = heights.get(key)
+
+    @Synchronized
+    fun put(key: Int, heightDp: Int) {
+        heights.put(key, heightDp)
+    }
+}
+
+internal fun shouldUseSoftwareLayer(html: String, heightDp: Int, density: Float): Boolean {
+    if (heightDp * density > MAX_SOFTWARE_LAYER_PX) return false
+    if (html.contains("webgl", ignoreCase = true)) return false
+    if (html.contains("three.", ignoreCase = true)) return false
+    return true
+}
 
 /**
  * WebView tailored for interactive cards inside a scrollable Compose chat list.
@@ -123,16 +146,20 @@ internal fun RikkaWidgetCard(
             .put("done", complete)
             .put("dark", dark)
             .put("lang", lang)
+            .put("host", "android")
             .put("revision", revision)
             .toString()
     }
 
+    val cacheKey = remember(html) { html.hashCode() }
     var ready by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
     var acknowledged by remember { mutableIntStateOf(0) }
     var partial by remember { mutableStateOf(false) }
     var showSource by remember { mutableStateOf(false) }
-    var height by remember { mutableIntStateOf(64) }
+    var height by remember(cacheKey) {
+        mutableIntStateOf(WidgetHeightCache.get(cacheKey) ?: 64)
+    }
     val density = LocalDensity.current.density
 
     LaunchedEffect(ready, failed) {
@@ -197,16 +224,44 @@ internal fun RikkaWidgetCard(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(modifier = Modifier.fillMaxWidth()) {
+        val cardShape = RoundedCornerShape(16.dp)
+        val useSoftwareLayer = shouldUseSoftwareLayer(html, height, density)
+        val targetLayerType = if (useSoftwareLayer) View.LAYER_TYPE_SOFTWARE else View.LAYER_TYPE_NONE
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(cardShape),
+        ) {
+            if (!ready) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(height.dp)
+                        .clip(cardShape)
+                        .background(
+                            if (dark) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.065f)
+                            else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f)
+                        )
+                        .border(
+                            1.dp,
+                            if (dark) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.13f)
+                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                            cardShape,
+                        )
+                )
+            }
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(height.dp),
+                    .height(height.dp)
+                    .alpha(if (ready) 1f else 0f),
                 factory = { ctx ->
                     var created: InlineUiView? = null
                     try {
                         InlineUiView(ctx).also { created = it }.apply {
                             setBackgroundColor(Color.TRANSPARENT)
+                            setLayerType(targetLayerType, null)
                             isVerticalScrollBarEnabled = false
                             overScrollMode = android.view.View.OVER_SCROLL_NEVER
                             settings.javaScriptEnabled = true
@@ -219,7 +274,9 @@ internal fun RikkaWidgetCard(
                                         when (type) {
                                             "height" -> {
                                                 val maxDp = (22000f / density).toInt().coerceAtLeast(1600)
-                                                height = value.coerceIn(36, maxDp)
+                                                val clamped = value.coerceIn(36, maxDp)
+                                                height = clamped
+                                                WidgetHeightCache.put(cacheKey, clamped)
                                             }
                                             "final" -> acknowledged = value
                                             "partial" -> partial = true
@@ -282,10 +339,15 @@ internal fun RikkaWidgetCard(
                     }
                 },
                 update = { view ->
-                    if (view is WebView && ready && view.tag != payload) {
-                        view.tag = payload
-                        view.evaluateJavascript("window.rikkaUpdate($payload)") {
-                            if (it != "true") failed = true
+                    if (view is WebView) {
+                        if (view.layerType != targetLayerType) {
+                            view.setLayerType(targetLayerType, null)
+                        }
+                        if (ready && view.tag != payload) {
+                            view.tag = payload
+                            view.evaluateJavascript("window.rikkaUpdate($payload)") {
+                                if (it != "true") failed = true
+                            }
                         }
                     }
                 },

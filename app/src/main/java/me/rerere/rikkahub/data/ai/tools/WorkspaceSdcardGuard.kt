@@ -7,38 +7,19 @@ import me.rerere.workspace.WorkspaceSdcardMode
  * Path-aware sdcard guard for the proot workspace shell tools
  * (`workspace_shell` / `workspace_run_background`).
  *
- * This is the "thin layer" from the opencode-v2-security migration study: a
- * quote-aware segment splitter + lexical path reduction (with literal `cd`
- * tracking) + a small command vocabulary — deliberately NOT a full port of the
- * plugin's 10k-line classifier. The unconditional destructive floor
- * (rm -rf /, fork bombs, …) stays in [HardlineCommandGuard]; this guard only
- * reasons about targets that resolve into the /sdcard mount, and only when the
- * workspace's sdcard mode mounts it.
- *
  * Enforcement model (the proot bind is NOT a kernel read-only boundary — the
  * vendored proot has no ro-bind support, so a READ_ONLY mount is writable at
  * the syscall level; these checks are the enforcement, not decoration):
  *  - READ_ONLY: every write/delete/metadata primitive with a /sdcard target is
  *    denied, before it can reach the (kernel-writable) bind.
- *  - READ_WRITE: "public-directory-level annihilation" is denied — forced
- *    recursive deletes of /sdcard itself or its first-level children (incl.
- *    globs), find -delete / find -exec rm rooted there, xargs→rm pipelines
- *    sourcing /sdcard, shred (destroys content irrecoverably even for one
- *    file), and glob redirect truncation. Single-file writes/deletes pass
- *    through to the normal approval chain.
+ *  - READ_WRITE: public-directory-level annihilation is denied — forced
+ *    recursive deletes, `mv`, `rsync --delete`, `find -delete`/`-exec rm`
+ *    affecting `/sdcard`, first-level children (incl. globs), or critical
+ *    second-level user folders (`/sdcard/DCIM/Camera`, etc.); `shred` at any
+ *    depth; glob redirect truncation; symlink indirection combined with delete;
+ *    and destructive interpreter/heredoc payloads mentioning `/sdcard`.
+ *    Single-file writes/deletes pass through to the normal approval chain.
  *  - NONE: no mount, nothing to guard.
- *
- * Known residual bypass surface (documented, accepted for the thin layer):
- *  - no heredoc body scanning (`bash <<EOF … EOF` payloads are invisible);
- *  - dynamic `cd` targets (`cd $(...)`) make later relative paths unjudgeable
- *    (they fall through to the approval chain, never to an allow);
- *  - symlink indirection inside the rootfs (`ln -s /sdcard /x && rm -rf /x/`)
- *    is not resolved;
- *  - interpreters writing via their own APIs are only caught when passed as a
- *    single-quoted `-c` payload containing a /sdcard literal;
- *  - parameter expansion / variable indirection is not substituted.
- * The tool description and the workspace prompt layer state the mount
- * contract; the per-tool approval prompt (and the user) are the final backstop.
  */
 object WorkspaceSdcardGuard {
 
@@ -56,6 +37,28 @@ object WorkspaceSdcardGuard {
     private val XARGS_DELETE_CONSUMER =
         Regex("""\bxargs\b[^|;&]*\b(?:${XARGS_DELETE_WORDS.joinToString("|")})\b""", IGNORE)
 
+    /** Critical depth-2 user folders under /sdcard that must never be wiped in bulk. */
+    private val PROTECTED_DEPTH2_PATHS = setOf(
+        "/sdcard/dcim/camera",
+        "/sdcard/dcim/screenshots",
+        "/sdcard/pictures/screenshots",
+        "/sdcard/android/media",
+        "/sdcard/android/data",
+        "/sdcard/android/obb",
+    )
+
+    private val DESTRUCTIVE_CODE_PATTERN = Regex(
+        """\b(?:rmtree|rmSync|rmdirSync|unlink|unlinkSync|os\.remove|os\.rmdir|fs\.rm|fs\.unlink|shred)\b""" +
+            """|\.(?:rm|rmdir|unlink)\s*\(""" +
+            """|\brm\s+(?:-[^\s]*r|--recursive)\b""" +
+            """|\bfind\b[^\n]*-delete\b""",
+        IGNORE,
+    )
+
+    private val HEREDOC_START_PATTERN = Regex("""<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?""")
+    private val ASSIGNMENT_ONLY_PATTERN = Regex("""^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.+)$""")
+    private val LEADING_ASSIGNMENT_PATTERN = Regex("""^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s]+)\s+""")
+
     // ---------- public API -----------------------------------------------------
 
     /**
@@ -65,7 +68,26 @@ object WorkspaceSdcardGuard {
     fun check(command: String, mode: WorkspaceSdcardMode): String? {
         if (mode == WorkspaceSdcardMode.NONE || command.isBlank()) return null
 
-        // Pipeline rule first: `find /sdcard … | xargs rm` spans `|`, so judge it on the
+        // Scan heredoc bodies upfront before line splitting flattens delimiters.
+        for (body in extractHeredocBodies(command)) {
+            if (mentionsSdcard(body)) {
+                if (mode == WorkspaceSdcardMode.READ_ONLY) {
+                    return "blocked: the /sdcard mount is configured read-only for this workspace; " +
+                        "heredoc scripts touching shared storage cannot be proven read-only"
+                }
+                if (DESTRUCTIVE_CODE_PATTERN.containsMatchIn(body)) {
+                    return "blocked: heredoc script performs destructive delete operations on /sdcard; " +
+                        "operate on explicit individual files instead"
+                }
+            }
+        }
+
+        // Symlink indirection inside a command chain: `ln -s /sdcard ... && rm ...`
+        if (hasSymlinkToProtectedSdcard(command) && hasAnyDeleteVerb(command)) {
+            return "blocked: creating a symlink to /sdcard in a command chain that also deletes files"
+        }
+
+        // Pipeline rule: `find /sdcard … | xargs rm` spans `|`, so judge it on the
         // pipe-joined stages before per-command analysis splits them apart.
         splitTopLevel(command, setOf('|')).let { stages ->
             if (stages.size >= 2) {
@@ -78,18 +100,25 @@ object WorkspaceSdcardGuard {
             }
         }
 
-        // Per-command walk with literal `cd` tracking so relative targets resolve against
-        // the actual (tracked) working directory, not a stale default.
+        // Per-command walk with literal `cd` + simple variable assignment tracking.
         var base: String = DEFAULT_BASE
+        val vars = mutableMapOf<String, String>()
         for (raw in splitTopLevel(command, setOf(';', '&', '|', '\n'))) {
-            val segment = stripWrappers(raw.trim()) ?: continue
-            if (segment.isEmpty()) continue
-            val cd = parseCd(segment)
-            if (cd != null) {
-                base = cd
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) continue
+            val standaloneVar = parseStandaloneAssignment(trimmed, vars)
+            if (standaloneVar != null) {
+                vars[standaloneVar.first] = standaloneVar.second
                 continue
             }
-            checkCommand(segment, mode, base, depth = 0)?.let { return it }
+            val segment = stripWrappers(trimmed, vars) ?: continue
+            if (segment.isEmpty()) continue
+            val cd = parseCd(segment, base, vars)
+            if (cd.handled) {
+                base = cd.newBase
+                continue
+            }
+            checkCommand(segment, mode, base, vars, depth = 0)?.let { return it }
         }
         return null
     }
@@ -100,38 +129,50 @@ object WorkspaceSdcardGuard {
         segment: String,
         mode: WorkspaceSdcardMode,
         base: String,
+        vars: Map<String, String>,
         depth: Int,
     ): String? {
         if (depth > MAX_WRAPPER_DEPTH) return null
 
-        // Quoted interpreter payloads (`bash -c '…'`, `python -c '…'`, `eval '…'`) are code,
-        // not data — re-scan them so a wrapped write is caught. Inner segments resolve
-        // against the SAME tracked base (subshells inherit cwd).
         for (payload in extractQuotedPayloads(segment)) {
             when (payload.kind) {
                 PayloadKind.SHELL -> {
                     var innerBase = base
+                    val innerVars = vars.toMutableMap()
                     for (raw in splitTopLevel(payload.text, setOf(';', '&', '|', '\n'))) {
-                        val inner = stripWrappers(raw.trim()) ?: continue
-                        val cd = parseCd(inner)
-                        if (cd != null) {
-                            innerBase = cd
+                        val trimmed = raw.trim()
+                        if (trimmed.isEmpty()) continue
+                        val standaloneVar = parseStandaloneAssignment(trimmed, innerVars)
+                        if (standaloneVar != null) {
+                            innerVars[standaloneVar.first] = standaloneVar.second
                             continue
                         }
-                        checkCommand(inner, mode, innerBase, depth + 1)?.let { return it }
+                        val inner = stripWrappers(trimmed, innerVars) ?: continue
+                        val cd = parseCd(inner, innerBase, innerVars)
+                        if (cd.handled) {
+                            innerBase = cd.newBase
+                            continue
+                        }
+                        checkCommand(inner, mode, innerBase, innerVars, depth + 1)?.let { return it }
                     }
                 }
-                // Arbitrary-code interpreters: the payload grammar is opaque, so a literal
-                // /sdcard mention under READ_ONLY is judged as an unprovable write (conservative
-                // — reading shared storage from an interpreter is served by the file API).
-                PayloadKind.CODE -> if (mode == WorkspaceSdcardMode.READ_ONLY && mentionsSdcard(payload.text)) {
-                    return "blocked: the /sdcard mount is configured read-only for this workspace; " +
-                        "interpreter code touching shared storage cannot be proven read-only"
+                PayloadKind.CODE -> {
+                    val expandedPayload = substituteVariables(payload.text, vars)
+                    if (mentionsSdcard(expandedPayload)) {
+                        if (mode == WorkspaceSdcardMode.READ_ONLY) {
+                            return "blocked: the /sdcard mount is configured read-only for this workspace; " +
+                                "interpreter code touching shared storage cannot be proven read-only"
+                        }
+                        if (DESTRUCTIVE_CODE_PATTERN.containsMatchIn(expandedPayload)) {
+                            return "blocked: interpreter code performs destructive delete operations on /sdcard; " +
+                                "operate on explicit individual files instead"
+                        }
+                    }
                 }
             }
         }
 
-        firstSdcardRedirectTarget(segment, mode, base)?.let { return it }
+        firstSdcardRedirectTarget(segment, mode, base, vars)?.let { return it }
 
         val tokens = tokenize(segment)
         val leaf = commandLeaf(tokens) ?: return null
@@ -141,27 +182,34 @@ object WorkspaceSdcardGuard {
             in DELETE_LEAVES -> {
                 val (flags, positionals) = splitFlagsAndPositionals(args)
                 val recursive = flags.any { flag ->
-                    !flag.startsWith("--") && flag.length > 1 && flag.drop(1).any { it in "rR" }
+                    flag.equals("--recursive", ignoreCase = true) ||
+                        (!flag.startsWith("--") && flag.length > 1 && flag.drop(1).any { it in "rR" })
                 }
-                positionals.firstNotNullOfOrNull { judgeDelete(it, recursive, leaf, mode, base) }
+                positionals.firstNotNullOfOrNull { judgeDelete(it, recursive, leaf, mode, base, vars) }
             }
-            "find" -> judgeFind(args, mode, base)
+            "find" -> judgeFind(args, mode, base, vars)
+            "rsync" -> judgeRsync(args, mode, base, vars)
             "dd" -> args.mapNotNull { arg ->
-                if (arg.startsWith("of=", ignoreCase = true)) judgeWrite(arg.substring(3), mode, base) else null
+                if (arg.startsWith("of=", ignoreCase = true)) judgeWrite(arg.substring(3), mode, base, vars) else null
             }.firstOrNull()
             "tee", "truncate", "touch", "mkdir" ->
-                args.filter { !it.startsWith("-") }.firstNotNullOfOrNull { judgeWrite(it, mode, base) }
+                args.filter { !it.startsWith("-") }.firstNotNullOfOrNull { judgeWrite(it, mode, base, vars) }
             "chmod", "chown", "chgrp", "chattr", "setfattr" ->
-                args.filter { !it.startsWith("-") }.firstNotNullOfOrNull { judgeWrite(it, mode, base) }
+                args.filter { !it.startsWith("-") }.firstNotNullOfOrNull { judgeWrite(it, mode, base, vars) }
             "mv" -> {
                 val (_, positionals) = splitFlagsAndPositionals(args)
-                // moving OUT of /sdcard deletes from shared storage; moving INTO it writes
-                positionals.getOrNull(0)?.let { judgeWrite(it, mode, base, deleteSemantics = true) }
-                    ?: positionals.lastOrNull()?.let { judgeWrite(it, mode, base) }
+                val src = positionals.getOrNull(0)
+                val dst = positionals.lastOrNull()
+                if (src != null) {
+                    judgeMoveSource(src, mode, base, vars)?.let { return it }
+                }
+                if (dst != null && positionals.size >= 2) {
+                    judgeWrite(dst, mode, base, vars)?.let { return it }
+                }
+                null
             }
             "cp", "install", "ln" -> {
                 val (flags, positionals) = splitFlagsAndPositionals(args)
-                // `cp -t DIR src…` / `--target-directory=DIR`: DIR is the destination
                 val flagTarget = flags.firstNotNullOfOrNull { flag ->
                     when {
                         flag.startsWith("-t=") -> flag.substring(3)
@@ -169,18 +217,18 @@ object WorkspaceSdcardGuard {
                         else -> null
                     }
                 }
-                (flagTarget ?: positionals.lastOrNull())?.let { judgeWrite(it, mode, base) }
+                (flagTarget ?: positionals.lastOrNull())?.let { judgeWrite(it, mode, base, vars) }
             }
             "sed" -> {
                 val hasInPlace = args.any { it == "-i" || it.startsWith("-i") || it.startsWith("--in-place") }
                 if (hasInPlace) {
-                    args.filter { !it.startsWith("-") }.lastOrNull()?.let { judgeWrite(it, mode, base) }
+                    args.filter { !it.startsWith("-") }.lastOrNull()?.let { judgeWrite(it, mode, base, vars) }
                 } else null
             }
             "unzip", "7z", "7za", "7zr" -> {
                 val dir = args.firstOrNull { it == "-d" || it == "--directory" }
                     ?.let { d -> args.getOrNull(args.indexOf(d) + 1) }
-                dir?.let { judgeWrite(it, mode, base) }
+                dir?.let { judgeWrite(it, mode, base, vars) }
             }
             "tar" -> {
                 val extracting = args.any { it.startsWith("-") && it.contains(Regex("x")) } ||
@@ -188,30 +236,34 @@ object WorkspaceSdcardGuard {
                 if (extracting) {
                     val cDir = args.firstOrNull { it == "-C" }?.let { c -> args.getOrNull(args.indexOf(c) + 1) }
                         ?: args.firstOrNull { it.startsWith("--directory=") }?.substringAfter('=')
-                    cDir?.let { judgeWrite(it, mode, base) }
+                    cDir?.let { judgeWrite(it, mode, base, vars) }
                 } else null
             }
             "gzip", "bzip2", "xz", "gunzip", "bunzip2", "unxz" ->
-                args.filter { !it.startsWith("-") }.firstNotNullOfOrNull { judgeWrite(it, mode, base) }
+                args.filter { !it.startsWith("-") }.firstNotNullOfOrNull { judgeWrite(it, mode, base, vars) }
             else -> null
         }
     }
 
     // ---------- judgements ------------------------------------------------------
 
-    /**
-     * Write-shaped verdict. READ_ONLY: every in-zone write (incl. metadata
-     * changes and mv sources) is denied. READ_WRITE: single-file writes pass
-     * through to the approval chain — glob-carrying targets are still denied
-     * (breadth-destructive).
-     */
+    private fun isProtectedSdcardDirectory(normalizedPath: String): Boolean {
+        if (!WorkspaceSdcard.isWithin(normalizedPath)) return false
+        val rel = normalizedPath.removePrefix(WorkspaceSdcard.MOUNT_TARGET).trim('/')
+        if (rel.isEmpty()) return true // /sdcard itself
+        val depth = rel.count { it == '/' } + 1
+        if (depth <= 1) return true
+        return normalizedPath.lowercase() in PROTECTED_DEPTH2_PATHS
+    }
+
     private fun judgeWrite(
         rawTarget: String,
         mode: WorkspaceSdcardMode,
         base: String,
+        vars: Map<String, String>,
         deleteSemantics: Boolean = false,
     ): String? {
-        val path = normalizeTarget(rawTarget, base) ?: return null
+        val path = normalizeTarget(rawTarget, base, vars) ?: return null
         if (!WorkspaceSdcard.isWithin(path)) return null
         if (mode == WorkspaceSdcardMode.READ_WRITE) {
             if (rawTarget.contains('*') || rawTarget.contains('?')) {
@@ -225,15 +277,42 @@ object WorkspaceSdcardGuard {
             "the workspace cannot $action shared storage"
     }
 
-    /**
-     * Delete verdict. READ_ONLY: every in-zone delete is denied. READ_WRITE:
-     * recursive/glob deletes are denied at "public-directory level" (the mount
-     * root or a first-level child); shred is denied at ANY depth (irrecoverable
-     * content destruction); single-file non-shred deletes stay on the approval
-     * chain.
-     */
-    private fun judgeDelete(rawTarget: String, recursive: Boolean, leaf: String, mode: WorkspaceSdcardMode, base: String): String? {
-        val path = normalizeTarget(rawTarget, base) ?: return null
+    private fun judgeMoveSource(
+        rawSource: String,
+        mode: WorkspaceSdcardMode,
+        base: String,
+        vars: Map<String, String>,
+    ): String? {
+        val path = normalizeTarget(rawSource, base, vars) ?: return null
+        if (!WorkspaceSdcard.isWithin(path)) return null
+        if (mode == WorkspaceSdcardMode.READ_ONLY) {
+            return "blocked: the /sdcard mount is configured read-only for this workspace; " +
+                "the workspace cannot delete from shared storage"
+        }
+        if (rawSource.contains('*') || rawSource.contains('?')) {
+            return "blocked: glob target $rawSource can move/remove user files in shared storage in breadth"
+        }
+        val rel = path.removePrefix(WorkspaceSdcard.MOUNT_TARGET).trim('/')
+        val isSingleRootFileMove = rel.isNotEmpty() &&
+            !rel.contains('/') &&
+            !rel.startsWith('.') &&
+            '.' in rel &&
+            !rawSource.trimEnd('\'', '"').endsWith('/')
+        if (!isSingleRootFileMove && isProtectedSdcardDirectory(path)) {
+            return "blocked: refusing to move protected user shared-storage directory ($path)"
+        }
+        return null
+    }
+
+    private fun judgeDelete(
+        rawTarget: String,
+        recursive: Boolean,
+        leaf: String,
+        mode: WorkspaceSdcardMode,
+        base: String,
+        vars: Map<String, String>,
+    ): String? {
+        val path = normalizeTarget(rawTarget, base, vars) ?: return null
         if (!WorkspaceSdcard.isWithin(path)) return null
         if (mode == WorkspaceSdcardMode.READ_ONLY) {
             return "blocked: the /sdcard mount is configured read-only for this workspace; " +
@@ -244,21 +323,64 @@ object WorkspaceSdcardGuard {
                 "available for /sdcard paths"
         }
         val carriesGlob = rawTarget.contains('*') || rawTarget.contains('?')
-        val depth = path.removePrefix(WorkspaceSdcard.MOUNT_TARGET).count { it == '/' }
-        val publicLevel = depth <= 1
+        val publicLevel = isProtectedSdcardDirectory(path) ||
+            (carriesGlob && isProtectedSdcardDirectory(path.substringBeforeLast('/').ifEmpty { "/" }))
         if (!(recursive || carriesGlob) || !publicLevel) return null
         return "blocked: refusing to recursively wipe user shared storage at the " +
             "public-directory level ($path). Operate on specific subdirectories or files " +
             "instead of wiping an entire public directory"
     }
 
-    /**
-     * find … -delete / -exec rm|shred … {} — judged on the root. A literal root
-     * before any flag is parsed; a flag-leading find that merely mentions
-     * /sdcard is treated as rooted there (conservative — flag-value grammar is
-     * not fully parsed).
-     */
-    private fun judgeFind(args: List<String>, mode: WorkspaceSdcardMode, base: String): String? {
+    private fun judgeRsync(
+        args: List<String>,
+        mode: WorkspaceSdcardMode,
+        base: String,
+        vars: Map<String, String>,
+    ): String? {
+        val (flags, positionals) = splitFlagsAndPositionals(args)
+        val hasDeleteFlag = flags.any { f ->
+            val lower = f.lowercase()
+            lower == "--delete" ||
+                lower.startsWith("--delete-") ||
+                lower == "--remove-source-files"
+        }
+        val dst = positionals.lastOrNull()
+        val srcs = if (positionals.size >= 2) positionals.dropLast(1) else emptyList()
+
+        if (mode == WorkspaceSdcardMode.READ_ONLY) {
+            dst?.let { judgeWrite(it, mode, base, vars)?.let { reason -> return reason } }
+            if (flags.any { it.equals("--remove-source-files", ignoreCase = true) }) {
+                srcs.firstNotNullOfOrNull { judgeWrite(it, mode, base, vars, deleteSemantics = true) }
+                    ?.let { return it }
+            }
+            return null
+        }
+
+        if (!hasDeleteFlag) {
+            return dst?.let { judgeWrite(it, mode, base, vars) }
+        }
+
+        val checkPath: (String) -> String? = { raw ->
+            val path = normalizeTarget(raw, base, vars)
+            if (path != null && WorkspaceSdcard.isWithin(path) &&
+                (isProtectedSdcardDirectory(path) || raw.contains('*') || raw.contains('?'))
+            ) {
+                "blocked: rsync with delete/remove flags cannot target protected /sdcard path ($path)"
+            } else null
+        }
+        dst?.let { checkPath(it)?.let { reason -> return reason } }
+        if (flags.any { it.equals("--remove-source-files", ignoreCase = true) }) {
+            srcs.firstNotNullOfOrNull { checkPath(it) }?.let { return it }
+        }
+        return null
+    }
+
+    private fun judgeFind(
+        args: List<String>,
+        mode: WorkspaceSdcardMode,
+        base: String,
+        vars: Map<String, String>,
+    ): String? {
         var hasDelete = false
         var hasExecDelete = false
         var literalRoot: String? = null
@@ -278,8 +400,10 @@ object WorkspaceSdcardGuard {
         }
         if (!hasDelete && !hasExecDelete) return null
 
-        val root = literalRoot?.let { normalizeTarget(it, base) }
-            ?: if (mentionsSdcard(args.joinToString(" "))) WorkspaceSdcard.MOUNT_TARGET else null
+        val root = literalRoot?.let { normalizeTarget(it, base, vars) }
+            ?: if (mentionsSdcard(substituteVariables(args.joinToString(" "), vars))) {
+                WorkspaceSdcard.MOUNT_TARGET
+            } else null
             ?: return null
         if (!WorkspaceSdcard.isWithin(root)) return null
 
@@ -287,8 +411,7 @@ object WorkspaceSdcardGuard {
             return "blocked: the /sdcard mount is configured read-only for this workspace; " +
                 "find actions cannot modify shared storage"
         }
-        val depth = root.removePrefix(WorkspaceSdcard.MOUNT_TARGET).count { it == '/' }
-        return if (depth <= 1) {
+        return if (isProtectedSdcardDirectory(root)) {
             "blocked: find with delete/exec actions rooted at $root would wipe user shared " +
                 "storage at the public-directory level"
         } else {
@@ -297,7 +420,12 @@ object WorkspaceSdcardGuard {
     }
 
     /** Redirect targets (`>f`, `>>f`, `&>f`, `2>f`) — always a write, for any command. */
-    private fun firstSdcardRedirectTarget(segment: String, mode: WorkspaceSdcardMode, base: String): String? {
+    private fun firstSdcardRedirectTarget(
+        segment: String,
+        mode: WorkspaceSdcardMode,
+        base: String,
+        vars: Map<String, String>,
+    ): String? {
         var i = 0
         val n = segment.length
         var quote: Char? = null
@@ -313,15 +441,13 @@ object WorkspaceSdcardGuard {
                     if (j < n && (segment[j] == '>' || segment[j] == '&')) j++
                     while (j < n && segment[j] == ' ') j++
                     if (j < n && segment[j] != '&') { // >&2 / >&- are fd merges, not files
-                        // A quoted target reads up to the matching close quote (quote-stripped);
-                        // a bare word reads until the next shell delimiter.
                         val target: String
                         val openQuote = segment[j]
                         if (openQuote == '\'' || openQuote == '"') {
                             val close = segment.indexOf(openQuote, j + 1)
                             if (close == -1) {
                                 i = n
-                                break // unterminated quote: rest of the segment is opaque
+                                break
                             }
                             target = segment.substring(j + 1, close)
                             j = close + 1
@@ -333,7 +459,7 @@ object WorkspaceSdcardGuard {
                         }
                         val isFdMerge = target.matches(Regex("&?[\\d-]+"))
                         if (target.isNotBlank() && target !in INERT_REDIRECTS && !isFdMerge) {
-                            val path = normalizeTarget(target, base)
+                            val path = normalizeTarget(target, base, vars)
                             if (path != null && WorkspaceSdcard.isWithin(path)) {
                                 if (mode == WorkspaceSdcardMode.READ_ONLY) {
                                     return "blocked: the /sdcard mount is configured read-only " +
@@ -344,7 +470,7 @@ object WorkspaceSdcardGuard {
                                     return "blocked: glob redirect target $target can truncate " +
                                         "user files in shared storage in breadth"
                                 }
-                                return null // single-file RW redirect: approval chain
+                                return null
                             }
                         }
                         i = j
@@ -359,32 +485,111 @@ object WorkspaceSdcardGuard {
 
     // ---------- lexical helpers ---------------------------------------------------
 
-    /**
-     * Lexical `.`/`..` reduction. Relative inputs resolve against [base]
-     * (the tracked cwd), so `../../sdcard` from /workspace lands in-zone.
-     * Dynamic content (`$`, backtick) is unprovable → null (falls to approval).
-     */
-    private fun normalizeTarget(raw: String, base: String): String? {
-        var value = raw.trim()
-        if (value.length >= 2) {
-            val first = value.first()
-            if ((first == '\'' || first == '"') && value.last() == first) {
-                value = value.substring(1, value.length - 1)
+    private fun extractHeredocBodies(command: String): List<String> {
+        val lines = command.lines()
+        if (lines.size < 2) return emptyList()
+        val bodies = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            val match = HEREDOC_START_PATTERN.find(lines[i])
+            if (match != null) {
+                val delim = match.groupValues[1]
+                val sb = StringBuilder()
+                i++
+                while (i < lines.size && lines[i].trim() != delim) {
+                    if (sb.isNotEmpty()) sb.append('\n')
+                    sb.append(lines[i])
+                    i++
+                }
+                if (sb.isNotEmpty()) bodies.add(sb.toString())
+            }
+            i++
+        }
+        return bodies
+    }
+
+    private fun hasSymlinkToProtectedSdcard(command: String): Boolean {
+        val lnRegex = Regex("""\bln\s+[^\n;|&]*-s[^\n;|&]*""", IGNORE)
+        for (match in lnRegex.findAll(command)) {
+            if (mentionsSdcard(match.value)) return true
+        }
+        return false
+    }
+
+    private fun hasAnyDeleteVerb(command: String): Boolean =
+        Regex("""\b(?:rm|rmdir|unlink|shred|srm|wipe|find\b[^\n]*-delete)\b""", IGNORE)
+            .containsMatchIn(command)
+
+    private fun parseStandaloneAssignment(
+        segment: String,
+        vars: Map<String, String>,
+    ): Pair<String, String>? {
+        val match = ASSIGNMENT_ONLY_PATTERN.matchEntire(segment) ?: return null
+        val name = match.groupValues[1]
+        val rawVal = stripQuotes(match.groupValues[2].trim())
+        if (rawVal.contains(' ') && !match.groupValues[2].trim().let {
+                (it.startsWith('"') && it.endsWith('"')) || (it.startsWith('\'') && it.endsWith('\''))
+            }
+        ) {
+            return null
+        }
+        val resolved = substituteVariables(rawVal, vars)
+        return name to resolved
+    }
+
+    private fun substituteVariables(text: String, vars: Map<String, String>): String {
+        if (vars.isEmpty() || !text.contains('$')) return text
+        var out = text
+        for ((k, v) in vars) {
+            out = out.replace("\${$k}", v)
+            out = out.replace(Regex("""\$$k(?![A-Za-z0-9_])"""), Regex.escapeReplacement(v))
+        }
+        return out
+    }
+
+    private fun stripQuotes(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.length >= 2) {
+            val first = trimmed.first()
+            if ((first == '\'' || first == '"') && trimmed.last() == first) {
+                return trimmed.substring(1, trimmed.length - 1)
             }
         }
+        return trimmed
+    }
+
+    /**
+     * Lexical `.`/`..` reduction + host storage alias normalization (`/storage/emulated/0` -> `/sdcard`).
+     */
+    private fun normalizeTarget(
+        raw: String,
+        base: String,
+        vars: Map<String, String> = emptyMap(),
+    ): String? {
+        var value = substituteVariables(stripQuotes(raw), vars)
         if (value.isEmpty() || value.contains('$') || value.contains('`')) return null
         value = value.replace(Regex("//+"), "/")
         if (value.startsWith("~")) return null // $HOME expands to /root inside proot: never in-zone
 
+        // Normalize Android host storage aliases to /sdcard
+        val lower = value.lowercase()
+        value = when {
+            lower == "/storage/emulated/0" -> "/sdcard"
+            lower.startsWith("/storage/emulated/0/") -> "/sdcard" + value.substring("/storage/emulated/0".length)
+            lower == "/storage/self/primary" -> "/sdcard"
+            lower.startsWith("/storage/self/primary/") -> "/sdcard" + value.substring("/storage/self/primary".length)
+            else -> value
+        }
+
         val absolute = value.startsWith("/")
-        val start = if (absolute) value.substring(1) else "$base/$value"
+        val start = if (absolute) value.substring(1) else {
+            if (base.isEmpty()) return null
+            "$base/$value"
+        }
         val reduced = mutableListOf<String>()
         for (part in start.split('/')) {
             when (part) {
                 "", "." -> {}
-                // `..` at the root is a no-op ("/.." === "/"); a relative path escaping its
-                // base keeps popping into the root — exactly what the rootfs does too
-                // (from /workspace, `../../sdcard` IS /sdcard), so it must resolve in-zone.
                 ".." -> if (reduced.isNotEmpty()) reduced.removeAt(reduced.lastIndex)
                 else -> reduced.add(part)
             }
@@ -392,17 +597,22 @@ object WorkspaceSdcardGuard {
         return "/" + reduced.joinToString("/")
     }
 
-    /** Literal `cd <dir>` / `pushd <dir>`: returns the new tracked base, or null when not a cd. */
-    private fun parseCd(segment: String): String? {
+    private data class CdResult(val handled: Boolean, val newBase: String)
+
+    /** Literal `cd <dir>` / `pushd <dir>`: resolves relative to [currentBase]. */
+    private fun parseCd(
+        segment: String,
+        currentBase: String,
+        vars: Map<String, String>,
+    ): CdResult {
         val tokens = tokenize(segment)
-        val leaf = commandLeaf(tokens) ?: return null
-        if (leaf !in setOf("cd", "pushd")) return null
-        if (tokens.size < 2) return "/" // bare `cd` goes to HOME (/root) — outside any known base
+        val leaf = commandLeaf(tokens) ?: return CdResult(false, currentBase)
+        if (leaf !in setOf("cd", "pushd")) return CdResult(false, currentBase)
+        if (tokens.size < 2) return CdResult(true, "/root")
         val target = tokens[1]
-        return when {
-            target == "-" -> null // previous dir is unknown
-            else -> normalizeTarget(target, DEFAULT_BASE) ?: null
-        }
+        if (target == "-") return CdResult(true, "")
+        val resolved = normalizeTarget(target, currentBase, vars) ?: ""
+        return CdResult(true, resolved)
     }
 
     /** Splits [text] on any of [separators] occurring outside quotes/escapes. Doubled separators collapse. */
@@ -432,7 +642,7 @@ object WorkspaceSdcardGuard {
                     current.append(ch)
                 }
                 ch in separators -> {
-                    if (i + 1 < text.length && text[i + 1] == ch) i++ // &&, ||, ;;
+                    if (i + 1 < text.length && text[i + 1] == ch) i++
                     segments.add(current.toString())
                     current.setLength(0)
                 }
@@ -445,11 +655,14 @@ object WorkspaceSdcardGuard {
     }
 
     /** Drops leading `VAR=value` assignments and wrapper words (sudo/env/nohup/setsid/time/exec/nice/timeout). */
-    private fun stripWrappers(segment: String): String? {
+    private fun stripWrappers(segment: String, vars: MutableMap<String, String>? = null): String? {
         var value = segment.trim()
         while (true) {
-            val assignment = Regex("""^[A-Za-z_][A-Za-z0-9_]*=\S*\s+""").find(value)
+            val assignment = LEADING_ASSIGNMENT_PATTERN.find(value)
             if (assignment != null) {
+                val varName = assignment.groupValues[1]
+                val varVal = stripQuotes(assignment.groupValues[2])
+                if (vars != null) vars[varName] = substituteVariables(varVal, vars)
                 value = value.removePrefix(assignment.value)
                 continue
             }
@@ -457,7 +670,6 @@ object WorkspaceSdcardGuard {
             val leaf = first.trim('(', ')').substringAfterLast('/').lowercase()
             if (leaf !in WRAPPER_LEAVES) break
             value = value.removePrefix(first).trim()
-            // `timeout 10 …` / `env VAR=x …`: drop one value word after these wrappers
             if (leaf == "timeout" || leaf == "env") {
                 value = value.replace(Regex("^\\S+\\s+"), "")
             }
@@ -467,18 +679,17 @@ object WorkspaceSdcardGuard {
 
     private val WRAPPER_LEAVES = setOf("sudo", "nohup", "setsid", "exec", "time", "nice", "stdbuf", "timeout", "env")
 
-    /** Quoted payloads after a shell/interpreter `-c` (or a bare `eval '…'`). */
     private enum class PayloadKind { SHELL, CODE }
 
     private data class QuotedPayload(val text: String, val kind: PayloadKind)
 
     private val shellPayloadRegex = Regex(
-        """\b(?:bash|sh|dash|zsh|ash)\s+(?:-[a-zA-Z]+\s+)*-c\s+(['"])([\s\S]{1,4000}?)\1""",
+        """\b(?:busybox\s+)?(?:bash|sh|dash|zsh|ash)\s+(?:-[a-zA-Z]+\s+)*-c\s+(['"])([\s\S]{1,4000}?)\1""",
         IGNORE,
     )
 
     private val codePayloadRegex = Regex(
-        """\b(?:python3?|node)\s+(?:-[a-zA-Z]+\s+)*-c\s+(['"])([\s\S]{1,4000}?)\1""",
+        """\b(?:python3?|node|perl|ruby|php)\s+(?:-[a-zA-Z]+\s+)*(?:-c|-e|-r|--eval)\s+(['"])([\s\S]{1,4000}?)\1""",
         IGNORE,
     )
 
@@ -523,7 +734,8 @@ object WorkspaceSdcardGuard {
         return flags to positionals
     }
 
-    /** Cheap textual mention of the mount path — used for pipeline-source and find-root heuristics. */
+    /** Textual mention of /sdcard or its Android host storage aliases. */
     private fun mentionsSdcard(text: String): Boolean =
-        Regex("""(?:^|[\s"'=(])/(?:sdcard)\b""").containsMatchIn(text)
+        Regex("""(?:^|[\s"'=(])/(?:sdcard|storage/emulated/0|storage/self/primary)\b""", IGNORE)
+            .containsMatchIn(text)
 }

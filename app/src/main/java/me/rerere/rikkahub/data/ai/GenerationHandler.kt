@@ -70,6 +70,7 @@ import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.preferences.ChatPermissionMode
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
+import java.time.LocalDate
 import java.util.Locale
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
@@ -379,6 +380,7 @@ class GenerationHandler(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        prefixSnapshot: ConversationPrefixCache.Snapshot? = null,
         // ToolSearch hybrid: the context supplies tools discovered during earlier steps so
         // they are declared in the next provider request. Null for callers without ToolSearch.
         invocationContext: ToolInvocationContext? = null,
@@ -447,7 +449,8 @@ class GenerationHandler(
                         },
                         onDelete = { id ->
                             memoryRepo.deleteMemory(id)
-                        }
+                        },
+                        today = prefixSnapshot?.pinnedDate ?: LocalDate.now(),
                     ).let(this::addAll)
                 }
                 addAll(tools)
@@ -544,6 +547,7 @@ class GenerationHandler(
                         conversationModeInjectionIds = conversationModeInjectionIds,
                         conversationLorebookIds = conversationLorebookIds,
                         workspaceCwd = workspaceCwd,
+                        prefixSnapshot = prefixSnapshot,
                     )
                 } catch (t: Throwable) {
                     // CancellationException is honoured verbatim — stopGeneration has its
@@ -1039,6 +1043,7 @@ class GenerationHandler(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        prefixSnapshot: ConversationPrefixCache.Snapshot? = null,
     ) {
         val internalMessages = buildList {
             // Conversation-level system prompt override (upstream): when the assistant
@@ -1050,10 +1055,14 @@ class GenerationHandler(
                     assistant.systemPrompt
                 }
             val memoryPrompt = if (assistant.enableMemory) {
-                buildMemoryPrompt(memories = memories)
+                prefixSnapshot?.pinnedMemoryPrompt ?: buildMemoryPrompt(memories = memories).also {
+                    prefixSnapshot?.pinnedMemoryPrompt = it
+                }
             } else ""
             val recentChatsPrompt = if (assistant.enableRecentChatsReference) {
-                buildRecentChatsPrompt(assistant, conversationRepo)
+                prefixSnapshot?.pinnedRecentChatsPrompt ?: buildRecentChatsPrompt(assistant, conversationRepo).also {
+                    prefixSnapshot?.pinnedRecentChatsPrompt = it
+                }
             } else ""
             val toolPrompts = tools.map { tool -> tool.systemPrompt(model, messages) }
             // Split into stable (assistant + tools) and volatile (memory + recent chats +
@@ -1087,6 +1096,8 @@ class GenerationHandler(
             conversationLorebookIds = conversationLorebookIds,
             processingStatus = processingStatus,
             workspaceCwd = workspaceCwd,
+            pinnedDate = prefixSnapshot?.pinnedDate,
+            pinnedBatteryLevel = prefixSnapshot?.pinnedBatteryLevel,
         )
 
         var messages: List<UIMessage> = messages

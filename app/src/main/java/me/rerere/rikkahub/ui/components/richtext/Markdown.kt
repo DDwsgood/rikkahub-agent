@@ -99,6 +99,9 @@ import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.ui.components.table.DataTable
+import me.rerere.rikkahub.ui.components.ui.acrylicDividerColor
+import me.rerere.rikkahub.ui.components.ui.acrylicHeaderTint
+import me.rerere.rikkahub.ui.components.ui.acrylicSurface
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.modifier.onClick
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
@@ -900,17 +903,16 @@ private fun TableNode(node: ASTNode, content: String, modifier: Modifier = Modif
     }
 
     // 渲染表格卡片（工具栏 + 表格）
+    val tableShape = RoundedCornerShape(14.dp)
     Column(
         modifier = modifier
             .padding(vertical = 8.dp)
-            .clip(MaterialTheme.shapes.large)
-            .border(BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), MaterialTheme.shapes.large)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .acrylicSurface(shape = tableShape, highOpacity = true)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                .background(acrylicHeaderTint())
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -962,6 +964,7 @@ private fun TableNode(node: ASTNode, content: String, modifier: Modifier = Modif
                 )
             }
         }
+        HorizontalDivider(thickness = 0.5.dp, color = acrylicDividerColor())
         DataTable(
             headers = headers,
             rows = rowComposables,

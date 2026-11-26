@@ -46,6 +46,7 @@ import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.approval.SystemOneConfiguration
 import me.rerere.rikkahub.data.preferences.ToolApprovalPreferences
+import me.rerere.rikkahub.ui.components.message.tools.toolDisplayName
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -253,7 +254,7 @@ fun SettingToolApprovalsPage() {
                     ) {
                         granted.sorted().forEach { toolName ->
                             item(
-                                headlineContent = { Text(toolName) },
+                                headlineContent = { Text(toolDisplayName(toolName)) },
                                 trailingContent = {
                                     IconButton(onClick = {
                                         scope.launch { prefs.revoke(toolName) }

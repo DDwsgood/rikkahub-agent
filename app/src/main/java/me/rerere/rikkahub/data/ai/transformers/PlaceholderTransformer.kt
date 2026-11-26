@@ -27,6 +27,8 @@ data class PlaceholderCtx(
     val settingsStore: SettingsStore,
     val model: Model,
     val assistant: Assistant,
+    val pinnedDate: LocalDate? = null,
+    val pinnedBatteryLevel: Int? = null,
 )
 
 interface PlaceholderProvider {
@@ -59,7 +61,7 @@ fun buildPlaceholders(block: PlaceholderBuilder.() -> Unit): Map<String, Placeho
 object DefaultPlaceholderProvider : PlaceholderProvider {
     override val placeholders: Map<String, PlaceholderInfo> = buildPlaceholders {
         placeholder("cur_date", { Text(stringResource(R.string.placeholder_current_date)) }) {
-            LocalDate.now().toDateString()
+            (it.pinnedDate ?: LocalDate.now()).toDateString()
         }
 
         placeholder("model_id", { Text(stringResource(R.string.placeholder_model_id)) }) {
@@ -87,7 +89,7 @@ object DefaultPlaceholderProvider : PlaceholderProvider {
         }
 
         placeholder("battery_level", { Text(stringResource(R.string.placeholder_battery_level)) }) {
-            it.context.batteryLevel().toString()
+            (it.pinnedBatteryLevel?.takeIf { lvl -> lvl >= 0 } ?: it.context.batteryLevel()).toString()
         }
 
         placeholder("nickname", { Text(stringResource(R.string.placeholder_nickname)) }) {
@@ -144,14 +146,16 @@ object PlaceholderTransformer : InputMessageTransformer, KoinComponent {
     ): String {
         var result = text
 
-        val ctx = PlaceholderCtx(
+        val pCtx = PlaceholderCtx(
             context = ctx.context,
             settingsStore = settingsStore,
             model = ctx.model,
-            assistant = ctx.assistant
+            assistant = ctx.assistant,
+            pinnedDate = ctx.pinnedDate,
+            pinnedBatteryLevel = ctx.pinnedBatteryLevel,
         )
         defaultProvider.placeholders.forEach { (key, placeholderInfo) ->
-            val value = placeholderInfo.resolver(ctx)
+            val value = placeholderInfo.resolver(pCtx)
             result = result
                 .replace(oldValue = "{{$key}}", newValue = value, ignoreCase = true)
                 .replace(oldValue = "{$key}", newValue = value, ignoreCase = true)

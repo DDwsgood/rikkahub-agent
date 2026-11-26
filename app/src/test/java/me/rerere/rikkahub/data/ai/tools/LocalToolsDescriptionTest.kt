@@ -77,7 +77,7 @@ class LocalToolsDescriptionTest {
     fun `addHumanErrorEnvelopes leaves existing human error unchanged`() = runBlocking {
         val text = """{"error":"permission_denied","human_error":"Storage permission is missing"}"""
         val tool = Tool(
-            name = "read_file",
+            name = "sdcard_read_file",
             description = "Read file.",
             execute = { listOf(UIMessagePart.Text(text)) },
         )
@@ -91,7 +91,7 @@ class LocalToolsDescriptionTest {
     @Test
     fun `addHumanErrorEnvelopes normalizes reason into detail`() = runBlocking {
         val tool = Tool(
-            name = "read_file",
+            name = "sdcard_read_file",
             description = "Read file.",
             execute = {
                 listOf(UIMessagePart.Text("""{"error":"permission_denied","reason":"Missing storage access"}"""))
@@ -110,7 +110,7 @@ class LocalToolsDescriptionTest {
     @Test
     fun `addHumanErrorEnvelopes preserves recovery and additional fields`() = runBlocking {
         val tool = Tool(
-            name = "read_file",
+            name = "sdcard_read_file",
             description = "Read file.",
             execute = {
                 listOf(UIMessagePart.Text("""{"error":"missing_file","recovery":"Choose an existing file","path":"/tmp/a.txt"}"""))
@@ -130,7 +130,7 @@ class LocalToolsDescriptionTest {
     fun `addHumanErrorEnvelopes leaves json without error unchanged`() = runBlocking {
         val text = """{"ok":true}"""
         val tool = Tool(
-            name = "read_file",
+            name = "sdcard_read_file",
             description = "Read file.",
             execute = { listOf(UIMessagePart.Text(text)) },
         )

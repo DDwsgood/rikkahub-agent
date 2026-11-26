@@ -55,6 +55,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.message.tools.DefaultToolPreview
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIContext
 import me.rerere.rikkahub.ui.components.message.tools.ToolUIRegistry
+import me.rerere.rikkahub.ui.components.message.tools.toolDisplayName
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.ui.ChainOfThoughtScope
 import me.rerere.rikkahub.ui.components.ui.DotLoading
@@ -171,11 +172,12 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                                 Column {
                                     actions.forEachIndexed { i, el ->
                                         val obj = el as? JsonObject
-                                        val toolName = obj?.get("tool")?.jsonPrimitive?.contentOrNull ?: "?"
+                                        val toolName = obj?.get("tool")?.jsonPrimitive?.contentOrNull
+                                        val displayName = toolName?.let { toolDisplayName(it) } ?: "?"
                                         val args = obj?.get("args")?.toString().orEmpty()
                                         val truncatedArgs = if (args.length > 120) args.take(120) + "…" else args
                                         Text(
-                                            text = "  ${i + 1}. $toolName $truncatedArgs",
+                                            text = "  ${i + 1}. $displayName $truncatedArgs",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )

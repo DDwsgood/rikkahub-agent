@@ -31,12 +31,14 @@ class WorkspaceReminderTransformer(
         // 仅在未解析到绑定的 workspace 时才需要查询是否存在其它 workspace (短路避免多余查询)
         val hasAnyWorkspace = workspace != null || workspaceRepository.getAll().isNotEmpty()
         val sharedDirMounted = workspace != null && workspaceRepository.isSharedDirMounted(workspace.id)
+        val effectiveSdcardMode = workspace?.let { workspaceRepository.effectiveSdcardMode(it) }
 
         val prompt = buildWorkspaceReminder(
             workspace = workspace,
             hasAnyWorkspace = hasAnyWorkspace,
             cwd = ctx.workspaceCwd,
             sharedDirMounted = sharedDirMounted,
+            effectiveSdcardMode = effectiveSdcardMode,
         ) ?: return messages
 
         // 追加到第一条 system 消息; 若不存在则插入一条
@@ -65,9 +67,10 @@ internal fun buildWorkspaceReminder(
     hasAnyWorkspace: Boolean,
     cwd: String? = null,
     sharedDirMounted: Boolean = false,
+    effectiveSdcardMode: me.rerere.workspace.WorkspaceSdcardMode? = null,
 ): String? = when {
     workspace != null && workspace.shellStatus == WorkspaceShellStatus.READY.name ->
-        buildWorkspacePrompt(workspace, cwd, sharedDirMounted)
+        buildWorkspacePrompt(workspace, cwd, sharedDirMounted, effectiveSdcardMode)
 
     workspace != null -> buildWorkspaceNotReadyPrompt(workspace)
 
@@ -80,25 +83,25 @@ private fun buildWorkspacePrompt(
     workspace: WorkspaceEntity,
     cwd: String? = null,
     sharedDirMounted: Boolean = false,
+    effectiveSdcardMode: me.rerere.workspace.WorkspaceSdcardMode? = null,
 ): String = buildString {
     appendLine("<workspace>")
-    appendLine("PRoot workspace: ${workspace.name}. Use absolute rootfs paths; /workspace is persistent and app-private. workspace_shell runs here; workspace_run_background takes a foreground command (no &).")
-    appendLine("Export user-visible files with workspace_export_to_downloads to Download/RikkaHub/${workspace.name}/.")
-    val sdcardMode = workspace.sdcardModeEnum()
+    appendLine("PRoot workspace: ${workspace.name}. Use absolute rootfs paths; /workspace is persistent and app-private. workspace_shell runs here.")
+    val sdcardMode = effectiveSdcardMode ?: workspace.sdcardModeEnum()
     when (sdcardMode) {
         me.rerere.workspace.WorkspaceSdcardMode.READ_ONLY ->
-            appendLine("- Shared storage `/sdcard` is enabled in READ-ONLY mode (`READ_ONLY`). You may read files under `/sdcard` via `workspace_read_file`; writes to `/sdcard` are blocked and PRoot shells/background tasks do not mount `/sdcard`.")
+            appendLine("- Shared storage `/sdcard` is READ-ONLY (`READ_ONLY`): read via `workspace_read_file`; writes/deletes to `/sdcard` are blocked.")
         me.rerere.workspace.WorkspaceSdcardMode.READ_WRITE ->
-            appendLine("- Shared storage `/sdcard` is mounted READ-WRITE (`READ_WRITE`). Writes to `/sdcard` require user approval.")
+            appendLine("- Shared storage `/sdcard` is READ-WRITE (`READ_WRITE`). `/sdcard` holds irreplaceable personal user data: NEVER bulk-delete, wipe, or move public folders (`/sdcard/DCIM`, `/sdcard/Pictures`, `/sdcard/Download`, `/sdcard/Documents`, `/sdcard/Android`, etc.). Before deleting or overwriting any existing `/sdcard` file, list exact target paths and confirm via `ask_user`; prefer staging copies in `/workspace`.")
         me.rerere.workspace.WorkspaceSdcardMode.NONE -> Unit
     }
     if (sharedDirMounted) {
         val publicPath = me.rerere.rikkahub.data.preferences.WorkspaceSharedDirPreferences.displayPath(workspace.name, workspace.id)
-        appendLine("- A user-visible shared folder is mounted at `/shared` (backed by `/sdcard/$publicPath`). Files written to `/shared` appear directly in Android file managers; writing to `/shared` still prompts for user approval.")
+        appendLine("- Shared folder `/shared` (backed by `/sdcard/$publicPath`) is visible in Android file managers; writes prompt for approval.")
     }
     appendLine("Skills: /skills/<name>/SKILL.md. /upload is READ-ONLY; edit copies in /workspace.")
     if (!cwd.isNullOrBlank()) {
-        appendLine("- Current working directory: `$cwd`. Use this as the default context for file operations and shell commands.")
+        appendLine("- Current working directory: `$cwd`.")
     }
     append("</workspace>")
 }

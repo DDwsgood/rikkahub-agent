@@ -215,6 +215,7 @@ class WorkspaceDetailVM(
     fun onResumeCheckSharedAccess() {
         viewModelScope.launch {
             repository.teardownProcessesIfSharedAccessRevoked(id)
+            loadWorkspace()
         }
     }
 
@@ -314,13 +315,15 @@ class WorkspaceDetailVM(
     private fun loadWorkspace() {
         viewModelScope.launch {
             val workspace = repository.getById(id)
-            _state.update { it.copy(workspace = workspace) }
+            val mode = workspace?.let { repository.effectiveSdcardMode(it) } ?: WorkspaceSdcardMode.NONE
+            _state.update { it.copy(workspace = workspace, effectiveSdcardMode = mode) }
         }
     }
 }
 
 data class WorkspaceDetailState(
     val workspace: WorkspaceEntity? = null,
+    val effectiveSdcardMode: WorkspaceSdcardMode = WorkspaceSdcardMode.NONE,
     val area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
     val path: String = "",
     val entries: List<WorkspaceFileEntry> = emptyList(),

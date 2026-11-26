@@ -6,6 +6,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
+import java.time.LocalDate
 import kotlin.uuid.Uuid
 
 class TransformerContext(
@@ -17,6 +18,8 @@ class TransformerContext(
     val conversationLorebookIds: Set<Uuid> = emptySet(),
     val processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     val workspaceCwd: String? = null,
+    val pinnedDate: LocalDate? = null,
+    val pinnedBatteryLevel: Int? = null,
 )
 
 interface MessageTransformer {
@@ -71,6 +74,8 @@ suspend fun List<UIMessage>.transforms(
     conversationLorebookIds: Set<Uuid> = emptySet(),
     processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     workspaceCwd: String? = null,
+    pinnedDate: LocalDate? = null,
+    pinnedBatteryLevel: Int? = null,
 ): List<UIMessage> {
     val ctx = TransformerContext(
         context = context,
@@ -81,6 +86,8 @@ suspend fun List<UIMessage>.transforms(
         conversationLorebookIds = conversationLorebookIds,
         processingStatus = processingStatus,
         workspaceCwd = workspaceCwd,
+        pinnedDate = pinnedDate,
+        pinnedBatteryLevel = pinnedBatteryLevel,
     )
     return transformers.fold(this) { acc, transformer ->
         transformer.transform(ctx, acc)

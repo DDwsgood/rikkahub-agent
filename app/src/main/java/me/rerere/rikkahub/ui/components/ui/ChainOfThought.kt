@@ -20,11 +20,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -36,10 +38,11 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.util.fastForEach
+import androidx.compose.ui.util.fastForEachIndexed
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowDown01
 import me.rerere.hugeicons.stroke.ArrowRight01
@@ -48,7 +51,12 @@ import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Sparkles
 import me.rerere.rikkahub.R
 
-private val LocalCardColor = staticCompositionLocalOf { Color.White }
+private data class StepPosition(
+    val isFirst: Boolean = true,
+    val isLast: Boolean = true,
+)
+
+private val LocalStepPosition = staticCompositionLocalOf { StepPosition() }
 
 /**
  * 以时间线/步骤卡片的形式展示一组思考过程。
@@ -75,6 +83,7 @@ fun <T> ChainOfThought(
     collapsedVisibleCount: Int = 2,
     collapsedAdaptiveWidth: Boolean = false,
     forceExpanded: Boolean = false,
+    useAcrylic: Boolean = true,
     content: @Composable ChainOfThoughtScope.(T) -> Unit
 ) {
     var userExpanded by remember { mutableStateOf(false) }
@@ -85,95 +94,99 @@ fun <T> ChainOfThought(
     val expanded = userExpanded || forceExpanded
     val canCollapse = steps.size > collapsedVisibleCount
     val shouldFillCollapseControlWidth = expanded || !collapsedAdaptiveWidth
+    val cardShape = RoundedCornerShape(16.dp)
 
-    CompositionLocalProvider(
-        LocalCardColor provides cardColors.containerColor
-    ) {
-        Card(
-            modifier = modifier,
-            colors = cardColors,
-            shape = RoundedCornerShape(16.dp),
+    val cardBody: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .animateContentSize(
+                    animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
+                ),
         ) {
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-                    .animateContentSize(
-                        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
-                    ),
-            ) {
-                val visibleSteps = if (expanded || !canCollapse) {
-                    steps
-                } else {
-                    steps.takeLast(collapsedVisibleCount)
-                }
+            val visibleSteps = if (expanded || !canCollapse) {
+                steps
+            } else {
+                steps.takeLast(collapsedVisibleCount)
+            }
 
-                // 显示展开/折叠按钮（统一在顶部）
-                if (canCollapse) {
-                    Row(
-                        modifier = Modifier
-                            .then(
-                                if (shouldFillCollapseControlWidth) {
-                                    Modifier.fillMaxWidth()
-                                } else {
-                                    Modifier
-                                }
-                            )
-                            .clip(MaterialTheme.shapes.small)
-                            .clickable { userExpanded = !expanded }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // 左侧：图标区域（24.dp，和步骤图标对齐）
-                        Box(
-                            modifier = Modifier.width(24.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-
-                        // 右侧：文字区域（8.dp 间距后开始，和步骤 label 对齐）
-                        Text(
-                            modifier = Modifier.padding(start = 8.dp),
-                            text = if (expanded) {
-                                stringResource(R.string.chain_of_thought_collapse)
+            // 显示展开/折叠按钮（统一在顶部）
+            if (canCollapse) {
+                Row(
+                    modifier = Modifier
+                        .then(
+                            if (shouldFillCollapseControlWidth) {
+                                Modifier.fillMaxWidth()
                             } else {
-                                stringResource(
-                                    R.string.chain_of_thought_show_more_steps,
-                                    steps.size - collapsedVisibleCount
-                                )
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
+                                Modifier
+                            }
                         )
-                    }
-                }
-
-                val lineColor = MaterialTheme.colorScheme.outlineVariant
-                val scope = remember { ChainOfThoughtScopeImpl() }
-                Box(
-                    modifier = Modifier.drawBehind {
-                        val x = 12.dp.toPx()
-                        val offsetPx = 18.dp.toPx()
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(x, offsetPx),
-                            end = Offset(x, size.height - offsetPx),
-                            strokeWidth = 1.dp.toPx()
-                        )
-                    }
+                        .clip(MaterialTheme.shapes.small)
+                        .clickable { userExpanded = !expanded }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column {
-                        visibleSteps.fastForEach { step ->
-                            scope.content(step)
-                        }
+                    // 左侧：图标区域（24.dp，和步骤图标对齐）
+                    Box(
+                        modifier = Modifier.width(24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+
+                    // 右侧：文字区域（8.dp 间距后开始，和步骤 label 对齐）
+                    Text(
+                        modifier = Modifier.padding(start = 8.dp),
+                        text = if (expanded) {
+                            stringResource(R.string.chain_of_thought_collapse)
+                        } else {
+                            stringResource(
+                                R.string.chain_of_thought_show_more_steps,
+                                steps.size - collapsedVisibleCount
+                            )
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+
+            val scope = remember { ChainOfThoughtScopeImpl() }
+            Column {
+                visibleSteps.fastForEachIndexed { idx, step ->
+                    CompositionLocalProvider(
+                        LocalStepPosition provides StepPosition(
+                            isFirst = idx == 0,
+                            isLast = idx == visibleSteps.lastIndex,
+                        )
+                    ) {
+                        scope.content(step)
                     }
                 }
             }
+        }
+    }
+
+    if (useAcrylic) {
+        Surface(
+            modifier = modifier.acrylicSurface(shape = cardShape, highOpacity = true),
+            color = Color.Transparent,
+            shape = cardShape,
+        ) {
+            cardBody()
+        }
+    } else {
+        Card(
+            modifier = modifier,
+            colors = cardColors,
+            shape = cardShape,
+        ) {
+            cardBody()
         }
     }
 }
@@ -297,19 +310,46 @@ private class ChainOfThoughtScopeImpl : ChainOfThoughtScope {
     ) {
         val hasContent = content != null
         val shouldFillMaxWidth = !collapsedAdaptiveWidth || contentVisible
+        val stepPos = LocalStepPosition.current
+        val lineColor = acrylicDividerColor()
+        var labelRowHeightPx by remember { mutableIntStateOf(0) }
 
         Column(
-            modifier = Modifier.then(
-                if (shouldFillMaxWidth) {
-                    Modifier.fillMaxWidth()
-                } else {
-                    Modifier
-                }
-            ),
+            modifier = Modifier
+                .then(
+                    if (shouldFillMaxWidth) {
+                        Modifier.fillMaxWidth()
+                    } else {
+                        Modifier
+                    }
+                )
+                .drawBehind {
+                    val x = 12.dp.toPx()
+                    val centerY = if (labelRowHeightPx > 0) labelRowHeightPx / 2f else 18.dp.toPx()
+                    val gap = 12.dp.toPx()
+                    val stroke = 1.dp.toPx()
+                    if (!stepPos.isFirst && centerY - gap > 0f) {
+                        drawLine(
+                            color = lineColor,
+                            start = Offset(x, 0f),
+                            end = Offset(x, centerY - gap),
+                            strokeWidth = stroke,
+                        )
+                    }
+                    if (!stepPos.isLast && size.height > centerY + gap) {
+                        drawLine(
+                            color = lineColor,
+                            start = Offset(x, centerY + gap),
+                            end = Offset(x, size.height),
+                            strokeWidth = stroke,
+                        )
+                    }
+                },
         ) {
             // Label 行：Icon + Label + Extra + 指示器
             Row(
                 modifier = Modifier
+                    .onSizeChanged { labelRowHeightPx = it.height }
                     .then(
                         if (shouldFillMaxWidth) {
                             Modifier.fillMaxWidth()
@@ -334,15 +374,13 @@ private class ChainOfThoughtScopeImpl : ChainOfThoughtScope {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Icon（不透明背景遮住背后的连线）
+                // Icon（透明背景：由外层分段连线在图标中心上下留白，避免半透明卡片穿帮）
                 Box(
                     modifier = Modifier.width(24.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Box(
-                        modifier = Modifier
-                            .size(20.dp)
-                            .background(LocalCardColor.current),
+                        modifier = Modifier.size(20.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         if (icon != null) {

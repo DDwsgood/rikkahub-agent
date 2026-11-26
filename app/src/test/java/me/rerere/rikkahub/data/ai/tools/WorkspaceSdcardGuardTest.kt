@@ -202,4 +202,50 @@ class WorkspaceSdcardGuardTest {
         // HOME inside the rootfs is /root, not the sdcard bind
         assertNull(WorkspaceSdcardGuard.check("rm -rf ~/anything", ro))
     }
+
+    // ------------------------------------------------------------------
+    // Hardened bypass closures (6 new guards)
+    // ------------------------------------------------------------------
+
+    @Test fun `RW denies long recursive flag and depth-2 critical user dirs`() {
+        assertNotNull(WorkspaceSdcardGuard.check("rm --recursive -f /sdcard/DCIM", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("rm -rf /sdcard/DCIM/Camera", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("rm -rf /sdcard/Pictures/Screenshots", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("rm -rf /sdcard/Android/media", rw))
+    }
+
+    @Test fun `RW denies moving protected sdcard directories`() {
+        assertNotNull(WorkspaceSdcardGuard.check("mv /sdcard/DCIM /tmp/trash", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("mv /sdcard/DCIM/Camera /tmp/trash", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("mv /sdcard /tmp/trash", rw))
+    }
+
+    @Test fun `sequential relative cd tracking catches nested relative wipe`() {
+        assertNotNull(WorkspaceSdcardGuard.check("cd /sdcard && cd DCIM && rm -rf .", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("cd /sdcard && cd DCIM && rm -rf *", rw))
+    }
+
+    @Test fun `host storage aliases normalize to sdcard`() {
+        assertNotNull(WorkspaceSdcardGuard.check("rm -rf /storage/emulated/0/DCIM", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("rm -rf /storage/self/primary/Download", rw))
+    }
+
+    @Test fun `RW denies rsync delete on protected sdcard dirs`() {
+        assertNotNull(WorkspaceSdcardGuard.check("rsync -a --delete /tmp/empty/ /sdcard/Download/", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("rsync -a --remove-source-files /sdcard/DCIM/ /tmp/out/", rw))
+        assertNull(WorkspaceSdcardGuard.check("rsync -a /workspace/out/ /sdcard/Download/export/", rw))
+    }
+
+    @Test fun `RW denies variable indirection, symlink delete, and destructive scripts or heredocs`() {
+        assertNotNull(WorkspaceSdcardGuard.check("D=/sdcard/DCIM; rm -rf \$D", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("ln -s /sdcard /tmp/s && rm -rf /tmp/s/", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("python3 -c 'import shutil; shutil.rmtree(\"/sdcard/DCIM\")'", rw))
+        assertNotNull(WorkspaceSdcardGuard.check("node -e 'require(\"fs\").rm(\"/sdcard/DCIM\", {recursive:true})'", rw))
+        assertNotNull(
+            WorkspaceSdcardGuard.check(
+                "python3 <<EOF\nimport shutil\nshutil.rmtree('/sdcard/Pictures')\nEOF",
+                rw,
+            )
+        )
+    }
 }

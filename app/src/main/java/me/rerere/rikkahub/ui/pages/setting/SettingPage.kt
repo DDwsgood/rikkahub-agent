@@ -74,6 +74,7 @@ import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share04
 import me.rerere.hugeicons.stroke.SmartPhone01
 import me.rerere.hugeicons.stroke.Sun01
+import me.rerere.hugeicons.stroke.Tools
 import me.rerere.hugeicons.stroke.WavingHand01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
@@ -313,6 +314,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Tick01, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_tool_approvals_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_tool_approvals)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingInitialTools) },
+                        leadingContent = { Icon(HugeIcons.Tools, null) },
+                        supportingContent = { Text(stringResource(R.string.setting_page_initial_tools_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_page_initial_tools)) },
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingAccessibility) },

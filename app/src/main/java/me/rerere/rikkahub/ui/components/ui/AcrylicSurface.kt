@@ -40,15 +40,12 @@ fun Modifier.acrylicSurface(
     val settings = LocalSettings.current
     val bgHazeState = LocalBackgroundHazeState.current
 
-    val tintColor = if (dark) {
-        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (highOpacity) 0.76f else 0.60f)
+    val darkAlpha = if (highOpacity) 0.55f else 0.45f
+    val lightAlpha = if (highOpacity) 0.75f else 0.62f
+    val surfaceColor = if (dark) {
+        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = darkAlpha)
     } else {
-        MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = if (highOpacity) 0.82f else 0.68f)
-    }
-    val fallbackColor = if (dark) {
-        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (highOpacity) 0.88f else 0.74f)
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = if (highOpacity) 0.92f else 0.78f)
+        MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = lightAlpha)
     }
     val borderBrush = if (dark) {
         Brush.verticalGradient(
@@ -73,15 +70,15 @@ fun Modifier.acrylicSurface(
                 blurEffect {
                     blurRadius = 20.dp
                     noiseFactor = 0.04f
-                    backgroundColor = fallbackColor
-                    colorEffects = listOf(HazeColorEffect.TintColor(tintColor))
-                    fallbackTint = HazeColorEffect.TintColor(fallbackColor)
+                    backgroundColor = surfaceColor
+                    colorEffects = listOf(HazeColorEffect.TintColor(surfaceColor))
+                    fallbackTint = HazeColorEffect.TintColor(surfaceColor)
                 }
             }
     } else {
         Modifier
             .clip(shape)
-            .background(fallbackColor)
+            .background(surfaceColor)
     }
 
     this

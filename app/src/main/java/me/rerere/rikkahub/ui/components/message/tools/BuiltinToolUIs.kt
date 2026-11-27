@@ -350,10 +350,11 @@ object UseSkillToolUI : ToolUIRenderer {
 
     @Composable
     override fun title(context: ToolUIContext): String {
+        val base = toolDisplayName(toolName)
         val skillName = context.arguments.getStringContent("name").orEmpty()
-        if (skillName.isBlank()) return toolDisplayName(toolName)
+        if (skillName.isBlank()) return base
         val path = context.arguments.getStringContent("path")
-        return if (path != null) "Skill: $skillName / $path" else "Skill: $skillName"
+        return if (!path.isNullOrBlank()) "$base: $skillName / $path" else "$base: $skillName"
     }
 }
 
@@ -848,8 +849,9 @@ object RunJsToolUI : ToolUIRenderer {
 
     @Composable
     override fun title(context: ToolUIContext): String {
+        val base = toolDisplayName(toolName)
         val skillName = context.arguments.getStringContent("skill_name").orEmpty()
-        return if (skillName.isNotBlank()) "JS skill: $skillName" else "JS skill"
+        return if (skillName.isNotBlank()) "$base: $skillName" else base
     }
 }
 
@@ -865,8 +867,9 @@ object CreateCalendarEventToolUI : ToolUIRenderer {
     @Composable
     override fun title(context: ToolUIContext): String {
         context.content.getStringContent("summary")?.let { return it }
+        val base = toolDisplayName(toolName)
         val t = context.arguments.getStringContent("title").orEmpty()
-        return if (t.isNotBlank()) "Calendar event: $t" else "Create calendar event"
+        return if (t.isNotBlank()) "$base: $t" else base
     }
 }
 
@@ -878,10 +881,11 @@ object CreateContactToolUI : ToolUIRenderer {
     @Composable
     override fun title(context: ToolUIContext): String {
         context.content.getStringContent("summary")?.let { return it }
+        val base = toolDisplayName(toolName)
         val first = context.arguments.getStringContent("first_name").orEmpty()
         val last = context.arguments.getStringContent("last_name").orEmpty()
         val name = listOf(first, last).filter { it.isNotBlank() }.joinToString(" ")
-        return if (name.isNotBlank()) "Contact: $name" else "Create contact"
+        return if (name.isNotBlank()) "$base: $name" else base
     }
 }
 
@@ -893,8 +897,9 @@ object SendSmsIntentToolUI : ToolUIRenderer {
     @Composable
     override fun title(context: ToolUIContext): String {
         context.content.getStringContent("summary")?.let { return it }
+        val base = toolDisplayName(toolName)
         val ph = context.arguments.getStringContent("phone_number").orEmpty()
-        return if (ph.isNotBlank()) "SMS to $ph" else "Compose SMS"
+        return if (ph.isNotBlank()) "$base: $ph" else base
     }
 }
 
@@ -906,8 +911,9 @@ object SendEmailIntentToolUI : ToolUIRenderer {
     @Composable
     override fun title(context: ToolUIContext): String {
         context.content.getStringContent("summary")?.let { return it }
+        val base = toolDisplayName(toolName)
         val to = context.arguments.getStringContent("to").orEmpty()
-        return if (to.isNotBlank()) "Email to $to" else "Compose email"
+        return if (to.isNotBlank()) "$base: $to" else base
     }
 }
 
@@ -918,7 +924,7 @@ object OpenWifiSettingsToolUI : ToolUIRenderer {
 
     @Composable
     override fun title(context: ToolUIContext): String =
-        context.content.getStringContent("summary") ?: "WiFi Settings"
+        context.content.getStringContent("summary") ?: toolDisplayName(toolName)
 }
 
 object ShowLocationOnMapToolUI : ToolUIRenderer {
@@ -929,7 +935,8 @@ object ShowLocationOnMapToolUI : ToolUIRenderer {
     @Composable
     override fun title(context: ToolUIContext): String {
         context.content.getStringContent("summary")?.let { return it }
+        val base = toolDisplayName(toolName)
         val q = context.arguments.getStringContent("query").orEmpty()
-        return if (q.isNotBlank()) "Map: $q" else "Open map"
+        return if (q.isNotBlank()) "$base: $q" else base
     }
 }
